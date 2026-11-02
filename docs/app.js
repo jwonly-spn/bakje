@@ -1,4 +1,4 @@
-// 박제관 — 박제판·박제 편지를 올리는 개인 SNS.
+// 한이준 추억앨범 — 최초 박제판·박제판을 모아 두는 개인 SNS.
 // 보기: 공개 버킷의 snap/feed.json(서버가 글이 바뀔 때마다 새로 씀). 하트·글쓰기: Supabase 함수 bakje.
 // 글쓰기는 "주인 기기"만 — 이 브라우저가 만든 열쇠(IndexedDB, 밖으로 못 꺼냄)로 서명한다(BAKJE/1).
 
@@ -9,12 +9,13 @@ const PUB = SB + '/storage/v1/object/public/bakje/';
 const MAX_PHOTOS = 10;
 const PAPERS = [['cream', '크림'], ['rose', '분홍'], ['sky', '하늘'], ['lilac', '라일락'], ['mint', '민트']];
 const KIND_NAME = { board: '박제판', first: '최초 박제판', letter: '박제 편지' };
-// 화면 틀(세로 ÷ 가로): 올리는 글은 모두 9:16, 최초 박제판(먼치킨 최초 박제판이 저절로 올라온다)은 1:1.
-//  사진이 틀과 다르면 자르지 않고 남는 곳을 같은 사진으로 흐리게 채운다.
-const FRAME = { board: 16 / 9, first: 1, letter: 16 / 9 };
-const frameOf = (p) => FRAME[p?.kind] || FRAME.board;
-const tabOf = (kind) => (kind === 'letter' ? 'letter' : 'board');
+// 화면 틀(세로 ÷ 가로): 모든 글 9:16. 사진이 틀과 다르면 자르지 않고 남는 곳을 같은 사진으로 흐리게 채운다.
+const FRAME = 16 / 9;
+// 탭: 게시물 = 최초 박제판(먼치킨 최초 박제판이 저절로 올라온다) · 박제판 = 올린 박제판 사진 · 달력 = 박제판을 달·날로 골라 보기
+const tabOf = (kind) => (kind === 'first' ? 'all' : 'board');
+const byDate = (list) => [...list].sort((a, b) => b.at - a.at);   // 날짜가 새것 먼저(같으면 서버 차례)
 const SITE_NAME = '한이준 추억앨범';
+const DEFAULT_AVATAR = 'profile.webp';   // 프로필 사진을 따로 올리지 않았을 때(설정 › 사진 바꾸기로 바꾼다)
 const enc = new TextEncoder();
 
 // ---------- 작은 도구 ----------
@@ -222,20 +223,19 @@ async function preparePhoto(file) {
 // ---------- 상태 ----------
 const S = {
   feed: null,
-  tab: ['board', 'letter'].includes(param('t')) ? param('t') : 'all',
+  tab: ['board', 'cal'].includes(param('t')) ? param('t') : param('t') === 'letter' ? 'cal' : 'all',
   view: ls.get('bj_view') === 'feed' ? 'feed' : 'grid',
   owner: ls.get('bj_owner') === '1',
   hearted: readSet('bj_hearted'),
   vid: vid(),
-  cal: calFromUrl()   // 박제 편지 달력: {ym: 'YYYY-MM' | null(가장 최근 편지가 있는 달), day: 'YYYY-MM-DD' | null(그 달 전체)}
+  cal: calFromUrl()   // 달력: {ym: 'YYYY-MM' | null(가장 최근 박제판이 있는 달), day: 'YYYY-MM-DD' | null(그 달 전체)}
 };
 const posts = () => S.feed?.posts || [];
 const findPost = (id) => posts().find((p) => p.id === id);
-// 지금 보이는 글(큰 화면의 이전·다음 차례와 같다): 박제판 탭은 최초 박제판 먼저, 박제 편지 탭은 달력에서 고른 달·날의 편지
+// 지금 보이는 글(큰 화면의 이전·다음 차례와 같다): 날짜가 새것 먼저. 달력 탭은 고른 달·날의 박제판
 function shown() {
-  if (S.tab === 'letter') return calSelection();
-  const list = posts().filter((p) => S.tab === 'all' || tabOf(p.kind) === S.tab);
-  return S.tab === 'board' ? [...list.filter((p) => p.kind === 'first'), ...list.filter((p) => p.kind !== 'first')] : list;
+  if (S.tab === 'cal') return calSelection();
+  return byDate(posts().filter((p) => tabOf(p.kind) === S.tab));
 }
 const profileName = () => S.feed?.profile?.name || SITE_NAME;
 function setFeed(feed) {
@@ -345,12 +345,10 @@ function burst(host) {
 
 // ---------- 글 그리기(인스타그램처럼) ----------
 const photoUrl = (path) => PUB + path;
+const avatarSrc = (path) => (path ? photoUrl(path) : DEFAULT_AVATAR);
 function avatarEl(size = '', ring = false) {
-  const p = S.feed?.profile;
-  const inner = p?.avatar
-    ? h('img', { class: 'avatar-img', src: photoUrl(p.avatar), alt: '' })
-    : h('span', { class: 'avatar-img no-photo', 'aria-hidden': 'true' }, icon('heart', 'fillable'));
-  return h('span', { class: `avatar ${size}${ring ? ' ring' : ''}` }, inner);
+  return h('span', { class: `avatar ${size}${ring ? ' ring' : ''}` },
+    h('img', { class: 'avatar-img', src: avatarSrc(S.feed?.profile?.avatar), alt: '' }));
 }
 function ago(t) {
   const s = (Date.now() - t) / 1000;
@@ -416,10 +414,10 @@ function firstInfo(post) {
   return { title, filled: Number(x.filled) || 0, total: Number(x.total) || 0, bot: x.bot === true };
 }
 // 한 글(큰 화면): 머리 · 사진(또는 편지) · 하트 줄 · 글 · 날짜. 넓은 화면에서는 사진 왼쪽, 나머지 오른쪽.
-//  사진 칸은 글 종류의 틀(9:16 · 최초 박제판 1:1) 그대로다.
+//  사진 칸은 9:16 틀이다.
 function postCard(post) {
   const hasPhotos = post.photos?.length > 0;
-  const ratio = frameOf(post);
+  const ratio = FRAME;
   const fi = post.kind === 'first' ? firstInfo(post) : null;
   const head = h('header', { class: 'p-head' },
     h('button', { class: 'icon-btn p-back', type: 'button', 'aria-label': '뒤로', onclick: () => closeViewer() }, icon('left')),
@@ -462,12 +460,12 @@ async function sharePost(post) {
 }
 
 // ---------- 모아 보기(3칸 격자 9:16 — 사진은 자르지 않고 남는 곳은 흐리게) ----------
-//  최초 박제판(1:1)은 9:16 칸에서 위쪽 정사각에 그림, 아래에 판 이름·채운 칸을 보여 준다. square: 박제판 탭의 최초 박제판 줄(1:1 칸).
-function tile(post, { square = false } = {}) {
+//  최초 박제판은 9:16 칸에서 위쪽에 판 그림, 아래에 판 이름·채운 칸을 보여 준다.
+function tile(post) {
   const first = post.photos?.[0];
   const fi = post.kind === 'first' ? firstInfo(post) : null;
   let body;
-  if (first && fi && !square) {
+  if (first && fi) {
     const src = photoUrl(first.t), pct = fi.total ? Math.round((fi.filled / fi.total) * 100) : 0;
     body = h('span', { class: 'first-tile' },
       h('img', { class: 't-bg', src, alt: '', 'aria-hidden': 'true', loading: 'lazy', decoding: 'async' }),
@@ -481,8 +479,7 @@ function tile(post, { square = false } = {}) {
     const src = photoUrl(first.t);
     body = h('span', { class: 't-media' },
       h('img', { class: 't-bg', src, alt: '', 'aria-hidden': 'true', loading: 'lazy', decoding: 'async' }),
-      h('img', { class: 't-img', src, alt: '', loading: 'lazy', decoding: 'async' }),
-      square && fi ? h('span', { class: 't-cap', text: (fi.title || '최초 박제판') + (fi.total ? ` · ${num(fi.filled)}/${num(fi.total)}칸` : '') }) : null);
+      h('img', { class: 't-img', src, alt: '', loading: 'lazy', decoding: 'async' }));
   } else {
     const l = post.letter || {};
     body = h('span', { class: 'letter-tile paper-' + (l.paper || 'cream') },
@@ -494,18 +491,10 @@ function tile(post, { square = false } = {}) {
     post.photos?.length > 1 ? icon('stack') : null,
     post.kind === 'letter' && first ? icon('letter') : null);
   const over = h('span', { class: 't-over' }, icon('heart', 'fillable'), h('span', { dataset: { heartsOf: post.id }, text: num(post.hearts) }));
-  return h('button', { class: 'tile' + (square ? ' square' : ''), type: 'button', 'aria-label': `${KIND_NAME[post.kind]} · ${dateText(post.at)} 열기`, onclick: () => openViewer(post.id) }, body, badges, over);
-}
-// 박제판 탭: 최초 박제판(1:1 칸) 줄 → 박제판(9:16 칸) 줄
-function boardSections(list) {
-  const firsts = list.filter((p) => p.kind === 'first'), rest = list.filter((p) => p.kind !== 'first');
-  const title = (ic, label, n) => h('h3', { class: 'sec-title' }, icon(ic), label, h('small', { text: num(n) }));
-  return h('div', { class: 'sections' },
-    firsts.length ? h('section', { class: 'sec' }, title('trophy', '최초 박제판', firsts.length), h('div', { class: 'grid' }, firsts.map((p) => tile(p, { square: true })))) : null,
-    rest.length ? h('section', { class: 'sec' }, firsts.length ? title('photo', '박제판', rest.length) : null, h('div', { class: 'grid' }, rest.map((p) => tile(p)))) : null);
+  return h('button', { class: 'tile', type: 'button', 'aria-label': `${KIND_NAME[post.kind]} · ${dateText(post.at)} 열기`, onclick: () => openViewer(post.id) }, body, badges, over);
 }
 
-// ---------- 박제 편지 달력: 달을 누르면 그 달 편지, 날을 누르면 그날 편지 ----------
+// ---------- 달력: 박제판을 달별로 모아 보기(달을 누르면 그 달, 날을 누르면 그날) ----------
 const pad2 = (n) => String(n).padStart(2, '0');
 const ymOf = (t) => dayOf(t).slice(0, 7);
 function calFromUrl() {
@@ -514,29 +503,29 @@ function calFromUrl() {
   if (/^\d{4}-\d{2}-\d{2}$/.test(d || '') && okYm(d.slice(0, 7)) && Number(d.slice(8)) >= 1 && Number(d.slice(8)) <= 31) return { ym: d.slice(0, 7), day: d };
   return { ym: okYm(m) ? m : null, day: null };
 }
-const letterPosts = () => posts().filter((p) => p.kind === 'letter').sort((a, b) => b.at - a.at);
-function calYm() { const l = letterPosts()[0]; return S.cal.ym || (l ? ymOf(l.at) : dayOf(Date.now()).slice(0, 7)); }
+const calPosts = () => byDate(posts().filter((p) => tabOf(p.kind) === 'board'));
+function calYm() { const l = calPosts()[0]; return S.cal.ym || (l ? ymOf(l.at) : dayOf(Date.now()).slice(0, 7)); }
 function calSelection() {
   const ym = calYm(), d = S.cal.day;
-  return letterPosts().filter((p) => (d ? dayOf(p.at) === d : ymOf(p.at) === ym));
+  return calPosts().filter((p) => (d ? dayOf(p.at) === d : ymOf(p.at) === ym));
 }
 function setCal(ym, day = null) {
   S.cal = { ym, day };
   history.replaceState(history.state, '', urlWith({ m: day ? null : ym, d: day }));
   render();
 }
-function letterCalendar() {
-  const letters = letterPosts(), ym = calYm(), [Y, M] = ym.split('-').map(Number), sel = S.cal.day;
+function monthCalendar() {
+  const items = calPosts(), ym = calYm(), [Y, M] = ym.split('-').map(Number), sel = S.cal.day;
   const byDay = new Map(), byMonth = new Map();
-  for (const p of letters) {
+  for (const p of items) {
     const k = dayOf(p.at);
     if (!byDay.has(k)) byDay.set(k, []);
     byDay.get(k).push(p);
     byMonth.set(k.slice(0, 7), (byMonth.get(k.slice(0, 7)) || 0) + 1);
   }
-  const today = dayOf(Date.now()), years = [Number(today.slice(0, 4)), Y, ...letters.map((p) => Number(dayOf(p.at).slice(0, 4)))];
+  const today = dayOf(Date.now()), years = [Number(today.slice(0, 4)), Y, ...items.map((p) => Number(dayOf(p.at).slice(0, 4)))];
   const minY = Math.min(...years), maxY = Math.max(...years);
-  // 다른 해로: 그해 편지가 있는 가장 늦은 달(없으면 같은 달)
+  // 다른 해로: 그해 박제판이 있는 가장 늦은 달(없으면 같은 달)
   const toYear = (y) => { const has = [...byMonth.keys()].filter((k) => k.startsWith(y + '-')).sort(); setCal(has.at(-1) || `${y}-${pad2(M)}`); };
   const yearNav = h('div', { class: 'cal-year' },
     h('button', { class: 'icon-btn', type: 'button', 'aria-label': '이전 해', disabled: Y <= minY, onclick: () => toYear(Y - 1) }, icon('left')),
@@ -544,12 +533,12 @@ function letterCalendar() {
     h('button', { class: 'icon-btn', type: 'button', 'aria-label': '다음 해', disabled: Y >= maxY, onclick: () => toYear(Y + 1) }, icon('right')));
   const months = h('div', { class: 'cal-months', 'aria-label': `${Y}년 달 고르기` }, Array.from({ length: 12 }, (_, i) => {
     const key = `${Y}-${pad2(i + 1)}`, n = byMonth.get(key) || 0, on = key === ym;
-    return h('button', { type: 'button', class: 'cal-m' + (on ? ' on' : '') + (n ? ' has' : ''), 'aria-pressed': String(on && !sel), 'aria-label': `${i + 1}월 편지 ${n}통`, onclick: () => setCal(key) },
-      h('span', { text: `${i + 1}월` }), h('small', { text: n ? `${n}통` : '' }));
+    return h('button', { type: 'button', class: 'cal-m' + (on ? ' on' : '') + (n ? ' has' : ''), 'aria-pressed': String(on && !sel), 'aria-label': `${i + 1}월 박제판 ${n}개`, onclick: () => setCal(key) },
+      h('span', { text: `${i + 1}월` }), h('small', { text: n ? `${n}개` : '' }));
   }));
   const count = byMonth.get(ym) || 0;
   const head = h('div', { class: 'cal-head' },
-    h('button', { type: 'button', class: 'cal-title' + (sel ? '' : ' on'), 'aria-pressed': String(!sel), onclick: () => setCal(ym) }, `${M}월`, h('span', { text: count ? ` 편지 ${count}통` : ' 편지 없음' })),
+    h('button', { type: 'button', class: 'cal-title' + (sel ? '' : ' on'), 'aria-pressed': String(!sel), onclick: () => setCal(ym) }, `${M}월`, h('span', { text: count ? ` 박제판 ${count}개` : ' 박제판 없음' })),
     sel ? h('button', { type: 'button', class: 'link-btn', text: `${M}월 전체 보기`, onclick: () => setCal(ym) }) : null);
   const firstDow = new Date(Date.UTC(Y, M - 1, 1)).getUTCDay(), days = new Date(Date.UTC(Y, M, 0)).getUTCDate();
   const cells = [...'일월화수목금토'].map((w, i) => h('span', { class: 'cal-w' + (i === 0 ? ' sun' : i === 6 ? ' sat' : ''), text: w }));
@@ -563,20 +552,21 @@ function letterCalendar() {
     const face = ph
       ? h('span', { class: 'd-face' }, h('img', { class: 'd-bg', src: photoUrl(ph.t), alt: '', 'aria-hidden': 'true', loading: 'lazy', decoding: 'async' }), h('img', { class: 'd-img', src: photoUrl(ph.t), alt: '', loading: 'lazy', decoding: 'async' }))
       : h('span', { class: 'd-face d-paper paper-' + (top.letter?.paper || 'cream') }, icon('letter'));
-    cells.push(h('button', { type: 'button', class: cls + ' has' + (ph ? ' photo' : ' paper'), 'aria-pressed': String(key === sel), 'aria-label': `${M}월 ${d}일 편지 ${list.length}통`, onclick: () => setCal(ym, key === sel ? null : key) },
+    cells.push(h('button', { type: 'button', class: cls + ' has' + (ph ? ' photo' : ' paper'), 'aria-pressed': String(key === sel), 'aria-label': `${M}월 ${d}일 박제판 ${list.length}개`, onclick: () => setCal(ym, key === sel ? null : key) },
       face, dn, list.length > 1 ? h('span', { class: 'dc', text: String(list.length) }) : null));
   }
-  return h('section', { class: 'cal', 'aria-label': '박제 편지 달력' }, yearNav, months, head, h('div', { class: 'cal-grid' }, cells));
+  return h('section', { class: 'cal', 'aria-label': '박제판 달력' }, yearNav, months, head, h('div', { class: 'cal-grid' }, cells));
 }
-function letterView() {
+function calView() {
   const list = calSelection(), sel = S.cal.day, [, M] = calYm().split('-').map(Number);
   const when = sel ? `${M}월 ${Number(sel.slice(8))}일` : `${M}월`;
-  const out = [letterCalendar()];
-  if (!letterPosts().length) out.push(h('div', { class: 'empty-state' },
-    h('span', { class: 'empty-icon' }, icon('letter')), h('h2', { text: '아직 박제 편지가 없어요' }),
-    S.owner ? h('button', { class: 'link-btn', type: 'button', onclick: () => openComposer(), text: '첫 편지 올리기' }) : null));
-  else if (!list.length) out.push(h('p', { class: 'sel-empty', text: `${when}에는 편지가 없어요. 위 달력에서 편지가 있는 달이나 날을 눌러 보세요.` }));
-  else out.push(h('h3', { class: 'sec-title sel-title' }, icon('letter'), `${when}의 편지`, h('small', { text: num(list.length) })), h('div', { class: 'grid' }, list.map((p) => tile(p))));
+  const out = [monthCalendar()];
+  if (!calPosts().length) out.push(h('div', { class: 'empty-state' },
+    h('span', { class: 'empty-icon' }, icon('calendar')), h('h2', { text: '아직 박제판이 없어요' }),
+    h('p', { class: 'muted', text: '박제판 탭에 올린 사진을 여기서 달별로 모아 볼 수 있어요.' }),
+    S.owner ? h('button', { class: 'link-btn', type: 'button', onclick: () => openComposer(), text: '첫 박제판 올리기' }) : null));
+  else if (!list.length) out.push(h('p', { class: 'sel-empty', text: `${when}에는 박제판이 없어요. 위 달력에서 박제판이 있는 달이나 날을 눌러 보세요.` }));
+  else out.push(h('h3', { class: 'sec-title sel-title' }, icon('photo'), `${when}의 박제판`, h('small', { text: num(list.length) })), h('div', { class: 'grid' }, list.map((p) => tile(p))));
   return h('div', { class: 'letters' }, out);
 }
 // 고정한 글 = 하이라이트 동그라미
@@ -641,7 +631,7 @@ function render() {
   const app = $('#app');
   if (param('owner') !== null && !S.owner) { app.replaceChildren(registerView()); return; }
   const all = posts();
-  const counts = { all: all.length, board: all.filter((p) => tabOf(p.kind) === 'board').length, letter: all.filter((p) => p.kind === 'letter').length };
+  const counts = { all: all.filter((p) => tabOf(p.kind) === 'all').length, board: all.filter((p) => tabOf(p.kind) === 'board').length };
   const hearts = all.reduce((n, p) => n + (p.hearts || 0), 0);
   const prof = S.feed?.profile || {};
   document.title = profileName();
@@ -662,19 +652,19 @@ function render() {
           h('button', { class: 'btn soft', type: 'button', text: '프로필 편집', onclick: () => openSettings() }),
           h('button', { class: 'btn soft', type: 'button', text: '새 게시물', onclick: () => openComposer() })) : null),
       h('ul', { class: 'pf-stats' },
-        stat(counts.all, '게시물'), stat(counts.board, '박제판'), stat(counts.letter, '편지'), stat(hearts, '하트', 'stat-hearts'))),
+        stat(counts.all, '게시물'), stat(counts.board, '박제판'), stat(hearts, '하트', 'stat-hearts'))),
     h('div', { class: 'pf-bio' },
       prof.bio ? h('p', { text: prof.bio }) : (S.owner ? h('p', { class: 'hint', text: '프로필 편집에서 이름·소개·프로필 사진을 바꿀 수 있어요.' }) : null),
       prof.link ? h('a', { class: 'pf-link', href: prof.link, target: '_blank', rel: 'noopener noreferrer' }, icon('link'), prof.link.replace(/^https:\/\//, '').slice(0, 48)) : null));
   const pinned = all.filter((p) => p.pinned);
   const highlights = pinned.length ? h('div', { class: 'hl', 'aria-label': '고정한 글' }, pinned.map(highlight)) : null;
   const tabs = h('nav', { class: 'tabs', role: 'tablist', 'aria-label': '종류' },
-    [['all', '게시물', 'grid'], ['board', '박제판', 'photo'], ['letter', '박제 편지', 'calendar']].map(([k, label, ic]) => h('button', {
+    [['all', '게시물', 'grid'], ['board', '박제판', 'photo'], ['cal', '달력', 'calendar']].map(([k, label, ic]) => h('button', {
       type: 'button', role: 'tab', 'aria-selected': String(S.tab === k), class: S.tab === k ? 'on' : '',
       onclick: () => {
         if (S.tab === k) return;
         S.tab = k;
-        if (k === 'letter') S.cal = { ym: null, day: null };
+        if (k === 'cal') S.cal = { ym: null, day: null };
         history.replaceState(history.state, '', urlWith({ t: k === 'all' ? null : k, m: null, d: null }));
         render();
       }
@@ -682,12 +672,12 @@ function render() {
   const list = shown();
   let body;
   if (!S.feed) body = h('div', { class: 'empty-state' }, h('p', { text: '불러오는 중…' }));
-  else if (S.tab === 'letter') body = letterView();
+  else if (S.tab === 'cal') body = calView();
   else if (!list.length) body = h('div', { class: 'empty-state' },
-    h('span', { class: 'empty-icon' }, icon('photo')),
-    h('h2', { text: S.tab === 'all' ? '아직 게시물이 없어요' : `아직 ${KIND_NAME[S.tab]}이 없어요` }),
-    S.owner ? h('button', { class: 'link-btn', type: 'button', onclick: () => openComposer(), text: '첫 게시물 올리기' }) : null);
-  else if (S.tab === 'board') body = boardSections(list);
+    h('span', { class: 'empty-icon' }, icon(S.tab === 'all' ? 'trophy' : 'photo')),
+    h('h2', { text: S.tab === 'all' ? '아직 게시물이 없어요' : '아직 박제판이 없어요' }),
+    S.tab === 'all' ? h('p', { class: 'muted', text: '먼치킨 최초 박제판에 이름이 적히면 저절로 올라와요.' }) : null,
+    S.owner && S.tab === 'board' ? h('button', { class: 'link-btn', type: 'button', onclick: () => openComposer(), text: '첫 박제판 올리기' }) : null);
   else body = h('div', { class: 'grid' }, list.map((p) => tile(p)));
   const footer = h('footer', { class: 'foot' },
     h('p', null, SITE_NAME, !S.owner ? [' · ', h('a', { href: '?owner', text: '주인 기기 등록' })] : null));
@@ -765,7 +755,7 @@ function refreshAfterChange(id) {
 // ---------- 글쓰기(주인) ----------
 function openComposer(post = null) {
   const editing = !!post;
-  let kind = KIND_NAME[post?.kind] ? post.kind : (S.tab === 'letter' ? 'letter' : 'board');
+  let kind = KIND_NAME[post?.kind] ? post.kind : 'board';
   const photos = (post?.photos || []).map((p) => ({ kind: 'old', ...p, preview: photoUrl(p.t) }));
   const L = post?.letter || {};
   let paper = L.paper || 'cream';
@@ -787,21 +777,23 @@ function openComposer(post = null) {
   const status = h('p', { class: 'status', role: 'status' });
   const submit = h('button', { class: 'btn primary', type: 'submit', text: editing ? '고친 내용 저장' : '올리기' });
 
+  // 박제판(박제판·달력 탭) · 최초 박제판(게시물 탭). 예전 박제 편지 글을 고칠 때만 편지가 보인다.
+  const KINDS = [['board', '박제판', 'photo'], ['first', '최초 박제판', 'trophy'], ...(post?.kind === 'letter' ? [['letter', '박제 편지', 'letter']] : [])];
   function paintKind() {
-    kindSeg.replaceChildren(...[['board', '박제판', 'photo'], ['first', '최초 박제판', 'trophy'], ['letter', '박제 편지', 'letter']].map(([k, label, ic]) => h('button', {
+    kindSeg.replaceChildren(...KINDS.map(([k, label, ic]) => h('button', {
       type: 'button', role: 'radio', 'aria-checked': String(kind === k), class: kind === k ? 'on' : '',
       onclick: () => { kind = k; paintKind(); paintStrip(); }
     }, icon(ic), label)));
     letterBox.hidden = kind !== 'letter';
     photoHint.textContent = kind === 'board' ? `9:16 박제판 사진을 골라 주세요 (${MAX_PHOTOS}장까지)`
-      : kind === 'first' ? '1:1 최초 박제판 사진을 골라 주세요 (먼치킨 최초 박제판은 저절로 올라와요)'
+      : kind === 'first' ? '최초 박제판 사진을 골라 주세요 (게시물 탭에 올라가요 · 먼치킨 최초 박제판은 저절로 올라와요)'
       : '편지를 그림으로 올리려면 9:16 사진을 골라 주세요 (안 골라도 돼요)';
     caption.placeholder = kind === 'letter' ? '한마디 더 적어 보세요 (안 써도 돼요)' : '이 박제판 이야기를 적어 보세요 (안 써도 돼요)';
   }
-  // 고른 사진이 틀(9:16 · 1:1)과 다르면 알려 준다(자르지 않고 남는 곳을 흐리게 채운다)
+  // 고른 사진이 9:16 이 아니면 알려 준다(자르지 않고 남는 곳을 흐리게 채운다)
   function paintRatio() {
-    const want = FRAME[kind], off = photos.filter((p) => p.w && p.h && Math.abs(p.h / p.w - want) / want > 0.03).length;
-    ratioHint.textContent = off ? `${off}장은 ${kind === 'first' ? '1:1' : '9:16'} 사진이 아니라 남는 곳이 흐리게 채워져요.` : '';
+    const off = photos.filter((p) => p.w && p.h && Math.abs(p.h / p.w - FRAME) / FRAME > 0.03).length;
+    ratioHint.textContent = off ? `${off}장은 9:16 사진이 아니라 남는 곳이 흐리게 채워져요.` : '';
   }
   function paintPapers() {
     papers.replaceChildren(...PAPERS.map(([k, label]) => h('button', {
@@ -819,7 +811,6 @@ function openComposer(post = null) {
         h('button', { type: 'button', 'aria-label': '뒤로', disabled: i === photos.length - 1, onclick: () => { [photos[i + 1], photos[i]] = [photos[i], photos[i + 1]]; paintStrip(); } }, icon('right')))));
     if (photos.length < MAX_PHOTOS) items.push(h('label', { class: 'thumb add', for: 'pick' }, icon('plus'), h('span', { text: '사진 고르기' })));
     strip.replaceChildren(...items);
-    strip.classList.toggle('square', kind === 'first');
     paintRatio();
   }
   fileInput.addEventListener('change', async () => {
@@ -876,9 +867,9 @@ function openComposer(post = null) {
       setFeed(r.snap);
       photos.forEach((p) => { if (p.kind === 'new' && p.preview) URL.revokeObjectURL(p.preview); });
       d.dismiss();
-      if (!editing && S.tab !== 'all' && S.tab !== tabOf(kind)) { S.tab = 'all'; history.replaceState(history.state, '', urlWith({ t: null, m: null, d: null })); }
-      // 편지 달력을 보고 있으면 방금 올린 편지의 날로
-      if (S.tab === 'letter' && kind === 'letter' && day.value) S.cal = { ym: day.value.slice(0, 7), day: day.value };
+      // 올린 글이 보이는 탭으로(달력을 보고 있으면 방금 올린 박제판의 달로)
+      if (S.tab === 'cal' && tabOf(kind) === 'board') { if (day.value) S.cal = { ym: day.value.slice(0, 7), day: null }; history.replaceState(history.state, '', urlWith({ m: S.cal.ym, d: null })); }
+      else if (!editing && S.tab !== tabOf(kind)) { S.tab = tabOf(kind); history.replaceState(history.state, '', urlWith({ t: S.tab === 'all' ? null : S.tab, m: null, d: null })); }
       refreshAfterChange(id);
       toast(editing ? '고쳤어요' : '올렸어요');
     } catch (err) {
@@ -908,9 +899,7 @@ function openSettings() {
   let avatar = prof.avatar || '';
   let avatarBlob = null, avatarPreview = '';
   const avatarImg = h('div', { class: 'avatar-edit' });
-  const paintAvatar = () => avatarImg.replaceChildren(avatarPreview || avatar
-    ? h('img', { class: 'avatar lg', src: avatarPreview || photoUrl(avatar), alt: '프로필 사진' })
-    : h('span', { class: 'avatar no-photo lg' }, icon('heart', 'fillable')));
+  const paintAvatar = () => avatarImg.replaceChildren(h('img', { class: 'avatar lg', src: avatarPreview || avatarSrc(avatar), alt: '프로필 사진' }));
   paintAvatar();
   const pick = h('input', { type: 'file', accept: 'image/*', class: 'hidden', id: 'avatar-pick' });
   pick.addEventListener('change', async () => {
@@ -989,7 +978,7 @@ function openSettings() {
       h('h3', { text: '프로필' }),
       h('div', { class: 'row' }, avatarImg, h('div', { class: 'stack tight' },
         h('label', { class: 'btn small', for: 'avatar-pick', text: '사진 바꾸기' }),
-        h('button', { class: 'btn small', type: 'button', text: '사진 빼기', onclick: () => { avatar = ''; avatarBlob = null; if (avatarPreview) URL.revokeObjectURL(avatarPreview); avatarPreview = ''; paintAvatar(); } })), pick),
+        h('button', { class: 'btn small', type: 'button', text: '기본 사진으로', onclick: () => { avatar = ''; avatarBlob = null; if (avatarPreview) URL.revokeObjectURL(avatarPreview); avatarPreview = ''; paintAvatar(); } })), pick),
       h('label', { for: 'pname', text: '이름' }), name,
       h('label', { for: 'pbio', text: '소개' }), bio,
       h('label', { for: 'plink', text: '링크 (예: 스푼 방송 주소)' }), link,

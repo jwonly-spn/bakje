@@ -145,12 +145,10 @@ a { color: inherit; }
 .tabs button .ic { width: 13px; height: 13px; stroke-width: 2.4; }
 .tabs button.on { border-top-color: var(--ink); color: var(--ink); }
 
-/* 3칸 격자 9:16(올리는 글이 모두 9:16) — 사진은 자르지 않고 남는 곳은 같은 사진을 흐리게 · 최초 박제판 줄은 1:1 */
+/* 3칸 격자 9:16(모든 글이 9:16) — 사진은 자르지 않고 남는 곳은 같은 사진을 흐리게 */
 .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
 .tile { position: relative; display: block; aspect-ratio: 9 / 16; padding: 0; border: 0; overflow: hidden; background: var(--surface-2); color: inherit; text-align: left; }
-.tile.square { aspect-ratio: 1 / 1; }
-.t-cap { position: absolute; left: 0; right: 0; bottom: 0; padding: 22px 10px 8px; background: linear-gradient(transparent, rgba(0, 0, 0, .62)); color: #fff; font-size: 12px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* 최초 박제판(1:1)을 9:16 칸에: 위 정사각 그림 + 아래 판 이름·채운 칸 */
+/* 최초 박제판(정사각 판 그림)을 9:16 칸에: 위 그림 + 아래 판 이름·채운 칸 */
 .first-tile { position: absolute; inset: 0; display: flex; flex-direction: column; overflow: hidden; background: #1d1a26; color: #fff; }
 .first-tile .t-bg { filter: blur(24px) brightness(.5) saturate(1.25); opacity: 1; }
 .ft-img { position: relative; display: block; width: 100%; aspect-ratio: 1 / 1; flex: none; }
@@ -162,8 +160,7 @@ a { color: inherit; }
 .ft-bar { display: block; height: 5px; border-radius: 99px; background: rgba(255, 255, 255, .22); overflow: hidden; }
 .ft-bar i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #ffd56b, #ff8a5b); }
 .ft-count { font-size: 12px; font-weight: 600; color: rgba(255, 255, 255, .78); }
-/* 박제판 탭: 최초 박제판 줄 · 박제판 줄 */
-.sec + .sec { margin-top: 26px; }
+/* 달력 탭: 고른 달·날의 박제판 제목 */
 .sec-title { display: flex; align-items: center; gap: 6px; margin: 18px 0 12px; font-size: 15px; font-weight: 700; }
 .sec-title .ic { width: 18px; height: 18px; }
 .sec-title small { color: var(--ink-2); font-size: 13px; font-weight: 600; }
@@ -359,7 +356,6 @@ label, .label { font-size: 13px; font-weight: 600; color: var(--ink); margin-top
 .seg .ic { width: 18px; height: 18px; }
 .strip { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
 .thumb { position: relative; flex: none; width: 90px; height: 160px; border-radius: 8px; overflow: hidden; background: var(--surface-2); display: grid; place-items: center; }
-.strip.square .thumb { width: 128px; height: 128px; }
 .ratio-hint:empty { display: none; }
 .thumb img { width: 100%; height: 100%; object-fit: contain; }
 .thumb .no { position: absolute; top: 4px; left: 4px; min-width: 20px; padding: 0 5px; border-radius: 999px; background: rgba(0, 0, 0, .6); color: #fff; font-size: 11px; font-weight: 700; text-align: center; }
@@ -443,7 +439,6 @@ label, .label { font-size: 13px; font-weight: 600; color: var(--ink); margin-top
   .ft-title { font-size: 14px; }
   .ft-bar { height: 4px; }
   .ft-count { font-size: 10px; }
-  .t-cap { padding: 16px 7px 6px; font-size: 11px; }
   .cal { margin: 14px 12px 6px; }
   .cal-months { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 5px; margin: 10px 0 16px; }
   .cal-m { min-height: 42px; font-size: 12px; }
