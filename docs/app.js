@@ -344,19 +344,12 @@ function burst(host) {
 }
 
 // ---------- 글 그리기(인스타그램처럼) ----------
-const photoUrl = (path) => PUB + path;
+// 저장소 경로 → 주소(글쓰기 미리 보기는 이 브라우저의 blob: 주소를 그대로 쓴다)
+const photoUrl = (path) => (/^(blob:|https?:)/.test(path) ? path : PUB + path);
 const avatarSrc = (path) => (path ? photoUrl(path) : DEFAULT_AVATAR);
 function avatarEl(size = '', ring = false) {
   return h('span', { class: `avatar ${size}${ring ? ' ring' : ''}` },
     h('img', { class: 'avatar-img', src: avatarSrc(S.feed?.profile?.avatar), alt: '' }));
-}
-function ago(t) {
-  const s = (Date.now() - t) / 1000;
-  if (s < 60) return '방금';
-  if (s < 3600) return `${Math.floor(s / 60)}분 전`;
-  if (s < 86400) return `${Math.floor(s / 3600)}시간 전`;
-  if (s < 7 * 86400) return `${Math.floor(s / 86400)}일 전`;
-  return dateText(t);
 }
 function letterCard(letter, at) {
   return h('div', { class: 'letter paper-' + (letter.paper || 'cream') },
@@ -413,35 +406,41 @@ function firstInfo(post) {
   const title = x.title || (post.caption || '').split('\n')[0].replace(/^🏆\s*/, '').replace(/\s*최초\s*박제판?\s*$/, '').trim().slice(0, 20);
   return { title, filled: Number(x.filled) || 0, total: Number(x.total) || 0, bot: x.bot === true };
 }
-// 한 글(큰 화면): 머리 · 사진(또는 편지) · 하트 줄 · 글 · 날짜. 넓은 화면에서는 사진 왼쪽, 나머지 오른쪽.
-//  사진 칸은 9:16 틀이다.
-function postCard(post) {
+// 한 글(큰 화면): 머리(앨범 이름) · 사진(왼쪽 위에 후원자 닉네임) · 하트 줄 · 글 칸(후원자 닉네임 → 스푼 테마 → 날짜 → 글).
+//  넓은 화면에서는 사진 왼쪽, 나머지 오른쪽. 사진 칸은 9:16 틀이다. preview: 글쓰기 미리 보기(단추 없이)
+function postCard(post, { preview = false } = {}) {
   const hasPhotos = post.photos?.length > 0;
-  const ratio = FRAME;
   const fi = post.kind === 'first' ? firstInfo(post) : null;
+  const sub = fi ? [h('span', { class: 'kind kind-first', text: KIND_NAME.first }), fi.total ? ` · ${num(fi.filled)}/${num(fi.total)}칸` : '']
+    : post.pinned ? ['고정됨'] : [];
   const head = h('header', { class: 'p-head' },
-    h('button', { class: 'icon-btn p-back', type: 'button', 'aria-label': '뒤로', onclick: () => closeViewer() }, icon('left')),
+    preview ? null : h('button', { class: 'icon-btn p-back', type: 'button', 'aria-label': '뒤로', onclick: () => closeViewer() }, icon('left')),
     avatarEl('sm'),
     h('div', { class: 'p-who' },
       h('strong', { text: profileName() }),
-      h('span', { class: 'p-sub' }, h('span', { class: 'kind kind-' + post.kind, text: KIND_NAME[post.kind] }),
-        fi?.total ? ` · ${num(fi.filled)}/${num(fi.total)}칸` : '', post.pinned ? ' · 고정됨' : '')),
-    S.owner ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': '글 메뉴', onclick: () => postMenu(post) }, icon('more')) : null);
+      sub.length ? h('span', { class: 'p-sub' }, sub) : null),
+    S.owner && !preview ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': '글 메뉴', onclick: () => postMenu(post) }, icon('more')) : null);
   const media = hasPhotos
-    ? h('div', { class: 'p-media' }, carousel(post))
+    ? h('div', { class: 'p-media' }, carousel(post), donorMark(post))
     : h('div', { class: 'p-media letter-only paper-' + (post.letter?.paper || 'cream') }, letterCard(post.letter || {}, post.at));
   const actions = h('div', { class: 'p-actions' },
     heartButton(post),
     h('button', { class: 'icon-btn', type: 'button', 'aria-label': '링크 공유', onclick: () => sharePost(post) }, icon('share')),
     h('p', { class: 'p-likes' }, '하트 ', h('b', { dataset: { heartsOf: post.id }, text: num(post.hearts) }), '개'));
+  const theme = post.theme || fi?.title || '';
   const body = h('div', { class: 'p-body' },
+    h('div', { class: 'p-info' },
+      post.donor ? h('strong', { class: 'p-donor', text: post.donor }) : null,
+      theme ? h('p', { class: 'p-theme' }, h('span', { class: 'p-label', text: '스푼 테마' }), theme) : null,
+      h('time', { class: 'p-day', datetime: new Date(post.at).toISOString(), text: dateText(post.at) })),
     hasPhotos && post.letter ? letterCard(post.letter, post.at) : null,
-    post.caption ? h('p', { class: 'p-caption' }, h('strong', { text: profileName() }), ' ', post.caption) : null);
-  const date = h('time', { class: 'p-date', datetime: new Date(post.at).toISOString(), title: dateText(post.at), text: ago(post.at) });
-  const card = h('article', { class: 'post in-viewer', dataset: { post: post.id } }, head, media, actions, body, date);
-  card.style.setProperty('--ratio', String(ratio));
+    post.caption ? h('p', { class: 'p-caption', text: post.caption }) : null);
+  const card = h('article', { class: 'post in-viewer' + (preview ? ' is-preview' : ''), dataset: { post: post.id } }, head, media, actions, body);
+  card.style.setProperty('--ratio', String(FRAME));
   return card;
 }
+// 사진 왼쪽 위 후원자 닉네임(워터마크처럼)
+const donorMark = (post, cls = 'donor-mark') => (post.donor ? h('span', { class: cls, text: post.donor }) : null);
 function heartButton(post) {
   const on = S.hearted.has(post.id);
   return h('button', {
@@ -491,7 +490,8 @@ function tile(post) {
     post.photos?.length > 1 ? icon('stack') : null,
     post.kind === 'letter' && first ? icon('letter') : null);
   const over = h('span', { class: 't-over' }, icon('heart', 'fillable'), h('span', { dataset: { heartsOf: post.id }, text: num(post.hearts) }));
-  return h('button', { class: 'tile', type: 'button', 'aria-label': `${KIND_NAME[post.kind]} · ${dateText(post.at)} 열기`, onclick: () => openViewer(post.id) }, body, badges, over);
+  return h('button', { class: 'tile', type: 'button', 'aria-label': `${KIND_NAME[post.kind]} · ${post.donor ? post.donor + ' · ' : ''}${dateText(post.at)} 열기`, onclick: () => openViewer(post.id) },
+    body, first ? donorMark(post, 'donor-mark t-donor') : null, badges, over);
 }
 
 // ---------- 달력: 박제판을 달별로 모아 보기(달을 누르면 그 달, 날을 누르면 그날) ----------
@@ -654,6 +654,7 @@ function render() {
       h('ul', { class: 'pf-stats' },
         stat(counts.all, '게시물'), stat(counts.board, '박제판'), stat(hearts, '하트', 'stat-hearts'))),
     h('div', { class: 'pf-bio' },
+      h('p', { class: 'pf-visit', id: 'visits' }, S.visits ? visitParts() : null),
       prof.bio ? h('p', { text: prof.bio }) : (S.owner ? h('p', { class: 'hint', text: '프로필 편집에서 이름·소개·프로필 사진을 바꿀 수 있어요.' }) : null),
       prof.link ? h('a', { class: 'pf-link', href: prof.link, target: '_blank', rel: 'noopener noreferrer' }, icon('link'), prof.link.replace(/^https:\/\//, '').slice(0, 48)) : null));
   const pinned = all.filter((p) => p.pinned);
@@ -771,8 +772,36 @@ function openComposer(post = null) {
   const text = h('textarea', { class: 'input letter-input', id: 'ltext', rows: '8', maxlength: '5000', value: L.text || '', placeholder: '편지 내용을 적어 주세요' });
   const from = h('input', { class: 'input', id: 'from', maxlength: '40', value: editing ? (L.from || '') : (S.feed?.profile?.name || ''), placeholder: '보내는 사람' });
   const papers = h('div', { class: 'papers', role: 'radiogroup', 'aria-label': '편지지 색' });
-  const caption = h('textarea', { class: 'input', id: 'caption', rows: '3', maxlength: '2200', value: post?.caption || '' });
+  const caption = h('textarea', { class: 'input caption-input', id: 'caption', rows: '7', maxlength: '2200', value: post?.caption || '' });
+  const donor = h('input', { class: 'input', id: 'donor', maxlength: '40', value: post?.donor || '', placeholder: '예: 밤톨 (사진 왼쪽 위에 보여요)', autocomplete: 'off' });
+  const theme = h('input', { class: 'input', id: 'theme', maxlength: '40', value: post?.theme || '', placeholder: '예: 스푸니 가을', autocomplete: 'off' });
   const day = h('input', { class: 'input', id: 'day', type: 'date', value: dayOf(post?.at || Date.now()), max: dayOf(Date.now()) });
+  // 미리 보기: 지금 적은 내용이 휴대폰·PC 에서 어떻게 보일지(줄바꿈 그대로)
+  let pvMode = matchMedia('(max-width: 735px)').matches ? 'm' : 'pc', pvRaf = 0;
+  const pvSeg = h('div', { class: 'seg', role: 'radiogroup', 'aria-label': '미리 보기 화면' });
+  const pvBox = h('div', { class: 'pv-box' });
+  const pvStage = h('div', { class: 'pv-stage' });
+  pvBox.append(pvStage);
+  function paintPreview() {
+    cancelAnimationFrame(pvRaf);
+    pvRaf = requestAnimationFrame(() => {
+      pvSeg.replaceChildren(...[['m', '휴대폰'], ['pc', 'PC']].map(([k, label]) => h('button', {
+        type: 'button', role: 'radio', 'aria-checked': String(pvMode === k), class: pvMode === k ? 'on' : '',
+        onclick: () => { pvMode = k; paintPreview(); }
+      }, label)));
+      const shots = photos.filter((p) => p.preview).map((p) => ({ f: p.kind === 'new' ? p.preview : p.f, t: p.kind === 'new' ? p.preview : p.t, w: p.w || 9, h: p.h || 16 }));
+      const fake = {
+        id: post?.id || 'preview', kind, caption: caption.value.trim(), donor: donor.value.trim().replace(/\s+/g, ' '), theme: theme.value.trim().replace(/\s+/g, ' '),
+        at: day.value ? Date.parse(day.value + 'T12:00:00+09:00') : Date.now(), hearts: post?.hearts || 0, pinned: pinned.checked, photos: shots,
+        letter: kind === 'letter' ? { to: to.value, text: text.value, from: from.value, paper } : null, extra: post?.extra
+      };
+      pvStage.className = 'pv-stage pv-' + pvMode;
+      pvStage.replaceChildren(shots.length || kind === 'letter' ? postCard(fake, { preview: true }) : h('p', { class: 'muted small pv-empty', text: '사진을 고르면 여기에 미리 보여요.' }));
+      // 상자 너비에 맞춰 줄인다(휴대폰 390 · PC 765 — styles.css .pv-m/.pv-pc 와 같게)
+      const natural = pvMode === 'pc' ? 765 : 390;
+      pvStage.style.zoom = String(Math.min(1, (pvBox.clientWidth || natural) / natural));
+    });
+  }
   const pinned = h('input', { type: 'checkbox', id: 'pinned', checked: !!post?.pinned });
   const status = h('p', { class: 'status', role: 'status' });
   const submit = h('button', { class: 'btn primary', type: 'submit', text: editing ? '고친 내용 저장' : '올리기' });
@@ -812,6 +841,7 @@ function openComposer(post = null) {
     if (photos.length < MAX_PHOTOS) items.push(h('label', { class: 'thumb add', for: 'pick' }, icon('plus'), h('span', { text: '사진 고르기' })));
     strip.replaceChildren(...items);
     paintRatio();
+    paintPreview();
   }
   fileInput.addEventListener('change', async () => {
     const files = [...fileInput.files].slice(0, MAX_PHOTOS - photos.length);
@@ -859,7 +889,7 @@ function openComposer(post = null) {
       if (!id) id = photos.find((p) => p.f)?.f.split('/')[1] || randomId(10);
       status.textContent = '저장하는 중…';
       const payload = {
-        id, kind, caption: caption.value, day: day.value, pinned: pinned.checked,
+        id, kind, caption: caption.value, donor: donor.value, theme: theme.value, day: day.value, pinned: pinned.checked,
         photos: photos.map((p) => ({ f: p.f, w: p.w, h: p.h })),
         letter: kind === 'letter' ? { to: to.value, text: text.value, from: from.value, paper } : null
       };
@@ -882,12 +912,24 @@ function openComposer(post = null) {
       kindSeg,
       h('span', { class: 'label', text: '사진' }), photoHint, strip, ratioHint, fileInput,
       letterBox,
+      h('div', { class: 'row two' },
+        h('div', { class: 'stack' }, h('label', { for: 'donor', text: '후원자 닉네임' }), donor),
+        h('div', { class: 'stack' }, h('label', { for: 'theme', text: '스푼 테마' }), theme)),
       h('label', { for: 'caption', text: '글' }), caption,
       h('div', { class: 'row two' },
         h('div', { class: 'stack' }, h('label', { for: 'day', text: '날짜' }), day),
-        h('label', { class: 'check', for: 'pinned' }, pinned, h('span', { text: '맨 위에 고정' })))),
+        h('label', { class: 'check', for: 'pinned' }, pinned, h('span', { text: '맨 위에 고정' }))),
+      h('div', { class: 'pv-head' }, h('span', { class: 'label', text: '미리 보기' }), pvSeg),
+      h('p', { class: 'muted small', text: '줄바꿈이 실제 화면에서 어떻게 보이는지 확인해 보세요. 글을 고치면 바로 바뀌어요.' }),
+      pvBox),
     h('div', { class: 'sheet-foot' }, status, submit));
-  const dirty = () => photos.some((p) => p.kind === 'new') || caption.value !== (post?.caption || '') || text.value !== (L.text || '');
+  for (const el of [caption, donor, theme, day, to, text, from]) el.addEventListener('input', paintPreview);
+  pinned.addEventListener('change', paintPreview);
+  // 창 너비가 바뀌면 미리 보기 배율만 다시(높이 변화로는 다시 그리지 않는다)
+  let pvW = 0;
+  if (typeof ResizeObserver === 'function') new ResizeObserver(() => { if (pvBox.clientWidth !== pvW) { pvW = pvBox.clientWidth; paintPreview(); } }).observe(pvBox);
+  const dirty = () => photos.some((p) => p.kind === 'new') || caption.value !== (post?.caption || '') || text.value !== (L.text || '')
+    || donor.value !== (post?.donor || '') || theme.value !== (post?.theme || '');
   const maybeLeave = async () => !dirty() || confirmBox('쓰던 내용을 버리고 닫을까요?', '닫기', true);
   const d = sheet(form, { cls: 'composer', label: editing ? '글 고치기' : '새 글 올리기', sticky: true });
   d.addEventListener('cancel', async (e) => { e.preventDefault(); if (!busy && (await maybeLeave())) d.dismiss(); });
@@ -1014,6 +1056,16 @@ async function refresh(fresh = false) {
     if (!S.feed) { $('#app').replaceChildren(h('main', { class: 'wrap narrow' }, h('section', { class: 'card' }, h('h1', { text: '불러오지 못했어요' }), h('p', { text: e.message }), h('button', { class: 'btn primary', type: 'button', text: '다시 불러오기', onclick: () => refresh(true) })))); }
   }
 }
+// 방문자 수: 이 브라우저는 하루(한국 날짜)에 한 번만 센다. 주인 기기는 세지 않고 수만 본다.
+const visitParts = () => ['오늘 ', h('b', { text: num(S.visits.today) }), h('span', { class: 'sep', text: '·' }), '전체 ', h('b', { text: num(S.visits.total) })];
+async function countVisit() {
+  try {
+    const r = await call('visit', { method: 'POST', body: { vid: S.vid, peek: S.owner } });
+    S.visits = { today: Number(r.today) || 0, total: Number(r.total) || 0 };
+    const el = $('#visits');
+    if (el) el.replaceChildren(...visitParts());
+  } catch { /* 못 세도 화면은 그대로 */ }
+}
 (async function start() {
   try { const cached = JSON.parse(ls.get('bj_feed') || 'null'); if (cached?.posts) S.feed = cached; } catch { /* 없음 */ }
   render();
@@ -1021,6 +1073,7 @@ async function refresh(fresh = false) {
   const p = param('p');
   if (p && findPost(p)) openViewer(p, { push: false });
   else if (p) history.replaceState(null, '', urlWith({ p: null }));
+  countVisit();
   checkOwner();
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && Date.now() - (S.feed?.snapAt || 0) > 30000) refresh(); });
 })();

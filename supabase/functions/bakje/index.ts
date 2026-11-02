@@ -5,11 +5,12 @@
 // 최초 박제판(2026-11-03): 글 종류 first(1:1). 먼치킨 봇(개인용)의 최초 박제판이 저절로 올라온다 — POST bot, 머리말 JUN-LIVE-BAKJE/1,
 //  서명 열쇠 = 먼치킨의 승인 기기 키(junlive_devices approved) + 추억앨범 봇 목록(bj_bots)에 있는 기기만. 판마다 글 하나(src), 이름이 더 채워지면 사진만 바꾼다.
 //  주인이 그 글을 지우면 bj_bot_gone 에 남겨 다시 만들지 않는다(봇이 again:true 로 부를 때만 다시).
+// 후원자 닉네임·스푼 테마(2026-11-03, v3): 글마다 donor·theme 한 줄씩(주인이 적음) — donor 는 사진 왼쪽 위와 글 칸, theme 은 글 칸에 보인다.
 // 주의: MCP 로 올릴 때 백슬래시-u 글자 표기가 풀려 버리므로 이 파일에는 그런 표기를 쓰지 않는다.
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
 const db = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, { auth: { persistSession: false } });
-const VERSION = 2, BUCKET = 'bakje', PREFIX = 'BAKJE/1', BOT_PREFIX = 'JUN-LIVE-BAKJE/1';
+const VERSION = 3, BUCKET = 'bakje', PREFIX = 'BAKJE/1', BOT_PREFIX = 'JUN-LIVE-BAKJE/1';
 const KINDS = ['board', 'first', 'letter'];
 const BOT_ACTIONS = new Set(['board-begin', 'board-save']);
 const BOARD_REF = /^[a-z0-9][a-z0-9-]{0,47}$/; // 먼치킨 판 번호(+ "-g<몇 번째 글>")
@@ -59,6 +60,8 @@ function text(v: unknown, max: number, what: string) {
   if ([...s].length > max) throw fail(400, `${what}은(는) ${max}자까지 쓸 수 있어요.`);
   return s;
 }
+// 후원자 닉네임·스푼 테마 이름: 한 줄, 40자까지(줄바꿈은 빈칸으로)
+const lineOf = (v: unknown, what: string) => text(v, 40, what).replace(/\s*\n\s*/g, ' ');
 const kstDay = (t: number) => new Date(t + KST).toISOString().slice(0, 10);
 function atOf(day: unknown, now: number, keep?: number) {
   if (day === undefined || day === null || day === '') return keep ?? now;
@@ -132,11 +135,15 @@ async function signedUpload(path: string) {
 const profileOut = (p: any) => ({ name: p?.name || '', bio: p?.bio || '', link: p?.link || '', avatar: p?.avatar || '' });
 async function buildSnap(now: number) {
   const [posts, profile] = await Promise.all([
-    q(db.from('bj_posts').select('id,kind,caption,letter,photos,at,pinned,hearts,extra').order('pinned', { ascending: false }).order('at', { ascending: false }).order('created', { ascending: false }).limit(3000)),
+    q(db.from('bj_posts').select('id,kind,caption,letter,photos,at,pinned,hearts,extra,donor,theme').order('pinned', { ascending: false }).order('at', { ascending: false }).order('created', { ascending: false }).limit(3000)),
     getMeta('profile')
   ]);
   // extra: 먼치킨이 올린 최초 박제판의 판 이름·채운 칸 수({title, filled, total, bot}) — 그 밖의 글은 빼서 작게
-  const out = (posts as any[]).map(({ extra, ...p }) => (isObj(extra) ? { ...p, extra: { title: extra.title || '', filled: extra.filled || 0, total: extra.total || 0, bot: extra.bot === true } } : p));
+  // donor·theme: 주인이 적은 후원자 닉네임·스푼 테마 이름 — 없으면 뺀다
+  const out = (posts as any[]).map(({ extra, donor, theme, ...p }) => ({
+    ...p, ...(donor ? { donor } : {}), ...(theme ? { theme } : {}),
+    ...(isObj(extra) ? { extra: { title: extra.title || '', filled: extra.filled || 0, total: extra.total || 0, bot: extra.bot === true } } : {})
+  }));
   const snap = { v: VERSION, snapAt: now, profile: profileOut(profile), posts: out };
   const { error } = await storage().upload('snap/feed.json', new Blob([JSON.stringify(snap)], { type: 'application/json' }), { upsert: true, contentType: 'application/json', cacheControl: '10' });
   if (error) console.error('snap', error.message);
@@ -245,7 +252,7 @@ async function owner(req: Request, now: number) {
       const photos = photosOf(p.photos, p.id, Array.isArray(p.photos) && p.photos.length ? await listFolder('p/' + p.id) : new Set());
       const letter = p.kind === 'letter' ? letterOf(p.letter) : null;
       checkPost(p.kind, photos, letter);
-      await q(db.from('bj_posts').insert({ id: p.id, kind: p.kind, caption: text(p.caption, 2200, '글'), letter, photos, at: atOf(p.day, now), created: now, updated: now, pinned: p.pinned === true }));
+      await q(db.from('bj_posts').insert({ id: p.id, kind: p.kind, caption: text(p.caption, 2200, '글'), donor: lineOf(p.donor, '후원자 닉네임'), theme: lineOf(p.theme, '스푼 테마'), letter, photos, at: atOf(p.day, now), created: now, updated: now, pinned: p.pinned === true }));
       return { ok: true, id: p.id, snap: await buildSnap(now) };
     }
     case 'edit': {
@@ -256,7 +263,7 @@ async function owner(req: Request, now: number) {
       const photos = photosOf(p.photos, p.id, exists);
       const letter = p.kind === 'letter' ? letterOf(p.letter) : null;
       checkPost(p.kind, photos, letter);
-      await q(db.from('bj_posts').update({ kind: p.kind, caption: text(p.caption, 2200, '글'), letter, photos, at: atOf(p.day, now, Number(old.at)), updated: now, pinned: p.pinned === true }).eq('id', p.id));
+      await q(db.from('bj_posts').update({ kind: p.kind, caption: text(p.caption, 2200, '글'), donor: lineOf(p.donor, '후원자 닉네임'), theme: lineOf(p.theme, '스푼 테마'), letter, photos, at: atOf(p.day, now, Number(old.at)), updated: now, pinned: p.pinned === true }).eq('id', p.id));
       // 빠진 사진과, 올렸다가 쓰지 않은 사진을 지운다
       const keep = new Set(photos.flatMap((x) => [x.f, x.t]));
       await removeFiles([...exists].filter((x) => !keep.has(x)));
@@ -355,18 +362,31 @@ async function heart(req: Request, now: number) {
   return { ok: true, on: b.on, hearts: r.hearts };
 }
 
+// ---- 방문자 수(누구나) ----
+// visit {vid, peek} → {today, total}. 같은 브라우저(vid)는 하루(한국 날짜)에 한 번만 센다. peek:true(주인 기기)는 세지 않고 수만 준다.
+async function visit(req: Request, now: number) {
+  const b = await readJson(req, 1024);
+  if (!isObj(b) || typeof b.vid !== 'string' || !NONCE.test(b.vid)) throw fail(400, '요청 모양이 올바르지 않아요.');
+  const s = await salt();
+  const count = b.peek !== true && await hit('bjv:' + await ipHash(req), 86400, 30);
+  const voter = (await sha256hex(s + ':visit:' + b.vid)).slice(0, 40);
+  const r: any = await q(db.rpc('bj_visit', { p_day: kstDay(now), p_voter: voter, p_count: count }));
+  return { ok: true, today: Number(r?.today) || 0, total: Number(r?.total) || 0 };
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
   const route = new URL(req.url).pathname.replace(/^.*?\/bakje\/?/, '').replace(/\/+$/, '');
   const now = Date.now();
   try {
-    if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: VERSION, kinds: KINDS, bot: true });
+    if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: VERSION, kinds: KINDS, bot: true, donor: true, theme: true, visit: true });
     if (req.method === 'GET' && route === 'feed') {
       const ip = await ipHash(req);
       if (!await hit('bjf:' + ip, 60, 20)) throw fail(429, '너무 자주 불러왔어요. 잠깐 뒤에 다시 해 주세요.');
       return json(200, { ok: true, snap: await buildSnap(now) });
     }
     if (req.method === 'POST' && route === 'heart') return json(200, await heart(req, now));
+    if (req.method === 'POST' && route === 'visit') return json(200, await visit(req, now));
     if (req.method === 'POST' && route === 'owner') return json(200, await owner(req, now));
     if (req.method === 'POST' && route === 'bot') return json(200, await bot(req, now));
     return json(404, { ok: false, error: '찾을 수 없어요.' });
