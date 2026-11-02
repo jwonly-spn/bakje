@@ -1,10 +1,13 @@
 // 박제관 사이트(docs/)를 GitHub(jwonly-spn/bakje)에 올리고 GitHub Pages 로 연다.
 // 이 PC의 GitHub 로그인(git credential manager)을 쓴다. 비밀 값은 출력하지 않는다.
-// 사용: node tools/deploy.cjs "커밋 메시지"
+// 사용: node tools/deploy.cjs "커밋 메시지" [--domain]
 //  - app.js·styles.css 주소 뒤에 내용 해시(?v=)를 붙여, 올리자마자 새 화면이 보이게 한다.
+//  - --domain: 한이준.com(DOMAIN)으로 연다 — docs/CNAME·404 를 도메인 맨 앞(/) 기준으로 쓰고 Pages 사용자 도메인을 맞춘다.
+//    후이즈 DNS(A @ → GitHub Pages 4개, CNAME www → jwonly-spn.github.io)를 먼저 해 둬야 한다. 한 번 켜면 그 뒤로는 docs/CNAME 이 있으면 저절로.
 'use strict';
 const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto'), {spawnSync} = require('node:child_process');
 const OWNER = 'jwonly-spn', NAME = 'bakje', ROOT = path.join(__dirname, '..');
+const DOMAIN = 'xn--hu5bi2af5y.com';   // 한이준.com
 const GIT = 'C:/Users/User/.cache/codex-runtimes/codex-primary-runtime/dependencies/native/git';
 const env = {...process.env, GIT_EXEC_PATH: GIT + '/mingw64/bin', GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never'};
 const git = (...args) => {
@@ -25,12 +28,20 @@ async function gh(route, init = {}) {
 }
 const DOCS = path.join(ROOT, 'docs');
 const hash8 = (f) => crypto.createHash('sha256').update(fs.readFileSync(path.join(DOCS, f))).digest('hex').slice(0, 8);
+const useDomain = process.argv.includes('--domain') || fs.existsSync(path.join(DOCS, 'CNAME'));
+const BASE = useDomain ? '/' : `/${NAME}/`;
+const SITE = useDomain ? `https://${DOMAIN}/` : `https://${OWNER}.github.io/${NAME}/`;
 function stamp() {
   const file = path.join(DOCS, 'index.html');
   let html = fs.readFileSync(file, 'utf8');
   html = html.replace(/href="styles\.css(\?v=[0-9a-f]+)?"/, `href="styles.css?v=${hash8('styles.css')}"`)
-    .replace(/src="app\.js(\?v=[0-9a-f]+)?"/, `src="app.js?v=${hash8('app.js')}"`);
+    .replace(/src="app\.js(\?v=[0-9a-f]+)?"/, `src="app.js?v=${hash8('app.js')}"`)
+    .replace(/<meta property="og:image" content="[^"]*">/, `<meta property="og:image" content="${SITE}profile.webp">`);
   fs.writeFileSync(file, html);
+  // 없는 주소 → 앨범 첫 화면(github.io 는 /bakje/, 한이준.com 은 /)
+  const nf = path.join(DOCS, '404.html');
+  fs.writeFileSync(nf, fs.readFileSync(nf, 'utf8').replace(/url=[^"]*"/, `url=${BASE}"`).replace(/href="[^"]*">한이준/, `href="${BASE}">한이준`));
+  if (useDomain) fs.writeFileSync(path.join(DOCS, 'CNAME'), DOMAIN + '\n');
 }
 
 (async () => {
@@ -61,7 +72,14 @@ function stamp() {
     await new Promise(r => setTimeout(r, 5000));
   }
   pages = await gh(`/repos/${OWNER}/${NAME}/pages`);
-  if (!pages.https_enforced) await gh(`/repos/${OWNER}/${NAME}/pages`, {method: 'PUT', allow: [400, 404, 422], body: JSON.stringify({https_enforced: true, source: {branch: 'main', path: '/docs'}})});
+  const src = {branch: 'main', path: '/docs'};
+  if (useDomain && pages.cname !== DOMAIN) {
+    await gh(`/repos/${OWNER}/${NAME}/pages`, {method: 'PUT', body: JSON.stringify({cname: DOMAIN, source: src})});
+    // 사용자 도메인을 붙이면 GitHub 이 docs/CNAME 커밋을 만들 수 있다 → 다음에 올릴 때 겹치지 않게 받아 둔다
+    try { git('pull', '--rebase', '-q', 'origin', 'main'); } catch (e) { console.log('(받기는 다음에)', e.message.slice(0, 120)); }
+  }
   pages = await gh(`/repos/${OWNER}/${NAME}/pages`);
-  console.log('주소:', pages.html_url, '· https 강제:', pages.https_enforced);
+  if (!pages.https_enforced) await gh(`/repos/${OWNER}/${NAME}/pages`, {method: 'PUT', allow: [400, 404, 422], body: JSON.stringify({...(useDomain ? {cname: DOMAIN} : {}), https_enforced: true, source: src})});
+  pages = await gh(`/repos/${OWNER}/${NAME}/pages`);
+  console.log('주소:', pages.html_url, '· https 강제:', pages.https_enforced, useDomain ? `· 인증서: ${pages.https_certificate?.state || '없음'}` : '');
 })().catch(e => { console.error('실패:', e.message); process.exit(1); });
