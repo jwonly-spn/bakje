@@ -1,0 +1,899 @@
+// 박제관 — 박제판·박제 편지를 올리는 개인 SNS.
+// 보기: 공개 버킷의 snap/feed.json(서버가 글이 바뀔 때마다 새로 씀). 하트·글쓰기: Supabase 함수 bakje.
+// 글쓰기는 "주인 기기"만 — 이 브라우저가 만든 열쇠(IndexedDB, 밖으로 못 꺼냄)로 서명한다(BAKJE/1).
+
+const SB = 'https://aksegkhhugqvvaidgvro.supabase.co';
+const KEY = 'sb_publishable_45cIqG4dGLSlev-rmNiVDg_uG8szVzD';
+const API = SB + '/functions/v1/bakje/';
+const PUB = SB + '/storage/v1/object/public/bakje/';
+const MAX_PHOTOS = 10;
+const PAPERS = [['cream', '크림'], ['rose', '분홍'], ['sky', '하늘'], ['lilac', '라일락'], ['mint', '민트']];
+const KIND_NAME = { board: '박제판', letter: '박제 편지' };
+const enc = new TextEncoder();
+
+// ---------- 작은 도구 ----------
+const $ = (sel, root = document) => root.querySelector(sel);
+function h(tag, props, ...kids) {
+  const el = document.createElement(tag);
+  if (props) for (const [k, v] of Object.entries(props)) {
+    if (v == null || v === false) continue;
+    if (k === 'class') el.className = v;
+    else if (k === 'text') el.textContent = v;
+    else if (k === 'value') el.value = v;
+    else if (k === 'style') Object.assign(el.style, v);
+    else if (k === 'dataset') Object.assign(el.dataset, v);
+    else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2), v);
+    else if (typeof v === 'boolean') el[k] = v;
+    else el.setAttribute(k, v);
+  }
+  for (const kid of kids.flat(Infinity)) if (kid != null && kid !== false) el.append(kid instanceof Node ? kid : String(kid));
+  return el;
+}
+const ICONS = {
+  heart: '<path d="M12 20.3s-7.4-4.5-9.2-9.1C1.5 7.9 3.5 4.6 7 4.6c2 0 3.6 1.1 5 2.9 1.4-1.8 3-2.9 5-2.9 3.5 0 5.5 3.3 4.2 6.6-1.8 4.6-9.2 9.1-9.2 9.1z"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
+  close: '<path d="M6 6l12 12M18 6L6 18"/>',
+  more: '<circle cx="5" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.3" fill="currentColor" stroke="none"/>',
+  share: '<path d="M4 13v6a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-6M16 7l-4-4-4 4M12 3v13"/>',
+  pin: '<path d="M9 3.5h6l-1 6.5 3 3H7l3-3-1-6.5zM12 13v7.5"/>',
+  grid: '<rect x="3.5" y="3.5" width="7" height="9" rx="1.6"/><rect x="13.5" y="3.5" width="7" height="6" rx="1.6"/><rect x="3.5" y="15.5" width="7" height="5" rx="1.6"/><rect x="13.5" y="12.5" width="7" height="8" rx="1.6"/>',
+  feed: '<rect x="4" y="3.5" width="16" height="12" rx="2"/><path d="M4 19h16M4 21.5h9"/>',
+  left: '<path d="M15 5l-7 7 7 7"/>',
+  right: '<path d="M9 5l7 7-7 7"/>',
+  stack: '<rect x="7.5" y="7.5" width="13" height="13" rx="2"/><path d="M4 16.5V6a2 2 0 0 1 2-2h10.5"/>',
+  letter: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3.6 6.5l8.4 6.4 8.4-6.4"/>',
+  photo: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/>',
+  link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
+  trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
+  edit: '<path d="M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4"/>'
+};
+function icon(name, cls = '') {
+  const el = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  el.setAttribute('viewBox', '0 0 24 24');
+  el.setAttribute('aria-hidden', 'true');
+  el.setAttribute('class', ('ic ' + cls).trim());
+  el.innerHTML = ICONS[name];
+  return el;
+}
+const ls = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch { /* 저장 못 해도 됨 */ } },
+  del(k) { try { localStorage.removeItem(k); } catch { /* 없음 */ } }
+};
+const b64url = (bytes) => {
+  let s = '';
+  for (const b of new Uint8Array(bytes)) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+};
+const hexOf = (buf) => [...new Uint8Array(buf)].map((x) => x.toString(16).padStart(2, '0')).join('');
+const sha256hex = async (v) => hexOf(await crypto.subtle.digest('SHA-256', typeof v === 'string' ? enc.encode(v) : v));
+const randomToken = () => b64url(crypto.getRandomValues(new Uint8Array(24)));
+const ALPHA = 'abcdefghijkmnpqrstuvwxyz23456789';
+const randomId = (n) => [...crypto.getRandomValues(new Uint8Array(n))].map((x) => ALPHA[x & 31]).join('');
+const KST = 'Asia/Seoul';
+const dayOf = (t) => new Intl.DateTimeFormat('en-CA', { timeZone: KST, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(t));
+const dateText = (t) => new Intl.DateTimeFormat('ko-KR', { timeZone: KST, year: 'numeric', month: 'long', day: 'numeric' }).format(new Date(t));
+const num = (n) => Number(n || 0).toLocaleString('ko-KR');
+const param = (k) => new URLSearchParams(location.search).get(k);
+function urlWith(changes) {
+  const u = new URL(location.href);
+  for (const [k, v] of Object.entries(changes)) { if (v == null || v === '') u.searchParams.delete(k); else u.searchParams.set(k, v); }
+  return u.pathname + u.search;
+}
+function vid() {
+  let v = ls.get('bj_vid');
+  if (!v || !/^[-_A-Za-z0-9]{32}$/.test(v)) { v = randomToken(); ls.set('bj_vid', v); }
+  return v;
+}
+function readSet(k) { try { return new Set(JSON.parse(ls.get(k) || '[]')); } catch { return new Set(); } }
+
+// ---------- 주인 기기 열쇠 ----------
+const DEV_DB = 'bakje-owner', DEV_STORE = 'keys', DEV_ID = 'main';
+const deviceSupported = () => typeof indexedDB !== 'undefined' && !!globalThis.crypto?.subtle && isSecureContext;
+function openDevDb() {
+  return new Promise((resolve, reject) => {
+    const r = indexedDB.open(DEV_DB, 1);
+    r.onupgradeneeded = () => r.result.createObjectStore(DEV_STORE);
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+  });
+}
+function devTx(db, mode, fn) {
+  return new Promise((resolve, reject) => {
+    const t = db.transaction(DEV_STORE, mode);
+    const req = fn(t.objectStore(DEV_STORE));
+    t.oncomplete = () => resolve(req?.result);
+    t.onerror = () => reject(t.error);
+  });
+}
+let device = null;
+async function identity({ create = true } = {}) {
+  if (device) return device;
+  if (!deviceSupported()) return null;
+  const db = await openDevDb();
+  try {
+    let rec = await devTx(db, 'readonly', (s) => s.get(DEV_ID));
+    if (!rec) {
+      if (!create) return null;
+      const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify']);
+      rec = { privateKey: pair.privateKey, publicKey: b64url(await crypto.subtle.exportKey('spki', pair.publicKey)), created: Date.now() };
+      await devTx(db, 'readwrite', (s) => s.put(rec, DEV_ID));
+      try { navigator.storage?.persist?.()?.catch?.(() => {}); } catch { /* 선택 */ }
+    }
+    device = rec;
+    return rec;
+  } finally { db.close(); }
+}
+async function forgetDevice() {
+  device = null;
+  await new Promise((resolve) => { const r = indexedDB.deleteDatabase(DEV_DB); r.onsuccess = r.onerror = r.onblocked = () => resolve(); });
+}
+async function signed(action, payload) {
+  const me = await identity();
+  if (!me) throw Error('이 브라우저에서는 주인 기기를 쓸 수 없어요.');
+  const timestamp = Date.now(), nonce = randomToken();
+  const text = `BAKJE/1\n${action}\n${timestamp}\n${nonce}\n${me.publicKey}\n${await sha256hex(JSON.stringify(payload ?? null))}`;
+  const signature = b64url(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, me.privateKey, enc.encode(text)));
+  return { action, timestamp, nonce, publicKey: me.publicKey, signature, payload };
+}
+
+// ---------- 서버 ----------
+async function call(path, { method = 'GET', body, timeout = 25000 } = {}) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeout);
+  let res;
+  try {
+    res = await fetch(API + path + (method === 'GET' ? `?apikey=${KEY}` : ''), {
+      method, signal: ctl.signal, cache: 'no-store',
+      headers: method === 'GET' ? {} : { apikey: KEY, 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body)
+    });
+  } catch {
+    throw Object.assign(Error('인터넷 연결을 확인해 주세요.'), { status: 0 });
+  } finally { clearTimeout(timer); }
+  let data = null;
+  try { data = await res.json(); } catch { /* 아래 */ }
+  if (!res.ok || !data?.ok) throw Object.assign(Error(data?.error || '잠시 문제가 생겼어요. 조금 뒤에 다시 해 주세요.'), { status: res.status });
+  return data;
+}
+const ownerCall = async (action, payload) => call('owner', { method: 'POST', body: await signed(action, payload) });
+async function fetchFeed(fresh) {
+  try {
+    const r = await fetch(PUB + 'snap/feed.json?t=' + (fresh ? Date.now() : Math.floor(Date.now() / 10000)), { cache: 'no-store' });
+    if (r.ok) { const j = await r.json(); if (j && Array.isArray(j.posts)) return j; }
+  } catch { /* 함수로 */ }
+  return (await call('feed')).snap;
+}
+async function put(file, blob) {
+  let res;
+  try {
+    res = await fetch(`${SB}/storage/v1/object/upload/sign/bakje/${file.path}?token=${encodeURIComponent(file.token)}`, {
+      method: 'PUT', body: blob,
+      headers: { apikey: KEY, 'Content-Type': 'image/jpeg', 'cache-control': 'max-age=31536000', 'x-upsert': 'false' }
+    });
+  } catch { throw Error('사진을 올리지 못했어요. 인터넷 연결을 확인해 주세요.'); }
+  if (!res.ok) throw Error(`사진을 올리지 못했어요 (${res.status}). 다시 해 주세요.`);
+}
+
+// ---------- 사진 줄이기(자르지 않음, 위치 정보 등은 빠짐) ----------
+async function readImage(file) {
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.decoding = 'async';
+  img.src = url;
+  try { await img.decode(); } catch { URL.revokeObjectURL(url); throw Error('사진을 읽을 수 없어요: ' + (file.name || '사진')); }
+  return { img, url };
+}
+function shrink(img, maxEdge, quality) {
+  const W = img.naturalWidth, H = img.naturalHeight;
+  const s = Math.min(1, maxEdge / Math.max(W, H));
+  const w = Math.max(1, Math.round(W * s)), hh = Math.max(1, Math.round(H * s));
+  const c = document.createElement('canvas');
+  c.width = w; c.height = hh;
+  const x = c.getContext('2d');
+  x.fillStyle = '#fff';
+  x.fillRect(0, 0, w, hh);
+  x.imageSmoothingQuality = 'high';
+  x.drawImage(img, 0, 0, w, hh);
+  return new Promise((resolve, reject) => c.toBlob((b) => {
+    c.width = c.height = 0;
+    b ? resolve({ blob: b, w, h: hh }) : reject(Error('사진을 바꾸지 못했어요.'));
+  }, 'image/jpeg', quality));
+}
+async function preparePhoto(file) {
+  const { img, url } = await readImage(file);
+  try {
+    const full = await shrink(img, 2560, 0.9);
+    const thumb = await shrink(img, 720, 0.82);
+    return { kind: 'new', full: full.blob, thumb: thumb.blob, w: full.w, h: full.h, preview: URL.createObjectURL(thumb.blob) };
+  } finally { URL.revokeObjectURL(url); }
+}
+
+// ---------- 상태 ----------
+const S = {
+  feed: null,
+  tab: ['board', 'letter'].includes(param('t')) ? param('t') : 'all',
+  view: ls.get('bj_view') === 'feed' ? 'feed' : 'grid',
+  owner: ls.get('bj_owner') === '1',
+  hearted: readSet('bj_hearted'),
+  vid: vid()
+};
+const posts = () => S.feed?.posts || [];
+const findPost = (id) => posts().find((p) => p.id === id);
+const shown = () => posts().filter((p) => S.tab === 'all' || p.kind === S.tab);
+const profileName = () => S.feed?.profile?.name || '박제관';
+function setFeed(feed) {
+  if (!feed || !Array.isArray(feed.posts)) return;
+  if (S.feed && feed.snapAt < S.feed.snapAt) return;
+  S.feed = feed;
+  try { ls.set('bj_feed', JSON.stringify(feed)); } catch { /* 너무 크면 안 남김 */ }
+}
+
+// ---------- 알림·확인 ----------
+let toastTimer = 0;
+function toast(message, bad = false) {
+  let el = $('#toast');
+  if (!el) {
+    el = h('div', { id: 'toast', class: 'toast', role: 'status', 'aria-live': 'polite' });
+    // 큰 화면·글쓰기 창(맨 위 층) 위에도 보이게 popover 로 띄운다
+    if ('popover' in HTMLElement.prototype) el.popover = 'manual';
+    document.body.append(el);
+  }
+  el.textContent = message;
+  el.classList.toggle('bad', bad);
+  if (el.popover) { try { el.hidePopover(); } catch { /* 이미 닫힘 */ } try { el.showPopover(); } catch { /* 안 됨 */ } }
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    el.classList.remove('show');
+    if (el.popover) setTimeout(() => { if (!el.classList.contains('show')) try { el.hidePopover(); } catch { /* 이미 닫힘 */ } }, 250);
+  }, 2600);
+}
+// 작은 창. 닫을 때는 d.dismiss() — close 이벤트를 기다리지 않고 바로 치운다.
+//  sticky: 바깥(어두운 곳)을 눌러도 닫지 않는다(쓰던 글이 날아가지 않게).
+function sheet(content, { cls = '', label = '', sticky = false, onClose } = {}) {
+  const d = h('dialog', { class: 'sheet ' + cls, 'aria-label': label });
+  d.append(content);
+  let done = false;
+  d.dismiss = () => {
+    if (done) return;
+    done = true;
+    try { if (d.open) d.close(); } catch { /* 이미 닫힘 */ }
+    d.remove();
+    onClose?.();
+  };
+  d.addEventListener('close', () => d.dismiss());
+  d.addEventListener('click', (e) => { if (e.target === d && !sticky) d.dismiss(); });
+  document.body.append(d);
+  d.showModal();
+  return d;
+}
+function confirmBox(message, okText = '확인', danger = false) {
+  return new Promise((resolve) => {
+    let answer = false;
+    const ok = h('button', { class: 'btn ' + (danger ? 'danger' : 'primary'), type: 'button', text: okText, onclick: () => { answer = true; d.dismiss(); } });
+    const d = sheet(h('div', { class: 'confirm' },
+      h('p', { text: message }),
+      h('div', { class: 'row end' }, h('button', { class: 'btn', type: 'button', text: '그만두기', onclick: () => d.dismiss() }), ok)
+    ), { cls: 'small', label: '확인', onClose: () => resolve(answer) });
+    ok.focus();
+  });
+}
+
+// ---------- 하트 ----------
+function heartButton(post, { big = false } = {}) {
+  const on = S.hearted.has(post.id);
+  return h('button', {
+    class: 'heart' + (on ? ' on' : '') + (big ? ' big' : ''), type: 'button', dataset: { heart: post.id },
+    'aria-pressed': String(on), 'aria-label': on ? '하트 취소' : '하트',
+    onclick: () => toggleHeart(post.id)
+  }, icon('heart', 'fillable'), h('span', { class: 'count', text: num(post.hearts) }));
+}
+function paintHearts(id) {
+  const p = findPost(id);
+  if (!p) return;
+  const on = S.hearted.has(id);
+  document.querySelectorAll(`[data-heart="${id}"]`).forEach((b) => {
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', String(on));
+    b.setAttribute('aria-label', on ? '하트 취소' : '하트');
+    const c = b.querySelector('.count');
+    if (c) c.textContent = num(p.hearts);
+  });
+  document.querySelectorAll(`[data-hearts-of="${id}"]`).forEach((el) => { el.textContent = num(p.hearts); });
+  const total = $('#stat-hearts');
+  if (total) total.textContent = num(posts().reduce((n, x) => n + (x.hearts || 0), 0));
+}
+const heartBusy = new Set();
+async function toggleHeart(id, force) {
+  const p = findPost(id);
+  if (!p || heartBusy.has(id)) return;
+  const on = force ?? !S.hearted.has(id);
+  if (on === S.hearted.has(id)) return;
+  heartBusy.add(id);
+  const before = p.hearts || 0;
+  p.hearts = Math.max(0, before + (on ? 1 : -1));
+  on ? S.hearted.add(id) : S.hearted.delete(id);
+  ls.set('bj_hearted', JSON.stringify([...S.hearted]));
+  paintHearts(id);
+  try {
+    const r = await call('heart', { method: 'POST', body: { post: id, vid: S.vid, on } });
+    if (typeof r.hearts === 'number') p.hearts = r.hearts;
+  } catch (e) {
+    p.hearts = before;
+    on ? S.hearted.delete(id) : S.hearted.add(id);
+    ls.set('bj_hearted', JSON.stringify([...S.hearted]));
+    toast(e.message, true);
+  } finally {
+    heartBusy.delete(id);
+    paintHearts(id);
+  }
+}
+function burst(host) {
+  const b = h('span', { class: 'burst', 'aria-hidden': 'true' }, icon('heart', 'fillable'));
+  host.append(b);
+  setTimeout(() => b.remove(), 900);
+}
+
+// ---------- 글 그리기 ----------
+const photoUrl = (path) => PUB + path;
+function avatarEl(size = '') {
+  const p = S.feed?.profile;
+  if (p?.avatar) return h('img', { class: 'avatar ' + size, src: photoUrl(p.avatar), alt: '' });
+  return h('span', { class: 'avatar no-photo ' + size, 'aria-hidden': 'true' }, icon('heart', 'fillable'));
+}
+function letterCard(letter, at) {
+  return h('div', { class: 'letter paper-' + (letter.paper || 'cream') },
+    letter.to ? h('p', { class: 'to', text: 'To. ' + letter.to }) : null,
+    letter.text ? h('p', { class: 'body', text: letter.text }) : null,
+    h('div', { class: 'sign' },
+      letter.from ? h('p', { class: 'from', text: 'From. ' + letter.from }) : null,
+      h('p', { class: 'when', text: dateText(at) }))
+  );
+}
+function carousel(post) {
+  const list = post.photos;
+  const track = h('div', { class: 'slides', tabindex: '0', 'aria-label': '사진' });
+  const dots = list.length > 1 ? h('div', { class: 'dots' }, list.map((_, i) => h('span', { class: i ? '' : 'on' }))) : null;
+  const counter = list.length > 1 ? h('span', { class: 'counter', text: `1/${list.length}` }) : null;
+  list.forEach((ph, i) => {
+    const img = h('img', { src: photoUrl(ph.f), alt: `${KIND_NAME[post.kind]} 사진 ${i + 1}`, decoding: 'async', loading: i ? 'lazy' : 'eager', width: String(ph.w), height: String(ph.h) });
+    img.style.aspectRatio = `${ph.w} / ${ph.h}`;
+    track.append(h('div', { class: 'slide' }, img));
+  });
+  // 가장 길쭉한 사진에 맞춰 높이를 정한다(사진은 자르지 않음)
+  const tallest = Math.max(...list.map((p) => p.h / p.w));
+  track.style.setProperty('--ratio', String(tallest));
+  const go = (d) => track.scrollBy({ left: d * track.clientWidth, behavior: 'smooth' });
+  const prev = list.length > 1 ? h('button', { class: 'nav prev', type: 'button', 'aria-label': '이전 사진', onclick: () => go(-1) }, icon('left')) : null;
+  const next = list.length > 1 ? h('button', { class: 'nav next', type: 'button', 'aria-label': '다음 사진', onclick: () => go(1) }, icon('right')) : null;
+  let raf = 0;
+  track.addEventListener('scroll', () => {
+    cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(() => {
+      const i = Math.round(track.scrollLeft / Math.max(1, track.clientWidth));
+      if (dots) [...dots.children].forEach((d, k) => d.classList.toggle('on', k === i));
+      if (counter) counter.textContent = `${i + 1}/${list.length}`;
+      if (prev) prev.disabled = i <= 0;
+      if (next) next.disabled = i >= list.length - 1;
+    });
+  }, { passive: true });
+  if (prev) prev.disabled = true;
+  track.addEventListener('keydown', (e) => { if (e.key === 'ArrowLeft') { e.preventDefault(); go(-1); } if (e.key === 'ArrowRight') { e.preventDefault(); go(1); } });
+  // 두 번 톡 → 하트
+  let last = 0, lx = 0, ly = 0;
+  const wrap = h('div', { class: 'carousel' }, track, prev, next, counter, dots);
+  track.addEventListener('pointerup', (e) => {
+    const now = e.timeStamp;
+    if (now - last < 320 && Math.abs(e.clientX - lx) < 30 && Math.abs(e.clientY - ly) < 30) {
+      last = 0;
+      burst(wrap);
+      if (!S.hearted.has(post.id)) toggleHeart(post.id, true);
+    } else { last = now; lx = e.clientX; ly = e.clientY; }
+  });
+  return wrap;
+}
+function postCard(post, { inViewer = false } = {}) {
+  const head = h('header', { class: 'post-head' },
+    avatarEl('sm'),
+    h('div', { class: 'who' },
+      h('strong', { text: profileName() }),
+      h('span', { class: 'meta' }, h('span', { class: 'kind kind-' + post.kind, text: KIND_NAME[post.kind] }), ' · ', dateText(post.at))),
+    post.pinned ? h('span', { class: 'pinned', title: '고정한 글' }, icon('pin')) : null,
+    S.owner ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': '글 메뉴', onclick: () => postMenu(post) }, icon('more')) : null,
+    inViewer ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': '닫기', onclick: () => closeViewer() }, icon('close')) : null
+  );
+  return h('article', { class: 'post' + (inViewer ? ' in-viewer' : ''), dataset: { post: post.id } },
+    head,
+    post.photos?.length ? carousel(post) : null,
+    post.letter ? letterCard(post.letter, post.at) : null,
+    h('div', { class: 'post-actions' },
+      heartButton(post, { big: true }),
+      h('button', { class: 'icon-btn', type: 'button', 'aria-label': '링크 공유', onclick: () => sharePost(post) }, icon('share'))),
+    post.caption ? h('p', { class: 'caption', text: post.caption }) : null
+  );
+}
+async function sharePost(post) {
+  const url = location.origin + location.pathname + '?p=' + post.id;
+  const title = `${profileName()} · ${KIND_NAME[post.kind]}`;
+  try {
+    if (navigator.share && matchMedia('(pointer: coarse)').matches) { await navigator.share({ title, url }); return; }
+  } catch (e) { if (e?.name === 'AbortError') return; }
+  try { await navigator.clipboard.writeText(url); toast('링크를 복사했어요'); } catch { prompt('이 링크를 복사해 주세요', url); }
+}
+
+// ---------- 모아 보기(잘리지 않는 벽돌 쌓기) ----------
+function tile(post) {
+  const first = post.photos?.[0];
+  const badges = h('span', { class: 'badges' },
+    post.pinned ? icon('pin') : null,
+    post.photos?.length > 1 ? icon('stack') : null,
+    post.kind === 'letter' ? icon('letter') : null);
+  const hearts = h('span', { class: 'tile-hearts' }, icon('heart', 'fillable'), h('span', { dataset: { heartsOf: post.id }, text: num(post.hearts) }));
+  let body;
+  if (first) {
+    const img = h('img', { src: photoUrl(first.t), alt: '', loading: 'lazy', decoding: 'async', width: String(first.w), height: String(first.h) });
+    img.style.aspectRatio = `${first.w} / ${first.h}`;
+    body = img;
+  } else {
+    const l = post.letter || {};
+    body = h('div', { class: 'letter-tile paper-' + (l.paper || 'cream') },
+      l.to ? h('p', { class: 'to', text: 'To. ' + l.to }) : null,
+      h('p', { class: 'body', text: (l.text || '').slice(0, 220) }));
+  }
+  return h('button', { class: 'tile', type: 'button', 'aria-label': `${KIND_NAME[post.kind]} · ${dateText(post.at)} 열기`, onclick: () => openViewer(post.id) }, body, badges, hearts);
+}
+const tileRatio = (p) => p.photos?.length ? p.photos[0].h / p.photos[0].w : 1.25;
+function columnsFor(width) { return width < 560 ? 2 : width < 900 ? 3 : 4; }
+let gridCols = 0;
+function layoutGrid(host, list) {
+  const cols = columnsFor(host.clientWidth || innerWidth);
+  gridCols = cols;
+  const columns = Array.from({ length: cols }, () => h('div', { class: 'col' }));
+  const heights = new Array(cols).fill(0);
+  for (const p of list) {
+    let k = 0;
+    for (let i = 1; i < cols; i++) if (heights[i] < heights[k] - 0.01) k = i;
+    columns[k].append(tile(p));
+    heights[k] += tileRatio(p) + 0.04;
+  }
+  host.replaceChildren(...columns);
+  host.style.setProperty('--cols', String(cols));
+}
+let feedObserver = null;
+function layoutFeed(host, list) {
+  feedObserver?.disconnect();
+  host.replaceChildren();
+  let i = 0;
+  const more = () => {
+    const end = Math.min(list.length, i + 12);
+    for (; i < end; i++) host.append(postCard(list[i]));
+    if (i < list.length) host.append(sentinel); else sentinel.remove();
+  };
+  const sentinel = h('div', { class: 'sentinel', 'aria-hidden': 'true' });
+  feedObserver = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) more(); }, { rootMargin: '800px' });
+  feedObserver.observe(sentinel);
+  more();
+}
+
+// ---------- 큰 화면(한 글) ----------
+let viewer = null, pushedViewer = false;
+function openViewer(id, { push = true } = {}) {
+  const post = findPost(id);
+  if (!post) { if (!push) { history.replaceState(null, '', urlWith({ p: null })); } toast('글을 찾을 수 없어요', true); return; }
+  if (viewer?.open) { viewer.replaceChildren(postCard(post, { inViewer: true })); }
+  else {
+    viewer = h('dialog', { class: 'viewer', 'aria-label': KIND_NAME[post.kind] }, postCard(post, { inViewer: true }));
+    viewer.addEventListener('click', (e) => { if (e.target === viewer) closeViewer(); });
+    viewer.addEventListener('cancel', (e) => { e.preventDefault(); closeViewer(); });
+    document.body.append(viewer);
+    viewer.showModal();
+  }
+  viewer.dataset.post = id;
+  if (push) { history.pushState({ p: id }, '', urlWith({ p: id })); pushedViewer = true; }
+}
+function closeViewer({ fromHistory = false } = {}) {
+  if (!viewer) return;
+  const v = viewer;
+  viewer = null;
+  v.close();
+  v.remove();
+  if (fromHistory) return;
+  if (pushedViewer && history.state?.p) { pushedViewer = false; history.back(); }
+  else history.replaceState(null, '', urlWith({ p: null }));
+}
+addEventListener('popstate', () => {
+  const p = param('p');
+  if (!p && viewer) closeViewer({ fromHistory: true });
+  else if (p && viewer?.dataset.post !== p) openViewer(p, { push: false });
+});
+
+// ---------- 화면 ----------
+function render() {
+  const app = $('#app');
+  if (param('owner') !== null && !S.owner) { app.replaceChildren(registerView()); return; }
+  const all = posts();
+  const counts = { all: all.length, board: all.filter((p) => p.kind === 'board').length, letter: all.filter((p) => p.kind === 'letter').length };
+  const prof = S.feed?.profile || {};
+  document.title = profileName();
+  const topbar = h('header', { class: 'topbar' },
+    h('a', { class: 'brand', href: './', text: profileName() }),
+    S.owner ? h('div', { class: 'row' },
+      h('button', { class: 'btn primary small', type: 'button', onclick: () => openComposer() }, icon('plus'), '올리기'),
+      h('button', { class: 'icon-btn', type: 'button', 'aria-label': '설정', onclick: () => openSettings() }, icon('gear'))) : null);
+  const profile = h('section', { class: 'profile' },
+    avatarEl('lg'),
+    h('div', { class: 'profile-main' },
+      h('h1', { text: profileName() }),
+      h('ul', { class: 'stats' },
+        h('li', null, h('strong', { text: num(counts.board) }), ' 박제판'),
+        h('li', null, h('strong', { text: num(counts.letter) }), ' 박제 편지'),
+        h('li', null, h('strong', { id: 'stat-hearts', text: num(all.reduce((n, p) => n + (p.hearts || 0), 0)) }), ' 하트'))),
+    prof.bio ? h('p', { class: 'bio', text: prof.bio }) : (S.owner ? h('p', { class: 'bio hint', text: '오른쪽 위 ⚙ 설정에서 이름·소개·프로필 사진을 적어 보세요.' }) : null),
+    prof.link ? h('a', { class: 'profile-link', href: prof.link, target: '_blank', rel: 'noopener noreferrer' }, icon('link'), prof.link.replace(/^https:\/\//, '').slice(0, 48)) : null);
+  const tabs = h('nav', { class: 'tabs', 'aria-label': '종류' },
+    h('div', { class: 'seg', role: 'tablist' },
+      [['all', '전체'], ['board', '박제판'], ['letter', '박제 편지']].map(([k, label]) => h('button', {
+        type: 'button', role: 'tab', 'aria-selected': String(S.tab === k), class: S.tab === k ? 'on' : '',
+        onclick: () => { S.tab = k; history.replaceState(history.state, '', urlWith({ t: k === 'all' ? null : k })); render(); }
+      }, label, h('span', { class: 'n', text: num(counts[k]) })))),
+    h('div', { class: 'view-toggle' },
+      h('button', { type: 'button', class: S.view === 'grid' ? 'on' : '', 'aria-label': '모아 보기', 'aria-pressed': String(S.view === 'grid'), onclick: () => setView('grid') }, icon('grid')),
+      h('button', { type: 'button', class: S.view === 'feed' ? 'on' : '', 'aria-label': '하나씩 크게 보기', 'aria-pressed': String(S.view === 'feed'), onclick: () => setView('feed') }, icon('feed'))));
+  const list = shown();
+  let body;
+  if (!S.feed) body = h('div', { class: 'empty-state' }, h('p', { text: '불러오는 중…' }));
+  else if (!list.length) body = h('div', { class: 'empty-state' },
+    icon(S.tab === 'letter' ? 'letter' : 'photo', 'big'),
+    h('p', { text: S.tab === 'all' ? '아직 올린 글이 없어요' : `아직 올린 ${KIND_NAME[S.tab]}이 없어요` }),
+    S.owner ? h('button', { class: 'btn primary', type: 'button', onclick: () => openComposer(), text: '첫 글 올리기' }) : null);
+  else {
+    body = h('div', { class: S.view === 'grid' ? 'grid' : 'feed' });
+    queueMicrotask(() => (S.view === 'grid' ? layoutGrid : layoutFeed)(body, list));
+  }
+  const footer = h('footer', { class: 'foot' },
+    h('p', { text: '이곳의 박제판과 편지는 주인이 직접 올려요.' }),
+    !S.owner ? h('a', { href: '?owner', text: '주인 기기 등록' }) : null);
+  app.replaceChildren(topbar, h('main', { class: 'wrap' }, profile, tabs, body), footer);
+  if (S.owner) app.append(h('button', { class: 'fab', type: 'button', 'aria-label': '올리기', onclick: () => openComposer() }, icon('plus')));
+}
+function setView(v) { S.view = v; ls.set('bj_view', v); render(); }
+let resizeTimer = 0;
+addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    const grid = $('.grid');
+    if (grid && columnsFor(grid.clientWidth) !== gridCols) layoutGrid(grid, shown());
+  }, 150);
+});
+
+// ---------- 주인 기기 등록 ----------
+function guessLabel() {
+  const ua = navigator.userAgent;
+  if (/iPhone/.test(ua)) return '아이폰';
+  if (/iPad|Macintosh.*Mobile/.test(ua)) return '아이패드';
+  if (/Android/.test(ua)) return /Mobile/.test(ua) ? '안드로이드 휴대폰' : '안드로이드 태블릿';
+  if (/Windows/.test(ua)) return 'Windows PC';
+  if (/Mac/.test(ua)) return 'Mac';
+  return '내 기기';
+}
+function registerView() {
+  const back = h('a', { class: 'btn', href: './', text: '돌아가기' });
+  if (!deviceSupported()) return h('main', { class: 'wrap narrow' }, h('section', { class: 'card' },
+    h('h1', { text: '주인 기기 등록' }),
+    h('p', { text: '이 브라우저에서는 등록할 수 없어요. 크롬·사파리·엣지 최신 버전으로 열어 주세요.' }), back));
+  const code = h('input', { id: 'code', class: 'input code', inputmode: 'text', autocomplete: 'one-time-code', autocapitalize: 'characters', maxlength: '9', placeholder: 'ABCD-EFGH', required: true });
+  code.addEventListener('input', () => {
+    const v = code.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+    code.value = v.length > 4 ? v.slice(0, 4) + '-' + v.slice(4) : v;
+  });
+  const label = h('input', { id: 'label', class: 'input', value: guessLabel(), maxlength: '40' });
+  const status = h('p', { class: 'status', role: 'status' });
+  const go = h('button', { class: 'btn primary', type: 'submit', text: '등록하기' });
+  const form = h('form', { class: 'stack', onsubmit: async (e) => {
+    e.preventDefault();
+    go.disabled = true; status.textContent = '확인하는 중…'; status.classList.remove('bad');
+    try {
+      await ownerCall('register', { code: code.value, label: label.value });
+      S.owner = true; ls.set('bj_owner', '1');
+      history.replaceState(null, '', urlWith({ owner: null }));
+      render();
+      toast('주인 기기로 등록했어요');
+    } catch (err) {
+      status.textContent = err.message; status.classList.add('bad');
+    } finally { go.disabled = false; }
+  } },
+    h('label', { for: 'code', text: '등록 코드 8자리' }), code,
+    h('label', { for: 'label', text: '이 기기 이름' }), label,
+    status, h('div', { class: 'row end' }, back, go));
+  return h('main', { class: 'wrap narrow' }, h('section', { class: 'card' },
+    h('h1', { text: '주인 기기 등록' }),
+    h('p', { class: 'muted', text: '이 기기에서 박제판과 편지를 올릴 수 있게 등록해요. 등록 코드는 이미 등록한 기기의 ⚙ 설정 › "새 기기 등록 코드"에서 만들 수 있어요.' }),
+    form));
+}
+
+// ---------- 글 메뉴(주인) ----------
+function postMenu(post) {
+  const d = sheet(h('div', { class: 'menu' },
+    h('button', { type: 'button', onclick: () => { d.dismiss(); closeViewer(); openComposer(post); } }, icon('edit'), '고치기'),
+    h('button', { type: 'button', onclick: async () => {
+      d.dismiss();
+      try { const r = await ownerCall('pin', { id: post.id, pinned: !post.pinned }); setFeed(r.snap); refreshAfterChange(post.id); toast(post.pinned ? '고정을 풀었어요' : '맨 위에 고정했어요'); }
+      catch (e) { toast(e.message, true); }
+    } }, icon('pin'), post.pinned ? '고정 풀기' : '맨 위에 고정'),
+    h('button', { type: 'button', class: 'danger', onclick: async () => {
+      d.dismiss();
+      if (!await confirmBox('이 글을 지울까요? 사진도 함께 지워지고 되돌릴 수 없어요.', '지우기', true)) return;
+      try { const r = await ownerCall('delete', { id: post.id }); setFeed(r.snap); closeViewer(); render(); toast('지웠어요'); }
+      catch (e) { toast(e.message, true); }
+    } }, icon('trash'), '지우기'),
+    h('button', { type: 'button', onclick: () => d.dismiss() }, '그만두기')
+  ), { cls: 'small', label: '글 메뉴' });
+}
+function refreshAfterChange(id) {
+  render();
+  if (viewer && id && findPost(id)) viewer.replaceChildren(postCard(findPost(id), { inViewer: true }));
+}
+
+// ---------- 글쓰기(주인) ----------
+function openComposer(post = null) {
+  const editing = !!post;
+  let kind = post?.kind || (S.tab === 'letter' ? 'letter' : 'board');
+  const photos = (post?.photos || []).map((p) => ({ kind: 'old', ...p, preview: photoUrl(p.t) }));
+  const L = post?.letter || {};
+  let paper = L.paper || 'cream';
+  let busy = false, preparing = 0;
+
+  const kindSeg = h('div', { class: 'seg wide', role: 'radiogroup', 'aria-label': '종류' });
+  const strip = h('div', { class: 'strip' });
+  const fileInput = h('input', { type: 'file', accept: 'image/*', multiple: true, class: 'hidden', id: 'pick' });
+  const photoHint = h('p', { class: 'muted small' });
+  const letterBox = h('div', { class: 'stack' });
+  const to = h('input', { class: 'input', id: 'to', maxlength: '40', value: L.to || '', placeholder: '예: 밤톨님' });
+  const text = h('textarea', { class: 'input letter-input', id: 'ltext', rows: '8', maxlength: '5000', value: L.text || '', placeholder: '편지 내용을 적어 주세요' });
+  const from = h('input', { class: 'input', id: 'from', maxlength: '40', value: editing ? (L.from || '') : (S.feed?.profile?.name || ''), placeholder: '보내는 사람' });
+  const papers = h('div', { class: 'papers', role: 'radiogroup', 'aria-label': '편지지 색' });
+  const caption = h('textarea', { class: 'input', id: 'caption', rows: '3', maxlength: '2200', value: post?.caption || '' });
+  const day = h('input', { class: 'input', id: 'day', type: 'date', value: dayOf(post?.at || Date.now()), max: dayOf(Date.now()) });
+  const pinned = h('input', { type: 'checkbox', id: 'pinned', checked: !!post?.pinned });
+  const status = h('p', { class: 'status', role: 'status' });
+  const submit = h('button', { class: 'btn primary', type: 'submit', text: editing ? '고친 내용 저장' : '올리기' });
+
+  function paintKind() {
+    kindSeg.replaceChildren(...[['board', '박제판'], ['letter', '박제 편지']].map(([k, label]) => h('button', {
+      type: 'button', role: 'radio', 'aria-checked': String(kind === k), class: kind === k ? 'on' : '',
+      onclick: () => { kind = k; paintKind(); }
+    }, icon(k === 'board' ? 'photo' : 'letter'), label)));
+    letterBox.hidden = kind !== 'letter';
+    photoHint.textContent = kind === 'board' ? `박제판 사진을 골라 주세요 (${MAX_PHOTOS}장까지, 자르지 않고 그대로 보여요)` : `편지를 그림으로 올리려면 사진을 골라 주세요 (안 골라도 돼요)`;
+    caption.placeholder = kind === 'board' ? '이 박제판 이야기를 적어 보세요 (안 써도 돼요)' : '한마디 더 적어 보세요 (안 써도 돼요)';
+  }
+  function paintPapers() {
+    papers.replaceChildren(...PAPERS.map(([k, label]) => h('button', {
+      type: 'button', role: 'radio', 'aria-checked': String(paper === k), 'aria-label': label + ' 편지지',
+      class: `swatch paper-${k}` + (paper === k ? ' on' : ''), onclick: () => { paper = k; paintPapers(); }
+    })));
+  }
+  function paintStrip() {
+    const items = photos.map((p, i) => h('div', { class: 'thumb' },
+      p.preview ? h('img', { src: p.preview, alt: `사진 ${i + 1}` }) : h('span', { class: 'spin' }),
+      h('span', { class: 'no', text: String(i + 1) }),
+      h('div', { class: 'thumb-tools' },
+        h('button', { type: 'button', 'aria-label': '앞으로', disabled: i === 0, onclick: () => { [photos[i - 1], photos[i]] = [photos[i], photos[i - 1]]; paintStrip(); } }, icon('left')),
+        h('button', { type: 'button', 'aria-label': '빼기', onclick: () => { const [x] = photos.splice(i, 1); if (x.kind === 'new' && x.preview) URL.revokeObjectURL(x.preview); paintStrip(); } }, icon('close')),
+        h('button', { type: 'button', 'aria-label': '뒤로', disabled: i === photos.length - 1, onclick: () => { [photos[i + 1], photos[i]] = [photos[i], photos[i + 1]]; paintStrip(); } }, icon('right')))));
+    if (photos.length < MAX_PHOTOS) items.push(h('label', { class: 'thumb add', for: 'pick' }, icon('plus'), h('span', { text: '사진 고르기' })));
+    strip.replaceChildren(...items);
+  }
+  fileInput.addEventListener('change', async () => {
+    const files = [...fileInput.files].slice(0, MAX_PHOTOS - photos.length);
+    if (fileInput.files.length > files.length) toast(`사진은 ${MAX_PHOTOS}장까지예요`, true);
+    fileInput.value = '';
+    for (const f of files) {
+      const slot = { kind: 'new', preview: '' };
+      photos.push(slot);
+      paintStrip();
+      preparing++;
+      try { Object.assign(slot, await preparePhoto(f)); }
+      catch (e) { photos.splice(photos.indexOf(slot), 1); toast(e.message, true); }
+      finally { preparing--; paintStrip(); }
+    }
+  });
+  paintKind(); paintPapers(); paintStrip();
+  letterBox.append(
+    h('label', { for: 'to', text: '받는 사람' }), to,
+    h('label', { for: 'ltext', text: '편지' }), text,
+    h('label', { for: 'from', text: '보내는 사람' }), from,
+    h('span', { class: 'label', text: '편지지' }), papers);
+
+  const form = h('form', { class: 'composer-form', onsubmit: async (e) => {
+    e.preventDefault();
+    if (busy) return;
+    if (preparing) { status.textContent = '사진을 준비하고 있어요. 잠깐만 기다려 주세요.'; return; }
+    if (kind === 'board' && !photos.length) { status.textContent = '박제판 사진을 한 장 이상 골라 주세요.'; status.classList.add('bad'); return; }
+    if (kind === 'letter' && !photos.length && !text.value.trim()) { status.textContent = '편지 내용을 쓰거나 사진을 골라 주세요.'; status.classList.add('bad'); text.focus(); return; }
+    busy = true; submit.disabled = true; status.classList.remove('bad');
+    try {
+      let id = post?.id;
+      const fresh = photos.filter((p) => p.kind === 'new' && !p.f);
+      if (fresh.length) {
+        status.textContent = '사진을 올릴 준비 중…';
+        const up = await ownerCall('upload', id ? { post: id, count: fresh.length } : { count: fresh.length });
+        id = up.post;
+        for (let i = 0; i < fresh.length; i++) {
+          status.textContent = `사진 올리는 중… ${i + 1}/${fresh.length}`;
+          await put(up.files[i].full, fresh[i].full);
+          await put(up.files[i].thumb, fresh[i].thumb);
+          fresh[i].f = up.files[i].full.path;
+        }
+      }
+      // 이번에 새로 고른 사진이 다른 글 번호로 올라갔으면(다시 시도 등) 그 번호를 쓴다
+      if (!id) id = photos.find((p) => p.f)?.f.split('/')[1] || randomId(10);
+      status.textContent = '저장하는 중…';
+      const payload = {
+        id, kind, caption: caption.value, day: day.value, pinned: pinned.checked,
+        photos: photos.map((p) => ({ f: p.f, w: p.w, h: p.h })),
+        letter: kind === 'letter' ? { to: to.value, text: text.value, from: from.value, paper } : null
+      };
+      const r = await ownerCall(editing ? 'edit' : 'post', payload);
+      setFeed(r.snap);
+      photos.forEach((p) => { if (p.kind === 'new' && p.preview) URL.revokeObjectURL(p.preview); });
+      d.dismiss();
+      if (!editing && S.tab !== 'all' && S.tab !== kind) { S.tab = 'all'; history.replaceState(history.state, '', urlWith({ t: null })); }
+      refreshAfterChange(id);
+      toast(editing ? '고쳤어요' : '올렸어요');
+    } catch (err) {
+      status.textContent = err.message; status.classList.add('bad');
+    } finally { busy = false; submit.disabled = false; }
+  } },
+    h('div', { class: 'sheet-head' }, h('h2', { text: editing ? '글 고치기' : '새 글 올리기' }),
+      h('button', { class: 'icon-btn', type: 'button', 'aria-label': '닫기', onclick: async () => { if (!busy && (await maybeLeave())) d.dismiss(); } }, icon('close'))),
+    h('div', { class: 'sheet-body stack' },
+      kindSeg,
+      h('span', { class: 'label', text: '사진' }), photoHint, strip, fileInput,
+      letterBox,
+      h('label', { for: 'caption', text: '글' }), caption,
+      h('div', { class: 'row two' },
+        h('div', { class: 'stack' }, h('label', { for: 'day', text: '날짜' }), day),
+        h('label', { class: 'check', for: 'pinned' }, pinned, h('span', { text: '맨 위에 고정' })))),
+    h('div', { class: 'sheet-foot' }, status, submit));
+  const dirty = () => photos.some((p) => p.kind === 'new') || caption.value !== (post?.caption || '') || text.value !== (L.text || '');
+  const maybeLeave = async () => !dirty() || confirmBox('쓰던 내용을 버리고 닫을까요?', '닫기', true);
+  const d = sheet(form, { cls: 'composer', label: editing ? '글 고치기' : '새 글 올리기', sticky: true });
+  d.addEventListener('cancel', async (e) => { e.preventDefault(); if (!busy && (await maybeLeave())) d.dismiss(); });
+}
+
+// ---------- 설정(주인) ----------
+function openSettings() {
+  const prof = S.feed?.profile || {};
+  let avatar = prof.avatar || '';
+  let avatarBlob = null, avatarPreview = '';
+  const avatarImg = h('div', { class: 'avatar-edit' });
+  const paintAvatar = () => avatarImg.replaceChildren(avatarPreview || avatar
+    ? h('img', { class: 'avatar lg', src: avatarPreview || photoUrl(avatar), alt: '프로필 사진' })
+    : h('span', { class: 'avatar no-photo lg' }, icon('heart', 'fillable')));
+  paintAvatar();
+  const pick = h('input', { type: 'file', accept: 'image/*', class: 'hidden', id: 'avatar-pick' });
+  pick.addEventListener('change', async () => {
+    const f = pick.files[0]; pick.value = '';
+    if (!f) return;
+    try {
+      const { img, url } = await readImage(f);
+      try { avatarBlob = (await shrink(img, 512, 0.88)).blob; } finally { URL.revokeObjectURL(url); }
+      if (avatarPreview) URL.revokeObjectURL(avatarPreview);
+      avatarPreview = URL.createObjectURL(avatarBlob);
+      paintAvatar();
+    } catch (e) { toast(e.message, true); }
+  });
+  const name = h('input', { class: 'input', id: 'pname', maxlength: '30', value: prof.name || '', placeholder: '박제관' });
+  const bio = h('textarea', { class: 'input', id: 'pbio', rows: '3', maxlength: '300', value: prof.bio || '', placeholder: '소개를 적어 주세요' });
+  const link = h('input', { class: 'input', id: 'plink', type: 'url', maxlength: '300', value: prof.link || '', placeholder: 'https://' });
+  const pstatus = h('p', { class: 'status', role: 'status' });
+  const save = h('button', { class: 'btn primary', type: 'button', text: '프로필 저장' });
+  save.addEventListener('click', async () => {
+    save.disabled = true; pstatus.classList.remove('bad');
+    try {
+      const payload = { name: name.value, bio: bio.value, link: link.value.trim() };
+      if (avatarBlob) {
+        pstatus.textContent = '사진 올리는 중…';
+        const up = await ownerCall('upload', { avatar: true });
+        await put(up.files[0].full, avatarBlob);
+        payload.avatar = up.files[0].full.path;
+      } else if (!avatar && prof.avatar) payload.avatar = '';
+      pstatus.textContent = '저장하는 중…';
+      const r = await ownerCall('profile', payload);
+      setFeed(r.snap);
+      avatarBlob = null;
+      render();
+      pstatus.textContent = '저장했어요';
+    } catch (e) { pstatus.textContent = e.message; pstatus.classList.add('bad'); }
+    finally { save.disabled = false; }
+  });
+  const devList = h('ul', { class: 'devices' }, h('li', { class: 'muted', text: '불러오는 중…' }));
+  async function loadDevices() {
+    try {
+      const r = await ownerCall('devices', {});
+      devList.replaceChildren(...r.devices.map((dv) => h('li', { class: dv.state === 'approved' ? '' : 'off' },
+        h('div', null,
+          h('strong', { text: dv.label || '내 기기' }), dv.id === r.me ? h('span', { class: 'tag', text: '이 기기' }) : null,
+          h('p', { class: 'muted small', text: dv.state === 'approved' ? `마지막 사용 ${dateText(dv.seen)}` : '막힘' })),
+        dv.state === 'approved' && dv.id !== r.me ? h('button', { class: 'btn small', type: 'button', text: '막기', onclick: async () => {
+          if (!await confirmBox(`"${dv.label}" 기기에서 더는 글을 올리지 못하게 할까요?`, '막기', true)) return;
+          try { await ownerCall('revoke', { id: dv.id }); loadDevices(); } catch (e) { toast(e.message, true); }
+        } }) : null)));
+    } catch (e) { devList.replaceChildren(h('li', { class: 'bad', text: e.message })); }
+  }
+  loadDevices();
+  const codeOut = h('p', { class: 'code-out', role: 'status' });
+  const makeCode = h('button', { class: 'btn', type: 'button', text: '새 기기 등록 코드 만들기', onclick: async () => {
+    makeCode.disabled = true;
+    try {
+      const r = await ownerCall('newcode', {});
+      codeOut.replaceChildren(h('strong', { text: r.code }), h('span', { class: 'muted small', text: ` · ${new Date(r.expires).toLocaleTimeString('ko-KR', { hour: 'numeric', minute: '2-digit' })}까지 한 번 쓸 수 있어요` }));
+    } catch (e) { toast(e.message, true); }
+    finally { makeCode.disabled = false; }
+  } });
+  const leave = h('button', { class: 'btn danger', type: 'button', text: '이 기기 등록 풀기', onclick: async () => {
+    if (!await confirmBox('이 기기에서 더는 글을 올리지 않게 할까요? 다시 쓰려면 등록 코드가 필요해요.', '등록 풀기', true)) return;
+    try {
+      const me = await identity({ create: false });
+      if (me) { const id = await sha256hex(Uint8Array.from(atob(me.publicKey.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0))); await ownerCall('revoke', { id }).catch(() => {}); }
+    } finally {
+      await forgetDevice();
+      S.owner = false; ls.del('bj_owner');
+      d.dismiss(); render(); toast('등록을 풀었어요');
+    }
+  } });
+  const d = sheet(h('div', { class: 'settings' },
+    h('div', { class: 'sheet-head' }, h('h2', { text: '설정' }), h('button', { class: 'icon-btn', type: 'button', 'aria-label': '닫기', onclick: () => d.dismiss() }, icon('close'))),
+    h('div', { class: 'sheet-body stack' },
+      h('h3', { text: '프로필' }),
+      h('div', { class: 'row' }, avatarImg, h('div', { class: 'stack tight' },
+        h('label', { class: 'btn small', for: 'avatar-pick', text: '사진 바꾸기' }),
+        h('button', { class: 'btn small', type: 'button', text: '사진 빼기', onclick: () => { avatar = ''; avatarBlob = null; if (avatarPreview) URL.revokeObjectURL(avatarPreview); avatarPreview = ''; paintAvatar(); } })), pick),
+      h('label', { for: 'pname', text: '이름' }), name,
+      h('label', { for: 'pbio', text: '소개' }), bio,
+      h('label', { for: 'plink', text: '링크 (예: 스푼 방송 주소)' }), link,
+      h('div', { class: 'row end' }, pstatus, save),
+      h('h3', { text: '주인 기기' }),
+      h('p', { class: 'muted small', text: '여기 있는 기기에서만 글을 올리고 고칠 수 있어요.' }),
+      devList,
+      h('div', { class: 'stack tight' }, makeCode, codeOut),
+      h('p', { class: 'muted small', text: '새 휴대폰이나 PC에서 이 사이트 맨 아래 "주인 기기 등록"을 누르고 코드를 넣으면 돼요.' }),
+      h('div', { class: 'row end' }, leave)
+    )), { cls: 'settings-sheet', label: '설정' });
+}
+
+// ---------- 시작 ----------
+async function checkOwner() {
+  try {
+    const me = await identity({ create: false });
+    if (!me) { if (S.owner) { S.owner = false; ls.del('bj_owner'); render(); } return; }
+    const r = await ownerCall('me', {});
+    const on = r.state === 'approved';
+    if (on !== S.owner) { S.owner = on; on ? ls.set('bj_owner', '1') : ls.del('bj_owner'); render(); }
+  } catch { /* 인터넷 문제면 그대로 둔다 */ }
+}
+async function refresh(fresh = false) {
+  try {
+    const before = S.feed?.snapAt || 0;
+    setFeed(await fetchFeed(fresh));
+    if ((S.feed?.snapAt || 0) !== before) {
+      if (!viewer) render();
+      else { const id = viewer.dataset.post; render(); if (findPost(id)) viewer.replaceChildren(postCard(findPost(id), { inViewer: true })); }
+    }
+  } catch (e) {
+    if (!S.feed) { $('#app').replaceChildren(h('main', { class: 'wrap narrow' }, h('section', { class: 'card' }, h('h1', { text: '불러오지 못했어요' }), h('p', { text: e.message }), h('button', { class: 'btn primary', type: 'button', text: '다시 불러오기', onclick: () => refresh(true) })))); }
+  }
+}
+(async function start() {
+  try { const cached = JSON.parse(ls.get('bj_feed') || 'null'); if (cached?.posts) S.feed = cached; } catch { /* 없음 */ }
+  render();
+  await refresh();
+  const p = param('p');
+  if (p && findPost(p)) openViewer(p, { push: false });
+  else if (p) history.replaceState(null, '', urlWith({ p: null }));
+  checkOwner();
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && Date.now() - (S.feed?.snapAt || 0) > 30000) refresh(); });
+})();
