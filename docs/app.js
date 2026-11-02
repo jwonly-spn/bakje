@@ -9,6 +9,7 @@ const PUB = SB + '/storage/v1/object/public/bakje/';
 const MAX_PHOTOS = 10;
 const PAPERS = [['cream', '크림'], ['rose', '분홍'], ['sky', '하늘'], ['lilac', '라일락'], ['mint', '민트']];
 const KIND_NAME = { board: '박제판', letter: '박제 편지' };
+const SITE_NAME = '한이준 추억앨범';
 const enc = new TextEncoder();
 
 // ---------- 작은 도구 ----------
@@ -32,6 +33,7 @@ function h(tag, props, ...kids) {
 const ICONS = {
   heart: '<path d="M12 20.3s-7.4-4.5-9.2-9.1C1.5 7.9 3.5 4.6 7 4.6c2 0 3.6 1.1 5 2.9 1.4-1.8 3-2.9 5-2.9 3.5 0 5.5 3.3 4.2 6.6-1.8 4.6-9.2 9.1-9.2 9.1z"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
+  'plus-square': '<rect x="3.5" y="3.5" width="17" height="17" rx="4.5"/><path d="M12 8v8M8 12h8"/>',
   gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
   close: '<path d="M6 6l12 12M18 6L6 18"/>',
   more: '<circle cx="5" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.3" fill="currentColor" stroke="none"/>',
@@ -222,7 +224,7 @@ const S = {
 const posts = () => S.feed?.posts || [];
 const findPost = (id) => posts().find((p) => p.id === id);
 const shown = () => posts().filter((p) => S.tab === 'all' || p.kind === S.tab);
-const profileName = () => S.feed?.profile?.name || '박제관';
+const profileName = () => S.feed?.profile?.name || SITE_NAME;
 function setFeed(feed) {
   if (!feed || !Array.isArray(feed.posts)) return;
   if (S.feed && feed.snapAt < S.feed.snapAt) return;
@@ -282,14 +284,6 @@ function confirmBox(message, okText = '확인', danger = false) {
 }
 
 // ---------- 하트 ----------
-function heartButton(post, { big = false } = {}) {
-  const on = S.hearted.has(post.id);
-  return h('button', {
-    class: 'heart' + (on ? ' on' : '') + (big ? ' big' : ''), type: 'button', dataset: { heart: post.id },
-    'aria-pressed': String(on), 'aria-label': on ? '하트 취소' : '하트',
-    onclick: () => toggleHeart(post.id)
-  }, icon('heart', 'fillable'), h('span', { class: 'count', text: num(post.hearts) }));
-}
 function paintHearts(id) {
   const p = findPost(id);
   if (!p) return;
@@ -336,12 +330,22 @@ function burst(host) {
   setTimeout(() => b.remove(), 900);
 }
 
-// ---------- 글 그리기 ----------
+// ---------- 글 그리기(인스타그램처럼) ----------
 const photoUrl = (path) => PUB + path;
-function avatarEl(size = '') {
+function avatarEl(size = '', ring = false) {
   const p = S.feed?.profile;
-  if (p?.avatar) return h('img', { class: 'avatar ' + size, src: photoUrl(p.avatar), alt: '' });
-  return h('span', { class: 'avatar no-photo ' + size, 'aria-hidden': 'true' }, icon('heart', 'fillable'));
+  const inner = p?.avatar
+    ? h('img', { class: 'avatar-img', src: photoUrl(p.avatar), alt: '' })
+    : h('span', { class: 'avatar-img no-photo', 'aria-hidden': 'true' }, icon('heart', 'fillable'));
+  return h('span', { class: `avatar ${size}${ring ? ' ring' : ''}` }, inner);
+}
+function ago(t) {
+  const s = (Date.now() - t) / 1000;
+  if (s < 60) return '방금';
+  if (s < 3600) return `${Math.floor(s / 60)}분 전`;
+  if (s < 86400) return `${Math.floor(s / 3600)}시간 전`;
+  if (s < 7 * 86400) return `${Math.floor(s / 86400)}일 전`;
+  return dateText(t);
 }
 function letterCard(letter, at) {
   return h('div', { class: 'letter paper-' + (letter.paper || 'cream') },
@@ -352,19 +356,17 @@ function letterCard(letter, at) {
       h('p', { class: 'when', text: dateText(at) }))
   );
 }
+// 사진 넘기기: 사진은 자르지 않고(contain), 남는 곳은 같은 사진을 흐리게 깐다
 function carousel(post) {
   const list = post.photos;
   const track = h('div', { class: 'slides', tabindex: '0', 'aria-label': '사진' });
   const dots = list.length > 1 ? h('div', { class: 'dots' }, list.map((_, i) => h('span', { class: i ? '' : 'on' }))) : null;
   const counter = list.length > 1 ? h('span', { class: 'counter', text: `1/${list.length}` }) : null;
   list.forEach((ph, i) => {
-    const img = h('img', { src: photoUrl(ph.f), alt: `${KIND_NAME[post.kind]} 사진 ${i + 1}`, decoding: 'async', loading: i ? 'lazy' : 'eager', width: String(ph.w), height: String(ph.h) });
-    img.style.aspectRatio = `${ph.w} / ${ph.h}`;
-    track.append(h('div', { class: 'slide' }, img));
+    track.append(h('div', { class: 'slide' },
+      h('img', { class: 's-bg', src: photoUrl(ph.t), alt: '', 'aria-hidden': 'true', decoding: 'async', loading: i ? 'lazy' : 'eager' }),
+      h('img', { class: 's-img', src: photoUrl(ph.f), alt: `${KIND_NAME[post.kind]} 사진 ${i + 1}`, decoding: 'async', loading: i ? 'lazy' : 'eager', width: String(ph.w), height: String(ph.h) })));
   });
-  // 가장 길쭉한 사진에 맞춰 높이를 정한다(사진은 자르지 않음)
-  const tallest = Math.max(...list.map((p) => p.h / p.w));
-  track.style.setProperty('--ratio', String(tallest));
   const go = (d) => track.scrollBy({ left: d * track.clientWidth, behavior: 'smooth' });
   const prev = list.length > 1 ? h('button', { class: 'nav prev', type: 'button', 'aria-label': '이전 사진', onclick: () => go(-1) }, icon('left')) : null;
   const next = list.length > 1 ? h('button', { class: 'nav next', type: 'button', 'aria-label': '다음 사진', onclick: () => go(1) }, icon('right')) : null;
@@ -380,7 +382,7 @@ function carousel(post) {
     });
   }, { passive: true });
   if (prev) prev.disabled = true;
-  track.addEventListener('keydown', (e) => { if (e.key === 'ArrowLeft') { e.preventDefault(); go(-1); } if (e.key === 'ArrowRight') { e.preventDefault(); go(1); } });
+  track.addEventListener('keydown', (e) => { if (e.key === 'ArrowLeft') { e.preventDefault(); e.stopPropagation(); go(-1); } if (e.key === 'ArrowRight') { e.preventDefault(); e.stopPropagation(); go(1); } });
   // 두 번 톡 → 하트
   let last = 0, lx = 0, ly = 0;
   const wrap = h('div', { class: 'carousel' }, track, prev, next, counter, dots);
@@ -394,104 +396,111 @@ function carousel(post) {
   });
   return wrap;
 }
-function postCard(post, { inViewer = false } = {}) {
-  const head = h('header', { class: 'post-head' },
+// 한 글(큰 화면): 머리 · 사진(또는 편지) · 하트 줄 · 글 · 날짜. 넓은 화면에서는 사진 왼쪽, 나머지 오른쪽.
+function postCard(post) {
+  const hasPhotos = post.photos?.length > 0;
+  const ratio = hasPhotos ? Math.min(1.8, Math.max(0.5, ...post.photos.map((p) => p.h / p.w))) : 1.25;
+  const head = h('header', { class: 'p-head' },
+    h('button', { class: 'icon-btn p-back', type: 'button', 'aria-label': '뒤로', onclick: () => closeViewer() }, icon('left')),
     avatarEl('sm'),
-    h('div', { class: 'who' },
+    h('div', { class: 'p-who' },
       h('strong', { text: profileName() }),
-      h('span', { class: 'meta' }, h('span', { class: 'kind kind-' + post.kind, text: KIND_NAME[post.kind] }), ' · ', dateText(post.at))),
-    post.pinned ? h('span', { class: 'pinned', title: '고정한 글' }, icon('pin')) : null,
-    S.owner ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': '글 메뉴', onclick: () => postMenu(post) }, icon('more')) : null,
-    inViewer ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': '닫기', onclick: () => closeViewer() }, icon('close')) : null
-  );
-  return h('article', { class: 'post' + (inViewer ? ' in-viewer' : ''), dataset: { post: post.id } },
-    head,
-    post.photos?.length ? carousel(post) : null,
-    post.letter ? letterCard(post.letter, post.at) : null,
-    h('div', { class: 'post-actions' },
-      heartButton(post, { big: true }),
-      h('button', { class: 'icon-btn', type: 'button', 'aria-label': '링크 공유', onclick: () => sharePost(post) }, icon('share'))),
-    post.caption ? h('p', { class: 'caption', text: post.caption }) : null
-  );
+      h('span', { class: 'p-sub' }, h('span', { class: 'kind kind-' + post.kind, text: KIND_NAME[post.kind] }), post.pinned ? ' · 고정됨' : '')),
+    S.owner ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': '글 메뉴', onclick: () => postMenu(post) }, icon('more')) : null);
+  const media = hasPhotos
+    ? h('div', { class: 'p-media' }, carousel(post))
+    : h('div', { class: 'p-media letter-only paper-' + (post.letter?.paper || 'cream') }, letterCard(post.letter || {}, post.at));
+  const actions = h('div', { class: 'p-actions' },
+    heartButton(post),
+    h('button', { class: 'icon-btn', type: 'button', 'aria-label': '링크 공유', onclick: () => sharePost(post) }, icon('share')),
+    h('p', { class: 'p-likes' }, '하트 ', h('b', { dataset: { heartsOf: post.id }, text: num(post.hearts) }), '개'));
+  const body = h('div', { class: 'p-body' },
+    hasPhotos && post.letter ? letterCard(post.letter, post.at) : null,
+    post.caption ? h('p', { class: 'p-caption' }, h('strong', { text: profileName() }), ' ', post.caption) : null);
+  const date = h('time', { class: 'p-date', datetime: new Date(post.at).toISOString(), title: dateText(post.at), text: ago(post.at) });
+  const card = h('article', { class: 'post in-viewer', dataset: { post: post.id } }, head, media, actions, body, date);
+  card.style.setProperty('--ratio', String(ratio));
+  return card;
+}
+function heartButton(post) {
+  const on = S.hearted.has(post.id);
+  return h('button', {
+    class: 'heart' + (on ? ' on' : ''), type: 'button', dataset: { heart: post.id },
+    'aria-pressed': String(on), 'aria-label': on ? '하트 취소' : '하트',
+    onclick: () => toggleHeart(post.id)
+  }, icon('heart', 'fillable'));
 }
 async function sharePost(post) {
-  const url = location.origin + location.pathname + '?p=' + post.id;
-  const title = `${profileName()} · ${KIND_NAME[post.kind]}`;
+  const url = location.origin + location.pathname + (post ? '?p=' + post.id : '');
+  const title = post ? `${profileName()} · ${KIND_NAME[post.kind]}` : profileName();
   try {
     if (navigator.share && matchMedia('(pointer: coarse)').matches) { await navigator.share({ title, url }); return; }
   } catch (e) { if (e?.name === 'AbortError') return; }
   try { await navigator.clipboard.writeText(url); toast('링크를 복사했어요'); } catch { prompt('이 링크를 복사해 주세요', url); }
 }
 
-// ---------- 모아 보기(잘리지 않는 벽돌 쌓기) ----------
+// ---------- 모아 보기(3칸 격자 — 사진은 자르지 않고 남는 곳은 흐리게) ----------
 function tile(post) {
   const first = post.photos?.[0];
+  let body;
+  if (first) {
+    const src = photoUrl(first.t);
+    body = h('span', { class: 't-media' },
+      h('img', { class: 't-bg', src, alt: '', 'aria-hidden': 'true', loading: 'lazy', decoding: 'async' }),
+      h('img', { class: 't-img', src, alt: '', loading: 'lazy', decoding: 'async' }));
+  } else {
+    const l = post.letter || {};
+    body = h('span', { class: 'letter-tile paper-' + (l.paper || 'cream') },
+      l.to ? h('span', { class: 'to', text: 'To. ' + l.to }) : null,
+      h('span', { class: 'body', text: (l.text || '').slice(0, 160) }));
+  }
   const badges = h('span', { class: 'badges' },
     post.pinned ? icon('pin') : null,
     post.photos?.length > 1 ? icon('stack') : null,
-    post.kind === 'letter' ? icon('letter') : null);
-  const hearts = h('span', { class: 'tile-hearts' }, icon('heart', 'fillable'), h('span', { dataset: { heartsOf: post.id }, text: num(post.hearts) }));
-  let body;
-  if (first) {
-    const img = h('img', { src: photoUrl(first.t), alt: '', loading: 'lazy', decoding: 'async', width: String(first.w), height: String(first.h) });
-    img.style.aspectRatio = `${first.w} / ${first.h}`;
-    body = img;
-  } else {
-    const l = post.letter || {};
-    body = h('div', { class: 'letter-tile paper-' + (l.paper || 'cream') },
-      l.to ? h('p', { class: 'to', text: 'To. ' + l.to }) : null,
-      h('p', { class: 'body', text: (l.text || '').slice(0, 220) }));
-  }
-  return h('button', { class: 'tile', type: 'button', 'aria-label': `${KIND_NAME[post.kind]} · ${dateText(post.at)} 열기`, onclick: () => openViewer(post.id) }, body, badges, hearts);
+    post.kind === 'letter' && first ? icon('letter') : null);
+  const over = h('span', { class: 't-over' }, icon('heart', 'fillable'), h('span', { dataset: { heartsOf: post.id }, text: num(post.hearts) }));
+  return h('button', { class: 'tile', type: 'button', 'aria-label': `${KIND_NAME[post.kind]} · ${dateText(post.at)} 열기`, onclick: () => openViewer(post.id) }, body, badges, over);
 }
-const tileRatio = (p) => p.photos?.length ? p.photos[0].h / p.photos[0].w : 1.25;
-function columnsFor(width) { return width < 560 ? 2 : width < 900 ? 3 : 4; }
-let gridCols = 0;
-function layoutGrid(host, list) {
-  const cols = columnsFor(host.clientWidth || innerWidth);
-  gridCols = cols;
-  const columns = Array.from({ length: cols }, () => h('div', { class: 'col' }));
-  const heights = new Array(cols).fill(0);
-  for (const p of list) {
-    let k = 0;
-    for (let i = 1; i < cols; i++) if (heights[i] < heights[k] - 0.01) k = i;
-    columns[k].append(tile(p));
-    heights[k] += tileRatio(p) + 0.04;
-  }
-  host.replaceChildren(...columns);
-  host.style.setProperty('--cols', String(cols));
-}
-let feedObserver = null;
-function layoutFeed(host, list) {
-  feedObserver?.disconnect();
-  host.replaceChildren();
-  let i = 0;
-  const more = () => {
-    const end = Math.min(list.length, i + 12);
-    for (; i < end; i++) host.append(postCard(list[i]));
-    if (i < list.length) host.append(sentinel); else sentinel.remove();
-  };
-  const sentinel = h('div', { class: 'sentinel', 'aria-hidden': 'true' });
-  feedObserver = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) more(); }, { rootMargin: '800px' });
-  feedObserver.observe(sentinel);
-  more();
+// 고정한 글 = 하이라이트 동그라미
+function highlight(post) {
+  const first = post.photos?.[0];
+  const label = (post.caption || post.letter?.to || KIND_NAME[post.kind]).replace(/\s+/g, ' ').slice(0, 8);
+  const face = first
+    ? h('img', { src: photoUrl(first.t), alt: '', loading: 'lazy', decoding: 'async' })
+    : h('span', { class: 'hl-letter paper-' + (post.letter?.paper || 'cream') }, icon('letter'));
+  return h('button', { class: 'hl-item', type: 'button', 'aria-label': `고정한 글 ${label} 열기`, onclick: () => openViewer(post.id) },
+    h('span', { class: 'hl-ring' }, h('span', { class: 'hl-face' }, face)), h('span', { class: 'hl-label', text: label }));
 }
 
 // ---------- 큰 화면(한 글) ----------
 let viewer = null, pushedViewer = false;
-function openViewer(id, { push = true } = {}) {
+function viewerStage(post) {
+  const list = shown(), i = list.findIndex((p) => p.id === post.id);
+  const prev = i > 0 ? list[i - 1] : null, next = i >= 0 && i < list.length - 1 ? list[i + 1] : null;
+  return h('div', { class: 'v-stage', onclick: (e) => { if (e.target.classList.contains('v-stage')) closeViewer(); } },
+    h('button', { class: 'v-close', type: 'button', 'aria-label': '닫기', onclick: () => closeViewer() }, icon('close')),
+    prev ? h('button', { class: 'v-nav prev', type: 'button', 'aria-label': '이전 글', onclick: () => openViewer(prev.id, { replace: true }) }, icon('left')) : null,
+    postCard(post),
+    next ? h('button', { class: 'v-nav next', type: 'button', 'aria-label': '다음 글', onclick: () => openViewer(next.id, { replace: true }) }, icon('right')) : null);
+}
+function openViewer(id, { push = true, replace = false } = {}) {
   const post = findPost(id);
   if (!post) { if (!push) { history.replaceState(null, '', urlWith({ p: null })); } toast('글을 찾을 수 없어요', true); return; }
-  if (viewer?.open) { viewer.replaceChildren(postCard(post, { inViewer: true })); }
+  if (viewer?.open) viewer.replaceChildren(viewerStage(post));
   else {
-    viewer = h('dialog', { class: 'viewer', 'aria-label': KIND_NAME[post.kind] }, postCard(post, { inViewer: true }));
-    viewer.addEventListener('click', (e) => { if (e.target === viewer) closeViewer(); });
+    viewer = h('dialog', { class: 'viewer', 'aria-label': KIND_NAME[post.kind] }, viewerStage(post));
     viewer.addEventListener('cancel', (e) => { e.preventDefault(); closeViewer(); });
+    viewer.addEventListener('keydown', (e) => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      const b = viewer?.querySelector(e.key === 'ArrowLeft' ? '.v-nav.prev' : '.v-nav.next');
+      if (b) { e.preventDefault(); b.click(); }
+    });
     document.body.append(viewer);
     viewer.showModal();
   }
   viewer.dataset.post = id;
-  if (push) { history.pushState({ p: id }, '', urlWith({ p: id })); pushedViewer = true; }
+  if (replace) history.replaceState(history.state, '', urlWith({ p: id }));
+  else if (push) { history.pushState({ p: id }, '', urlWith({ p: id })); pushedViewer = true; }
 }
 function closeViewer({ fromHistory = false } = {}) {
   if (!viewer) return;
@@ -515,58 +524,49 @@ function render() {
   if (param('owner') !== null && !S.owner) { app.replaceChildren(registerView()); return; }
   const all = posts();
   const counts = { all: all.length, board: all.filter((p) => p.kind === 'board').length, letter: all.filter((p) => p.kind === 'letter').length };
+  const hearts = all.reduce((n, p) => n + (p.hearts || 0), 0);
   const prof = S.feed?.profile || {};
   document.title = profileName();
   const topbar = h('header', { class: 'topbar' },
-    h('a', { class: 'brand', href: './', text: profileName() }),
-    S.owner ? h('div', { class: 'row' },
-      h('button', { class: 'btn primary small', type: 'button', onclick: () => openComposer() }, icon('plus'), '올리기'),
-      h('button', { class: 'icon-btn', type: 'button', 'aria-label': '설정', onclick: () => openSettings() }, icon('gear'))) : null);
-  const profile = h('section', { class: 'profile' },
-    avatarEl('lg'),
-    h('div', { class: 'profile-main' },
-      h('h1', { text: profileName() }),
-      h('ul', { class: 'stats' },
-        h('li', null, h('strong', { text: num(counts.board) }), ' 박제판'),
-        h('li', null, h('strong', { text: num(counts.letter) }), ' 박제 편지'),
-        h('li', null, h('strong', { id: 'stat-hearts', text: num(all.reduce((n, p) => n + (p.hearts || 0), 0)) }), ' 하트'))),
-    prof.bio ? h('p', { class: 'bio', text: prof.bio }) : (S.owner ? h('p', { class: 'bio hint', text: '오른쪽 위 ⚙ 설정에서 이름·소개·프로필 사진을 적어 보세요.' }) : null),
-    prof.link ? h('a', { class: 'profile-link', href: prof.link, target: '_blank', rel: 'noopener noreferrer' }, icon('link'), prof.link.replace(/^https:\/\//, '').slice(0, 48)) : null);
-  const tabs = h('nav', { class: 'tabs', 'aria-label': '종류' },
-    h('div', { class: 'seg', role: 'tablist' },
-      [['all', '전체'], ['board', '박제판'], ['letter', '박제 편지']].map(([k, label]) => h('button', {
-        type: 'button', role: 'tab', 'aria-selected': String(S.tab === k), class: S.tab === k ? 'on' : '',
-        onclick: () => { S.tab = k; history.replaceState(history.state, '', urlWith({ t: k === 'all' ? null : k })); render(); }
-      }, label, h('span', { class: 'n', text: num(counts[k]) })))),
-    h('div', { class: 'view-toggle' },
-      h('button', { type: 'button', class: S.view === 'grid' ? 'on' : '', 'aria-label': '모아 보기', 'aria-pressed': String(S.view === 'grid'), onclick: () => setView('grid') }, icon('grid')),
-      h('button', { type: 'button', class: S.view === 'feed' ? 'on' : '', 'aria-label': '하나씩 크게 보기', 'aria-pressed': String(S.view === 'feed'), onclick: () => setView('feed') }, icon('feed'))));
+    h('div', { class: 'topbar-in' },
+      h('a', { class: 'brand', href: './', text: SITE_NAME }),
+      h('div', { class: 'row' },
+        S.owner ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': '새 게시물', title: '새 게시물', onclick: () => openComposer() }, icon('plus-square')) : null,
+        S.owner ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': '설정', title: '설정', onclick: () => openSettings() }, icon('gear')) : null,
+        !S.owner ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': '이 앨범 링크 공유', title: '링크 공유', onclick: () => sharePost(null) }, icon('share')) : null)));
+  const stat = (n, label, id) => h('li', null, h('b', { id, text: num(n) }), h('span', { text: label }));
+  const profile = h('section', { class: 'pf' },
+    h('div', { class: 'pf-avatar' }, avatarEl('xl', true)),
+    h('div', { class: 'pf-info' },
+      h('div', { class: 'pf-row' },
+        h('h1', { class: 'pf-name', text: profileName() }),
+        S.owner ? h('div', { class: 'pf-actions' },
+          h('button', { class: 'btn soft', type: 'button', text: '프로필 편집', onclick: () => openSettings() }),
+          h('button', { class: 'btn soft', type: 'button', text: '새 게시물', onclick: () => openComposer() })) : null),
+      h('ul', { class: 'pf-stats' },
+        stat(counts.all, '게시물'), stat(counts.board, '박제판'), stat(counts.letter, '편지'), stat(hearts, '하트', 'stat-hearts'))),
+    h('div', { class: 'pf-bio' },
+      prof.bio ? h('p', { text: prof.bio }) : (S.owner ? h('p', { class: 'hint', text: '프로필 편집에서 이름·소개·프로필 사진을 바꿀 수 있어요.' }) : null),
+      prof.link ? h('a', { class: 'pf-link', href: prof.link, target: '_blank', rel: 'noopener noreferrer' }, icon('link'), prof.link.replace(/^https:\/\//, '').slice(0, 48)) : null));
+  const pinned = all.filter((p) => p.pinned);
+  const highlights = pinned.length ? h('div', { class: 'hl', 'aria-label': '고정한 글' }, pinned.map(highlight)) : null;
+  const tabs = h('nav', { class: 'tabs', role: 'tablist', 'aria-label': '종류' },
+    [['all', '게시물', 'grid'], ['board', '박제판', 'photo'], ['letter', '박제 편지', 'letter']].map(([k, label, ic]) => h('button', {
+      type: 'button', role: 'tab', 'aria-selected': String(S.tab === k), class: S.tab === k ? 'on' : '',
+      onclick: () => { S.tab = k; history.replaceState(history.state, '', urlWith({ t: k === 'all' ? null : k })); render(); }
+    }, icon(ic), h('span', { text: label }))));
   const list = shown();
   let body;
   if (!S.feed) body = h('div', { class: 'empty-state' }, h('p', { text: '불러오는 중…' }));
   else if (!list.length) body = h('div', { class: 'empty-state' },
-    icon(S.tab === 'letter' ? 'letter' : 'photo', 'big'),
-    h('p', { text: S.tab === 'all' ? '아직 올린 글이 없어요' : `아직 올린 ${KIND_NAME[S.tab]}이 없어요` }),
-    S.owner ? h('button', { class: 'btn primary', type: 'button', onclick: () => openComposer(), text: '첫 글 올리기' }) : null);
-  else {
-    body = h('div', { class: S.view === 'grid' ? 'grid' : 'feed' });
-    queueMicrotask(() => (S.view === 'grid' ? layoutGrid : layoutFeed)(body, list));
-  }
+    h('span', { class: 'empty-icon' }, icon(S.tab === 'letter' ? 'letter' : 'photo')),
+    h('h2', { text: S.tab === 'all' ? '아직 게시물이 없어요' : `아직 ${KIND_NAME[S.tab]}이 없어요` }),
+    S.owner ? h('button', { class: 'link-btn', type: 'button', onclick: () => openComposer(), text: '첫 게시물 올리기' }) : null);
+  else body = h('div', { class: 'grid' }, list.map(tile));
   const footer = h('footer', { class: 'foot' },
-    h('p', { text: '이곳의 박제판과 편지는 주인이 직접 올려요.' }),
-    !S.owner ? h('a', { href: '?owner', text: '주인 기기 등록' }) : null);
-  app.replaceChildren(topbar, h('main', { class: 'wrap' }, profile, tabs, body), footer);
-  if (S.owner) app.append(h('button', { class: 'fab', type: 'button', 'aria-label': '올리기', onclick: () => openComposer() }, icon('plus')));
+    h('p', null, SITE_NAME, !S.owner ? [' · ', h('a', { href: '?owner', text: '주인 기기 등록' })] : null));
+  app.replaceChildren(topbar, h('main', { class: 'wrap' }, profile, highlights, tabs, body), footer);
 }
-function setView(v) { S.view = v; ls.set('bj_view', v); render(); }
-let resizeTimer = 0;
-addEventListener('resize', () => {
-  clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => {
-    const grid = $('.grid');
-    if (grid && columnsFor(grid.clientWidth) !== gridCols) layoutGrid(grid, shown());
-  }, 150);
-});
 
 // ---------- 주인 기기 등록 ----------
 function guessLabel() {
@@ -633,7 +633,7 @@ function postMenu(post) {
 }
 function refreshAfterChange(id) {
   render();
-  if (viewer && id && findPost(id)) viewer.replaceChildren(postCard(findPost(id), { inViewer: true }));
+  if (viewer && id && findPost(id)) viewer.replaceChildren(viewerStage(findPost(id)));
 }
 
 // ---------- 글쓰기(주인) ----------
@@ -786,7 +786,7 @@ function openSettings() {
       paintAvatar();
     } catch (e) { toast(e.message, true); }
   });
-  const name = h('input', { class: 'input', id: 'pname', maxlength: '30', value: prof.name || '', placeholder: '박제관' });
+  const name = h('input', { class: 'input', id: 'pname', maxlength: '30', value: prof.name || '', placeholder: SITE_NAME });
   const bio = h('textarea', { class: 'input', id: 'pbio', rows: '3', maxlength: '300', value: prof.bio || '', placeholder: '소개를 적어 주세요' });
   const link = h('input', { class: 'input', id: 'plink', type: 'url', maxlength: '300', value: prof.link || '', placeholder: 'https://' });
   const pstatus = h('p', { class: 'status', role: 'status' });
@@ -881,7 +881,7 @@ async function refresh(fresh = false) {
     setFeed(await fetchFeed(fresh));
     if ((S.feed?.snapAt || 0) !== before) {
       if (!viewer) render();
-      else { const id = viewer.dataset.post; render(); if (findPost(id)) viewer.replaceChildren(postCard(findPost(id), { inViewer: true })); }
+      else { const id = viewer.dataset.post; render(); if (findPost(id)) viewer.replaceChildren(viewerStage(findPost(id))); }
     }
   } catch (e) {
     if (!S.feed) { $('#app').replaceChildren(h('main', { class: 'wrap narrow' }, h('section', { class: 'card' }, h('h1', { text: '불러오지 못했어요' }), h('p', { text: e.message }), h('button', { class: 'btn primary', type: 'button', text: '다시 불러오기', onclick: () => refresh(true) })))); }

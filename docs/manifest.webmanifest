@@ -1,10 +1,10 @@
 {
-  "name": "박제관",
-  "short_name": "박제관",
+  "name": "한이준 추억앨범",
+  "short_name": "추억앨범",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#f7f4ef",
-  "theme_color": "#f7f4ef",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
   "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }]
 }
