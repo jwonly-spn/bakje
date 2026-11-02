@@ -412,7 +412,8 @@ label, .label { font-size: 13px; font-weight: 600; color: var(--ink); margin-top
     grid-template-areas: "avatar name" "avatar stats" "bio bio" "actions actions";
   }
   .pf-info, .pf-row { display: contents; }
-  .pf-avatar { grid-area: avatar; grid-row: auto; align-self: center; }
+  /* 사진이 이름 줄·숫자 줄 두 줄에 걸쳐 가운데(grid-row 를 따로 주면 grid-area 가 풀려 한 줄만 차지한다) */
+  .pf-avatar { grid-area: avatar; align-self: center; }
   .avatar.xl { width: 86px; height: 86px; }
   .avatar.xl .ic { width: 32px; height: 32px; }
   .avatar.ring { padding: 3px; }
