@@ -406,6 +406,16 @@ function firstInfo(post) {
   const title = x.title || (post.caption || '').split('\n')[0].replace(/^🏆\s*/, '').replace(/\s*최초\s*박제판?\s*$/, '').trim().slice(0, 20);
   return { title, filled: Number(x.filled) || 0, total: Number(x.total) || 0, bot: x.bot === true };
 }
+// 최초 박제판 종료 날짜(ends, 한국 날짜) → 남은 날. 오늘이 끝나는 날이면 0, 지났으면 음수
+function endsInfo(post) {
+  if (post.kind !== 'first' || !/^\d{4}-\d{2}-\d{2}$/.test(post.ends || '')) return null;
+  const left = Math.round((Date.parse(post.ends + 'T00:00:00Z') - Date.parse(dayOf(Date.now()) + 'T00:00:00Z')) / 86400000);
+  const [, m, d] = post.ends.split('-').map(Number);
+  const date = `${m}월 ${d}일`;
+  return left > 0 ? { left, tag: `D-${left}`, text: `${date} 종료`, long: `종료까지 ${num(left)}일 · ${date}` }
+    : left === 0 ? { left, tag: 'D-DAY', text: '오늘 종료', long: `오늘(${date}) 종료` }
+    : { left, tag: '종료', text: `${date} 종료됨`, long: `${date}에 종료됐어요` };
+}
 // 한 글(큰 화면): 머리(앨범 이름) · 사진(왼쪽 위에 후원자 닉네임) · 하트 줄 · 글 칸(후원자 닉네임 → 스푼 테마 → 날짜 → 글).
 //  넓은 화면에서는 사진 왼쪽, 나머지 오른쪽. 사진 칸은 9:16 틀이다. preview: 글쓰기 미리 보기(단추 없이)
 function postCard(post, { preview = false } = {}) {
@@ -428,10 +438,13 @@ function postCard(post, { preview = false } = {}) {
     h('button', { class: 'icon-btn', type: 'button', 'aria-label': '링크 공유', onclick: () => sharePost(post) }, icon('share')),
     h('p', { class: 'p-likes' }, '하트 ', h('b', { dataset: { heartsOf: post.id }, text: num(post.hearts) }), '개'));
   const theme = post.theme || fi?.title || '';
+  const end = endsInfo(post);
   const body = h('div', { class: 'p-body' },
     h('div', { class: 'p-info' },
       post.donor ? h('strong', { class: 'p-donor', text: post.donor }) : null,
       theme ? h('p', { class: 'p-theme' }, h('span', { class: 'p-label', text: '스푼 테마' }), theme) : null,
+      end ? h('p', { class: 'p-ends' + (end.left < 0 ? ' is-over' : end.left <= 3 ? ' is-soon' : '') },
+        h('span', { class: 'p-dday', text: end.tag }), end.long) : null,
       h('time', { class: 'p-day', datetime: new Date(post.at).toISOString(), text: dateText(post.at) })),
     hasPhotos && post.letter ? letterCard(post.letter, post.at) : null,
     post.caption ? h('p', { class: 'p-caption', text: post.caption }) : null);
@@ -465,7 +478,7 @@ function tile(post) {
   const fi = post.kind === 'first' ? firstInfo(post) : null;
   let body;
   if (first && fi) {
-    const src = photoUrl(first.t), pct = fi.total ? Math.round((fi.filled / fi.total) * 100) : 0;
+    const src = photoUrl(first.t), pct = fi.total ? Math.round((fi.filled / fi.total) * 100) : 0, end = endsInfo(post);
     body = h('span', { class: 'first-tile' },
       h('img', { class: 't-bg', src, alt: '', 'aria-hidden': 'true', loading: 'lazy', decoding: 'async' }),
       h('span', { class: 'ft-img' }, h('img', { class: 't-img', src, alt: '', loading: 'lazy', decoding: 'async' })),
@@ -473,7 +486,9 @@ function tile(post) {
         h('span', { class: 'ft-label' }, icon('trophy'), '최초 박제판'),
         fi.title ? h('strong', { class: 'ft-title', text: fi.title }) : null,
         fi.total ? h('span', { class: 'ft-bar' }, h('i', { style: { width: pct + '%' } })) : null,
-        fi.total ? h('span', { class: 'ft-count', text: `${num(fi.filled)} / ${num(fi.total)}칸` }) : null));
+        fi.total ? h('span', { class: 'ft-count', text: `${num(fi.filled)} / ${num(fi.total)}칸` }) : null,
+        end ? h('span', { class: 'ft-ends' + (end.left < 0 ? ' is-over' : end.left <= 3 ? ' is-soon' : '') },
+          h('b', { text: end.tag }), end.left < 0 ? null : end.text) : null));
   } else if (first) {
     const src = photoUrl(first.t);
     body = h('span', { class: 't-media' },
@@ -490,7 +505,8 @@ function tile(post) {
     post.photos?.length > 1 ? icon('stack') : null,
     post.kind === 'letter' && first ? icon('letter') : null);
   const over = h('span', { class: 't-over' }, icon('heart', 'fillable'), h('span', { dataset: { heartsOf: post.id }, text: num(post.hearts) }));
-  return h('button', { class: 'tile', type: 'button', 'aria-label': `${KIND_NAME[post.kind]} · ${post.donor ? post.donor + ' · ' : ''}${dateText(post.at)} 열기`, onclick: () => openViewer(post.id) },
+  const endLabel = fi ? endsInfo(post)?.long : '';
+  return h('button', { class: 'tile', type: 'button', 'aria-label': `${KIND_NAME[post.kind]} · ${post.donor ? post.donor + ' · ' : ''}${endLabel ? endLabel + ' · ' : ''}${dateText(post.at)} 열기`, onclick: () => openViewer(post.id) },
     body, first ? donorMark(post, 'donor-mark t-donor') : null, badges, over);
 }
 
@@ -776,6 +792,15 @@ function openComposer(post = null) {
   const donor = h('input', { class: 'input', id: 'donor', maxlength: '40', value: post?.donor || '', placeholder: '예: 밤톨 (사진 왼쪽 위에 보여요)', autocomplete: 'off' });
   const theme = h('input', { class: 'input', id: 'theme', maxlength: '40', value: post?.theme || '', placeholder: '예: 스푸니 가을', autocomplete: 'off' });
   const day = h('input', { class: 'input', id: 'day', type: 'date', value: dayOf(post?.at || Date.now()), max: dayOf(Date.now()) });
+  // 최초 박제판만: 그 시즌 스푼이 끝나는 날(목록·글에 "D-5"처럼 남은 날이 보인다).
+  //  먼치킨이 올린 판은 봇의 최초 박제판 화면에서 정한다(여기서 고쳐도 봇이 다시 덮으니 막아 둔다)
+  const fromBot = post?.extra?.bot === true;
+  const ends = h('input', { class: 'input', id: 'ends', type: 'date', value: post?.ends || '', min: '2015-01-01', disabled: fromBot });
+  const endsBox = h('div', { class: 'stack' },
+    h('label', { for: 'ends', text: '종료 날짜' }), ends,
+    h('p', { class: 'muted small', text: fromBot
+      ? '먼치킨 봇이 올린 박제판이라 종료 날짜는 봇의 최초 박제판 화면에서 정해요. 정하면 여기에도 바로 보여요.'
+      : '시즌 스푼이 끝나는 날을 고르면 목록과 글에 "D-5"처럼 남은 날이 보여요. 비워 두면 안 보여요.' }));
   // 미리 보기: 지금 적은 내용이 휴대폰·PC 에서 어떻게 보일지(줄바꿈 그대로)
   let pvMode = matchMedia('(max-width: 735px)').matches ? 'm' : 'pc', pvRaf = 0;
   const pvSeg = h('div', { class: 'seg', role: 'radiogroup', 'aria-label': '미리 보기 화면' });
@@ -791,7 +816,7 @@ function openComposer(post = null) {
       }, label)));
       const shots = photos.filter((p) => p.preview).map((p) => ({ f: p.kind === 'new' ? p.preview : p.f, t: p.kind === 'new' ? p.preview : p.t, w: p.w || 9, h: p.h || 16 }));
       const fake = {
-        id: post?.id || 'preview', kind, caption: caption.value.trim(), donor: donor.value.trim().replace(/\s+/g, ' '), theme: theme.value.trim().replace(/\s+/g, ' '),
+        id: post?.id || 'preview', kind, caption: caption.value.trim(), donor: donor.value.trim().replace(/\s+/g, ' '), theme: theme.value.trim().replace(/\s+/g, ' '), ends: kind === 'first' ? ends.value : '',
         at: day.value ? Date.parse(day.value + 'T12:00:00+09:00') : Date.now(), hearts: post?.hearts || 0, pinned: pinned.checked, photos: shots,
         letter: kind === 'letter' ? { to: to.value, text: text.value, from: from.value, paper } : null, extra: post?.extra
       };
@@ -814,6 +839,7 @@ function openComposer(post = null) {
       onclick: () => { kind = k; paintKind(); paintStrip(); }
     }, icon(ic), label)));
     letterBox.hidden = kind !== 'letter';
+    endsBox.hidden = kind !== 'first';
     photoHint.textContent = kind === 'board' ? `9:16 박제판 사진을 골라 주세요 (${MAX_PHOTOS}장까지)`
       : kind === 'first' ? '최초 박제판 사진을 골라 주세요 (게시물 탭에 올라가요 · 먼치킨 최초 박제판은 저절로 올라와요)'
       : '편지를 그림으로 올리려면 9:16 사진을 골라 주세요 (안 골라도 돼요)';
@@ -889,7 +915,7 @@ function openComposer(post = null) {
       if (!id) id = photos.find((p) => p.f)?.f.split('/')[1] || randomId(10);
       status.textContent = '저장하는 중…';
       const payload = {
-        id, kind, caption: caption.value, donor: donor.value, theme: theme.value, day: day.value, pinned: pinned.checked,
+        id, kind, caption: caption.value, donor: donor.value, theme: theme.value, ends: kind === 'first' ? ends.value : '', day: day.value, pinned: pinned.checked,
         photos: photos.map((p) => ({ f: p.f, w: p.w, h: p.h })),
         letter: kind === 'letter' ? { to: to.value, text: text.value, from: from.value, paper } : null
       };
@@ -915,6 +941,7 @@ function openComposer(post = null) {
       h('div', { class: 'row two' },
         h('div', { class: 'stack' }, h('label', { for: 'donor', text: '후원자 닉네임' }), donor),
         h('div', { class: 'stack' }, h('label', { for: 'theme', text: '스푼 테마' }), theme)),
+      endsBox,
       h('label', { for: 'caption', text: '글' }), caption,
       h('div', { class: 'row two' },
         h('div', { class: 'stack' }, h('label', { for: 'day', text: '날짜' }), day),
@@ -923,13 +950,13 @@ function openComposer(post = null) {
       h('p', { class: 'muted small', text: '줄바꿈이 실제 화면에서 어떻게 보이는지 확인해 보세요. 글을 고치면 바로 바뀌어요.' }),
       pvBox),
     h('div', { class: 'sheet-foot' }, status, submit));
-  for (const el of [caption, donor, theme, day, to, text, from]) el.addEventListener('input', paintPreview);
+  for (const el of [caption, donor, theme, ends, day, to, text, from]) el.addEventListener('input', paintPreview);
   pinned.addEventListener('change', paintPreview);
   // 창 너비가 바뀌면 미리 보기 배율만 다시(높이 변화로는 다시 그리지 않는다)
   let pvW = 0;
   if (typeof ResizeObserver === 'function') new ResizeObserver(() => { if (pvBox.clientWidth !== pvW) { pvW = pvBox.clientWidth; paintPreview(); } }).observe(pvBox);
   const dirty = () => photos.some((p) => p.kind === 'new') || caption.value !== (post?.caption || '') || text.value !== (L.text || '')
-    || donor.value !== (post?.donor || '') || theme.value !== (post?.theme || '');
+    || donor.value !== (post?.donor || '') || theme.value !== (post?.theme || '') || ends.value !== (post?.ends || '');
   const maybeLeave = async () => !dirty() || confirmBox('쓰던 내용을 버리고 닫을까요?', '닫기', true);
   const d = sheet(form, { cls: 'composer', label: editing ? '글 고치기' : '새 글 올리기', sticky: true });
   d.addEventListener('cancel', async (e) => { e.preventDefault(); if (!busy && (await maybeLeave())) d.dismiss(); });

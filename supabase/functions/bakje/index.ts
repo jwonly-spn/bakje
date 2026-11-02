@@ -6,13 +6,15 @@
 //  서명 열쇠 = 먼치킨의 승인 기기 키(junlive_devices approved) + 추억앨범 봇 목록(bj_bots)에 있는 기기만. 판마다 글 하나(src), 이름이 더 채워지면 사진만 바꾼다.
 //  주인이 그 글을 지우면 bj_bot_gone 에 남겨 다시 만들지 않는다(봇이 again:true 로 부를 때만 다시).
 // 후원자 닉네임·스푼 테마(2026-11-03, v3): 글마다 donor·theme 한 줄씩(주인이 적음) — donor 는 사진 왼쪽 위와 글 칸, theme 은 글 칸에 보인다.
+// 종료 날짜(v4): 최초 박제판마다 ends(YYYY-MM-DD) — 사이트가 오늘과 견줘 "D-5"·"오늘 종료"·"종료됨"을 보여 준다.
+//  먼치킨이 올린 판은 봇의 최초 박제판 화면에서 정한다(board-save·board-meta), 손으로 올린 최초 박제판은 사이트 글쓰기에서.
 // 주의: MCP 로 올릴 때 백슬래시-u 글자 표기가 풀려 버리므로 이 파일에는 그런 표기를 쓰지 않는다.
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
 const db = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, { auth: { persistSession: false } });
-const VERSION = 3, BUCKET = 'bakje', PREFIX = 'BAKJE/1', BOT_PREFIX = 'JUN-LIVE-BAKJE/1';
+const VERSION = 4, BUCKET = 'bakje', PREFIX = 'BAKJE/1', BOT_PREFIX = 'JUN-LIVE-BAKJE/1';
 const KINDS = ['board', 'first', 'letter'];
-const BOT_ACTIONS = new Set(['board-begin', 'board-save']);
+const BOT_ACTIONS = new Set(['board-begin', 'board-save', 'board-meta']);
 const BOARD_REF = /^[a-z0-9][a-z0-9-]{0,47}$/; // 먼치킨 판 번호(+ "-g<몇 번째 글>")
 const BROKEN = '잠시 문제가 생겼어요. 조금 뒤에 다시 해 주세요.';
 const MAX_PHOTOS = 10, MAX_DEVICES = 10;
@@ -71,6 +73,13 @@ function atOf(day: unknown, now: number, keep?: number) {
   const t = Date.parse(`${day}T12:00:00+09:00`);
   if (!Number.isFinite(t) || t < Date.parse('2015-01-01T00:00:00+09:00') || t > now + 86400000) throw fail(400, '날짜를 다시 골라 주세요.');
   return t;
+}
+// 종료 날짜(최초 박제판 — 그 시즌 스푼이 끝나는 날, 한국 날짜 YYYY-MM-DD). 비우면 ''. 최초 박제판이 아니면 늘 ''.
+function endsOf(v: unknown, kind: string) {
+  if (kind !== 'first' || v === undefined || v === null || v === '') return '';
+  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v) || !Number.isFinite(Date.parse(`${v}T00:00:00+09:00`))) throw fail(400, '종료 날짜 모양이 올바르지 않아요.');
+  if (v < '2015-01-01' || v > '2100-12-31') throw fail(400, '종료 날짜를 다시 골라 주세요.');
+  return v;
 }
 
 let saltPromise: Promise<string> | null = null;
@@ -135,13 +144,13 @@ async function signedUpload(path: string) {
 const profileOut = (p: any) => ({ name: p?.name || '', bio: p?.bio || '', link: p?.link || '', avatar: p?.avatar || '' });
 async function buildSnap(now: number) {
   const [posts, profile] = await Promise.all([
-    q(db.from('bj_posts').select('id,kind,caption,letter,photos,at,pinned,hearts,extra,donor,theme').order('pinned', { ascending: false }).order('at', { ascending: false }).order('created', { ascending: false }).limit(3000)),
+    q(db.from('bj_posts').select('id,kind,caption,letter,photos,at,pinned,hearts,extra,donor,theme,ends').order('pinned', { ascending: false }).order('at', { ascending: false }).order('created', { ascending: false }).limit(3000)),
     getMeta('profile')
   ]);
   // extra: 먼치킨이 올린 최초 박제판의 판 이름·채운 칸 수({title, filled, total, bot}) — 그 밖의 글은 빼서 작게
-  // donor·theme: 주인이 적은 후원자 닉네임·스푼 테마 이름 — 없으면 뺀다
-  const out = (posts as any[]).map(({ extra, donor, theme, ...p }) => ({
-    ...p, ...(donor ? { donor } : {}), ...(theme ? { theme } : {}),
+  // donor·theme·ends: 주인이 적은 후원자 닉네임·스푼 테마 이름·종료 날짜 — 없으면 뺀다
+  const out = (posts as any[]).map(({ extra, donor, theme, ends, ...p }) => ({
+    ...p, ...(donor ? { donor } : {}), ...(theme ? { theme } : {}), ...(ends ? { ends } : {}),
     ...(isObj(extra) ? { extra: { title: extra.title || '', filled: extra.filled || 0, total: extra.total || 0, bot: extra.bot === true } } : {})
   }));
   const snap = { v: VERSION, snapAt: now, profile: profileOut(profile), posts: out };
@@ -252,7 +261,7 @@ async function owner(req: Request, now: number) {
       const photos = photosOf(p.photos, p.id, Array.isArray(p.photos) && p.photos.length ? await listFolder('p/' + p.id) : new Set());
       const letter = p.kind === 'letter' ? letterOf(p.letter) : null;
       checkPost(p.kind, photos, letter);
-      await q(db.from('bj_posts').insert({ id: p.id, kind: p.kind, caption: text(p.caption, 2200, '글'), donor: lineOf(p.donor, '후원자 닉네임'), theme: lineOf(p.theme, '스푼 테마'), letter, photos, at: atOf(p.day, now), created: now, updated: now, pinned: p.pinned === true }));
+      await q(db.from('bj_posts').insert({ id: p.id, kind: p.kind, caption: text(p.caption, 2200, '글'), donor: lineOf(p.donor, '후원자 닉네임'), theme: lineOf(p.theme, '스푼 테마'), ends: endsOf(p.ends, p.kind), letter, photos, at: atOf(p.day, now), created: now, updated: now, pinned: p.pinned === true }));
       return { ok: true, id: p.id, snap: await buildSnap(now) };
     }
     case 'edit': {
@@ -263,7 +272,7 @@ async function owner(req: Request, now: number) {
       const photos = photosOf(p.photos, p.id, exists);
       const letter = p.kind === 'letter' ? letterOf(p.letter) : null;
       checkPost(p.kind, photos, letter);
-      await q(db.from('bj_posts').update({ kind: p.kind, caption: text(p.caption, 2200, '글'), donor: lineOf(p.donor, '후원자 닉네임'), theme: lineOf(p.theme, '스푼 테마'), letter, photos, at: atOf(p.day, now, Number(old.at)), updated: now, pinned: p.pinned === true }).eq('id', p.id));
+      await q(db.from('bj_posts').update({ kind: p.kind, caption: text(p.caption, 2200, '글'), donor: lineOf(p.donor, '후원자 닉네임'), theme: lineOf(p.theme, '스푼 테마'), ends: endsOf(p.ends, p.kind), letter, photos, at: atOf(p.day, now, Number(old.at)), updated: now, pinned: p.pinned === true }).eq('id', p.id));
       // 빠진 사진과, 올렸다가 쓰지 않은 사진을 지운다
       const keep = new Set(photos.flatMap((x) => [x.f, x.t]));
       await removeFiles([...exists].filter((x) => !keep.has(x)));
@@ -305,7 +314,9 @@ async function owner(req: Request, now: number) {
 
 // ---- 먼치킨 봇(최초 박제판 저절로 올리기) ----
 // board-begin {board, hash, again} → 지운 글이면 {gone:true}, 아니면 그 판의 글 번호와 그림 두 장(큰·작은)의 올리기 주소
-// board-save {board, post, f, w, h, title, filled, total, hash} → 처음이면 새 글(최초 박제판, 오늘 날짜), 있으면 사진만 바꾼다(글·날짜·고정은 주인이 고친 그대로)
+// board-save {board, post, f, w, h, title, filled, total, hash, ends?} → 처음이면 새 글(최초 박제판, 오늘 날짜), 있으면 사진만 바꾼다(글·날짜·고정은 주인이 고친 그대로)
+//  ends(종료 날짜)는 봇이 보낼 때만(0.19.14~) 고친다 — 봇이 정하는 값
+// board-meta {board, title, ends} → 그림은 그대로, 판 이름(extra.title)·종료 날짜만. 글이 없으면 {missing:true}
 async function bot(req: Request, now: number) {
   const body = await readJson(req, 16384);
   const id = await verify(body, now, BOT_PREFIX, BOT_ACTIONS);
@@ -321,9 +332,16 @@ async function bot(req: Request, now: number) {
   if (p.again === true) await q(db.from('bj_bot_gone').delete().eq('src', src));
   const [gone, post]: any = await Promise.all([
     q(db.from('bj_bot_gone').select('src').eq('src', src).maybeSingle()),
-    q(db.from('bj_posts').select('id,photos').eq('src', src).maybeSingle())
+    q(db.from('bj_posts').select('id,photos,extra').eq('src', src).maybeSingle())
   ]);
   if (gone) return { ok: true, gone: true };
+  if (body.action === 'board-meta') {
+    if (!post) return { ok: true, missing: true };
+    const ends = endsOf(p.ends, 'first'), title = text(p.title, 20, '판 이름');
+    await q(db.from('bj_posts').update({ extra: { ...(isObj(post.extra) ? post.extra : {}), title }, ends, updated: now }).eq('id', post.id));
+    await buildSnap(now);
+    return { ok: true, post: post.id };
+  }
   if (body.action === 'board-begin') {
     const postId = post?.id || rid(10), base = `p/${postId}/${rid(8)}`;
     return { ok: true, post: postId, full: await signedUpload(base + '.jpg'), thumb: await signedUpload(base + '-t.jpg') };
@@ -337,8 +355,9 @@ async function bot(req: Request, now: number) {
   if (!Number.isInteger(total) || total < 1 || total > 80 || !Number.isInteger(filled) || filled < 0 || filled > total) throw fail(400, '칸 수가 올바르지 않아요.');
   const title = text(p.title, 20, '판 이름');
   const extra = { title, filled, total, bot: true, hash: typeof p.hash === 'string' && /^[0-9a-f]{64}$/.test(p.hash) ? p.hash : '' };
-  if (post) await q(db.from('bj_posts').update({ photos, extra, updated: now }).eq('id', p.post));
-  else await q(db.from('bj_posts').insert({ id: p.post, kind: 'first', caption: title ? `🏆 ${title} 최초 박제판` : '🏆 최초 박제판', letter: null, photos, at: now, created: now, updated: now, pinned: false, hearts: 0, src, extra }));
+  const ends = p.ends === undefined ? undefined : endsOf(p.ends, 'first');
+  if (post) await q(db.from('bj_posts').update({ photos, extra, ...(ends === undefined ? {} : { ends }), updated: now }).eq('id', p.post));
+  else await q(db.from('bj_posts').insert({ id: p.post, kind: 'first', caption: title ? `🏆 ${title} 최초 박제판` : '🏆 최초 박제판', letter: null, photos, at: now, created: now, updated: now, pinned: false, hearts: 0, src, extra, ends: ends || '' }));
   // 이번 그림 두 장만 남기고 지난 그림·올렸다가 쓰지 않은 그림을 지운다
   const keep = new Set(photos.flatMap((x) => [x.f, x.t]));
   await removeFiles([...exists].filter((x) => !keep.has(x)));
@@ -379,7 +398,7 @@ Deno.serve(async (req) => {
   const route = new URL(req.url).pathname.replace(/^.*?\/bakje\/?/, '').replace(/\/+$/, '');
   const now = Date.now();
   try {
-    if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: VERSION, kinds: KINDS, bot: true, donor: true, theme: true, visit: true });
+    if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: VERSION, kinds: KINDS, bot: true, donor: true, theme: true, visit: true, ends: true });
     if (req.method === 'GET' && route === 'feed') {
       const ip = await ipHash(req);
       if (!await hit('bjf:' + ip, 60, 20)) throw fail(429, '너무 자주 불러왔어요. 잠깐 뒤에 다시 해 주세요.');

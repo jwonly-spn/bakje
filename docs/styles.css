@@ -165,6 +165,12 @@ a { color: inherit; }
 .ft-bar { display: block; height: 5px; border-radius: 99px; background: rgba(255, 255, 255, .22); overflow: hidden; }
 .ft-bar i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #ffd56b, #ff8a5b); }
 .ft-count { font-size: 12px; font-weight: 600; color: rgba(255, 255, 255, .78); }
+/* 종료까지 남은 날: D-5 · 11월 30일 종료 (3일 안이면 진하게, 지났으면 흐리게) */
+.ft-ends { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; font-weight: 600; color: rgba(255, 255, 255, .82); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ft-ends b { flex: none; padding: 2px 8px; border-radius: 99px; background: rgba(255, 255, 255, .2); color: #fff; font-size: 12px; font-weight: 800; letter-spacing: .01em; }
+.ft-ends.is-soon b { background: linear-gradient(90deg, #ffb36b, #ff6b6b); }
+.ft-ends.is-over { color: rgba(255, 255, 255, .55); }
+.ft-ends.is-over b { background: rgba(255, 255, 255, .12); color: rgba(255, 255, 255, .7); }
 /* 달력 탭: 고른 달·날의 박제판 제목 */
 .sec-title { display: flex; align-items: center; gap: 6px; margin: 18px 0 12px; font-size: 15px; font-weight: 700; }
 .sec-title .ic { width: 18px; height: 18px; }
@@ -289,6 +295,11 @@ dialog.viewer { position: fixed; inset: 0; width: 100vw; height: 100dvh; max-wid
 .p-theme { margin: 0; display: flex; align-items: center; gap: 6px; font-size: 13px; }
 .p-label { flex: none; padding: 2px 8px; border-radius: 999px; background: var(--surface-2); color: var(--ink-2); font-size: 11px; font-weight: 600; }
 .p-day { font-size: 12px; color: var(--ink-2); }
+.p-ends { margin: 0; display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.p-dday { flex: none; padding: 2px 8px; border-radius: 999px; background: #fff1e0; color: #c25e00; font-size: 11px; font-weight: 800; }
+.p-ends.is-soon .p-dday { background: #ffe1df; color: #d1322b; }
+.p-ends.is-over { color: var(--ink-2); }
+.p-ends.is-over .p-dday { background: var(--surface-2); color: var(--ink-2); }
 .p-caption { margin: 0; white-space: pre-wrap; word-break: keep-all; overflow-wrap: anywhere; font-size: 15px; line-height: 1.65; }
 /* 사진 왼쪽 위 후원자 닉네임(워터마크처럼) */
 /* 글자 크기는 사진 칸 너비를 따라감(cqi) — 작은 격자 칸에서도 잘 보이게 */
@@ -454,6 +465,8 @@ label, .label { font-size: 13px; font-weight: 600; color: var(--ink); margin-top
   .ft-title { font-size: 14px; }
   .ft-bar { height: 4px; }
   .ft-count { font-size: 10px; }
+  .ft-ends { gap: 4px; font-size: 10px; }
+  .ft-ends b { padding: 1px 6px; font-size: 10px; }
   .cal { margin: 14px 12px 6px; }
   .cal-months { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 5px; margin: 10px 0 16px; }
   .cal-m { min-height: 42px; font-size: 12px; }

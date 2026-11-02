@@ -93,6 +93,9 @@ alter table bj_posts add column if not exists donor text not null default '';
 -- 스푼 테마 이름(2026-11-03, 마이그레이션 bakje_theme): 주인이 적는 한 줄 — 글 칸에 보인다
 alter table bj_posts add column if not exists theme text not null default '';
 
+-- 종료 날짜(2026-11-03, 마이그레이션 bakje_ends): 최초 박제판마다 주인이 적는 YYYY-MM-DD(한국 날짜) — 사이트가 남은 날을 계산한다
+alter table bj_posts add column if not exists ends text not null default '';
+
 -- 방문자 수(2026-11-03, 마이그레이션 bakje_visits): 브라우저마다(해시) 하루 한 번. bj_visits 는 이틀 지나면 지운다, 수는 bj_visit_counts(날짜·total)
 create table if not exists bj_visits (day text not null, voter text not null, primary key (day, voter));
 create table if not exists bj_visit_counts (key text primary key, n bigint not null default 0);
