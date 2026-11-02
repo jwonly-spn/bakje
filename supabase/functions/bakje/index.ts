@@ -2,11 +2,17 @@
 // 보는 사람은 로그인하지 않는다(목록은 공개 버킷의 snap/feed.json, 하트만 이 함수로).
 // 글쓰기는 "주인 기기"만: 브라우저가 만든 P-256 열쇠로 서명(BAKJE/1). 처음 등록은 등록 코드로.
 // 표·버킷: supabase/schema.sql (bj_devices·bj_posts·bj_hearts·bj_meta, 버킷 bakje).
+// 최초 박제판(2026-11-03): 글 종류 first(1:1). 먼치킨 봇(개인용)의 최초 박제판이 저절로 올라온다 — POST bot, 머리말 JUN-LIVE-BAKJE/1,
+//  서명 열쇠 = 먼치킨의 승인 기기 키(junlive_devices approved) + 추억앨범 봇 목록(bj_bots)에 있는 기기만. 판마다 글 하나(src), 이름이 더 채워지면 사진만 바꾼다.
+//  주인이 그 글을 지우면 bj_bot_gone 에 남겨 다시 만들지 않는다(봇이 again:true 로 부를 때만 다시).
 // 주의: MCP 로 올릴 때 백슬래시-u 글자 표기가 풀려 버리므로 이 파일에는 그런 표기를 쓰지 않는다.
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
 const db = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, { auth: { persistSession: false } });
-const VERSION = 1, BUCKET = 'bakje', PREFIX = 'BAKJE/1';
+const VERSION = 2, BUCKET = 'bakje', PREFIX = 'BAKJE/1', BOT_PREFIX = 'JUN-LIVE-BAKJE/1';
+const KINDS = ['board', 'first', 'letter'];
+const BOT_ACTIONS = new Set(['board-begin', 'board-save']);
+const BOARD_REF = /^[a-z0-9][a-z0-9-]{0,47}$/; // 먼치킨 판 번호(+ "-g<몇 번째 글>")
 const BROKEN = '잠시 문제가 생겼어요. 조금 뒤에 다시 해 주세요.';
 const MAX_PHOTOS = 10, MAX_DEVICES = 10;
 const PAPERS = ['cream', 'rose', 'sky', 'lilac', 'mint'];
@@ -83,11 +89,12 @@ async function readJson(req: Request, max: number) {
 }
 
 // ---- 서명 ----
-async function verify(b: unknown, now: number) {
-  if (!isObj(b) || typeof b.action !== 'string' || !ACTIONS.has(b.action) || !Number.isSafeInteger(b.timestamp) || Math.abs(now - b.timestamp) > 10 * 60000
+// 주인 기기(브라우저, BAKJE/1) · 먼치킨 봇(JUN-LIVE-BAKJE/1 — 먼치킨 승인 기기 키). 머리말이 달라 서로의 서명을 쓸 수 없다.
+async function verify(b: unknown, now: number, prefix = PREFIX, actions = ACTIONS) {
+  if (!isObj(b) || typeof b.action !== 'string' || !actions.has(b.action) || !Number.isSafeInteger(b.timestamp) || Math.abs(now - b.timestamp) > 10 * 60000
     || typeof b.nonce !== 'string' || !NONCE.test(b.nonce) || typeof b.publicKey !== 'string' || !/^[-_A-Za-z0-9]{122}$/.test(b.publicKey)
     || typeof b.signature !== 'string' || !/^[-_A-Za-z0-9]{86}$/.test(b.signature)) throw fail(400, '요청이 만료되었거나 올바르지 않아요. 기기 시간을 확인해 주세요.');
-  const msg = `${PREFIX}\n${b.action}\n${b.timestamp}\n${b.nonce}\n${b.publicKey}\n${await sha256hex(JSON.stringify(b.payload ?? null))}`;
+  const msg = `${prefix}\n${b.action}\n${b.timestamp}\n${b.nonce}\n${b.publicKey}\n${await sha256hex(JSON.stringify(b.payload ?? null))}`;
   let ok = false;
   try {
     const key = await crypto.subtle.importKey('spki', decode64url(b.publicKey), { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
@@ -125,10 +132,12 @@ async function signedUpload(path: string) {
 const profileOut = (p: any) => ({ name: p?.name || '', bio: p?.bio || '', link: p?.link || '', avatar: p?.avatar || '' });
 async function buildSnap(now: number) {
   const [posts, profile] = await Promise.all([
-    q(db.from('bj_posts').select('id,kind,caption,letter,photos,at,pinned,hearts').order('pinned', { ascending: false }).order('at', { ascending: false }).order('created', { ascending: false }).limit(3000)),
+    q(db.from('bj_posts').select('id,kind,caption,letter,photos,at,pinned,hearts,extra').order('pinned', { ascending: false }).order('at', { ascending: false }).order('created', { ascending: false }).limit(3000)),
     getMeta('profile')
   ]);
-  const snap = { v: VERSION, snapAt: now, profile: profileOut(profile), posts };
+  // extra: 먼치킨이 올린 최초 박제판의 판 이름·채운 칸 수({title, filled, total, bot}) — 그 밖의 글은 빼서 작게
+  const out = (posts as any[]).map(({ extra, ...p }) => (isObj(extra) ? { ...p, extra: { title: extra.title || '', filled: extra.filled || 0, total: extra.total || 0, bot: extra.bot === true } } : p));
+  const snap = { v: VERSION, snapAt: now, profile: profileOut(profile), posts: out };
   const { error } = await storage().upload('snap/feed.json', new Blob([JSON.stringify(snap)], { type: 'application/json' }), { upsert: true, contentType: 'application/json', cacheControl: '10' });
   if (error) console.error('snap', error.message);
   lastSnap = now;
@@ -166,8 +175,8 @@ function letterOf(v: unknown) {
   return out.to || out.text || out.from ? out : null;
 }
 function checkPost(kind: unknown, photos: any[], letter: any) {
-  if (kind !== 'board' && kind !== 'letter') throw fail(400, '글 종류를 골라 주세요.');
-  if (kind === 'board' && !photos.length) throw fail(400, '박제판 사진을 한 장 이상 골라 주세요.');
+  if (typeof kind !== 'string' || !KINDS.includes(kind)) throw fail(400, '글 종류를 골라 주세요.');
+  if (kind !== 'letter' && !photos.length) throw fail(400, '박제판 사진을 한 장 이상 골라 주세요.');
   if (kind === 'letter' && !photos.length && !letter?.text) throw fail(400, '편지 내용을 쓰거나 사진을 골라 주세요.');
 }
 
@@ -260,6 +269,9 @@ async function owner(req: Request, now: number) {
     }
     case 'delete': {
       if (typeof p.id !== 'string' || !ID.test(p.id)) throw fail(400, '글 번호가 올바르지 않아요.');
+      // 먼치킨이 올린 최초 박제판이면 지운 것을 남겨 둔다(다음에 이름이 더 채워져도 다시 만들지 않게)
+      const old: any = await q(db.from('bj_posts').select('src').eq('id', p.id).maybeSingle());
+      if (old?.src) await q(db.from('bj_bot_gone').upsert({ src: old.src, at: now }));
       await q(db.from('bj_posts').delete().eq('id', p.id));
       await removeFiles([...await listFolder('p/' + p.id)]);
       return { ok: true, snap: await buildSnap(now) };
@@ -284,6 +296,49 @@ async function owner(req: Request, now: number) {
   throw fail(400, '모르는 요청이에요.');
 }
 
+// ---- 먼치킨 봇(최초 박제판 저절로 올리기) ----
+// board-begin {board, hash, again} → 지운 글이면 {gone:true}, 아니면 그 판의 글 번호와 그림 두 장(큰·작은)의 올리기 주소
+// board-save {board, post, f, w, h, title, filled, total, hash} → 처음이면 새 글(최초 박제판, 오늘 날짜), 있으면 사진만 바꾼다(글·날짜·고정은 주인이 고친 그대로)
+async function bot(req: Request, now: number) {
+  const body = await readJson(req, 16384);
+  const id = await verify(body, now, BOT_PREFIX, BOT_ACTIONS);
+  const [dev, allow]: any = await Promise.all([
+    q(db.from('junlive_devices').select('state').eq('id', id).maybeSingle()),
+    q(db.from('bj_bots').select('id').eq('id', id).maybeSingle())
+  ]);
+  if (dev?.state !== 'approved' || !allow) throw fail(403, '추억앨범에 올릴 수 있는 먼치킨이 아니에요.');
+  if (!await hit('bjb:' + id, 3600, 240)) throw fail(429, '한 시간에 올릴 수 있는 만큼 넘었어요. 조금 뒤에 다시 올려요.');
+  const p = isObj(body.payload) ? body.payload : {};
+  if (typeof p.board !== 'string' || !BOARD_REF.test(p.board)) throw fail(400, '박제판 번호가 올바르지 않아요.');
+  const src = `fb:${id.slice(0, 16)}:${p.board}`;
+  if (p.again === true) await q(db.from('bj_bot_gone').delete().eq('src', src));
+  const [gone, post]: any = await Promise.all([
+    q(db.from('bj_bot_gone').select('src').eq('src', src).maybeSingle()),
+    q(db.from('bj_posts').select('id,photos').eq('src', src).maybeSingle())
+  ]);
+  if (gone) return { ok: true, gone: true };
+  if (body.action === 'board-begin') {
+    const postId = post?.id || rid(10), base = `p/${postId}/${rid(8)}`;
+    return { ok: true, post: postId, full: await signedUpload(base + '.jpg'), thumb: await signedUpload(base + '-t.jpg') };
+  }
+  // board-save
+  if (typeof p.post !== 'string' || !ID.test(p.post) || (post && post.id !== p.post)) throw fail(409, '박제판 글이 바뀌었어요. 다시 올려요.');
+  if (!post && await q(db.from('bj_posts').select('id').eq('id', p.post).maybeSingle())) throw fail(409, '글 번호가 겹쳤어요. 다시 올려요.');
+  const exists = await listFolder('p/' + p.post);
+  const photos = photosOf([{ f: p.f, w: p.w, h: p.h }], p.post, exists);
+  const total = Number(p.total), filled = Number(p.filled);
+  if (!Number.isInteger(total) || total < 1 || total > 80 || !Number.isInteger(filled) || filled < 0 || filled > total) throw fail(400, '칸 수가 올바르지 않아요.');
+  const title = text(p.title, 20, '판 이름');
+  const extra = { title, filled, total, bot: true, hash: typeof p.hash === 'string' && /^[0-9a-f]{64}$/.test(p.hash) ? p.hash : '' };
+  if (post) await q(db.from('bj_posts').update({ photos, extra, updated: now }).eq('id', p.post));
+  else await q(db.from('bj_posts').insert({ id: p.post, kind: 'first', caption: title ? `🏆 ${title} 최초 박제판` : '🏆 최초 박제판', letter: null, photos, at: now, created: now, updated: now, pinned: false, hearts: 0, src, extra }));
+  // 이번 그림 두 장만 남기고 지난 그림·올렸다가 쓰지 않은 그림을 지운다
+  const keep = new Set(photos.flatMap((x) => [x.f, x.t]));
+  await removeFiles([...exists].filter((x) => !keep.has(x)));
+  await buildSnap(now);
+  return { ok: true, post: p.post, created: !post };
+}
+
 // ---- 하트(누구나) ----
 async function heart(req: Request, now: number) {
   const b = await readJson(req, 2048);
@@ -305,7 +360,7 @@ Deno.serve(async (req) => {
   const route = new URL(req.url).pathname.replace(/^.*?\/bakje\/?/, '').replace(/\/+$/, '');
   const now = Date.now();
   try {
-    if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: VERSION });
+    if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: VERSION, kinds: KINDS, bot: true });
     if (req.method === 'GET' && route === 'feed') {
       const ip = await ipHash(req);
       if (!await hit('bjf:' + ip, 60, 20)) throw fail(429, '너무 자주 불러왔어요. 잠깐 뒤에 다시 해 주세요.');
@@ -313,6 +368,7 @@ Deno.serve(async (req) => {
     }
     if (req.method === 'POST' && route === 'heart') return json(200, await heart(req, now));
     if (req.method === 'POST' && route === 'owner') return json(200, await owner(req, now));
+    if (req.method === 'POST' && route === 'bot') return json(200, await bot(req, now));
     return json(404, { ok: false, error: '찾을 수 없어요.' });
   } catch (e) {
     if (e instanceof Fail) return json(e.status, { ok: false, error: e.message });

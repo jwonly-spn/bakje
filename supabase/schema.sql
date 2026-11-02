@@ -66,6 +66,28 @@ end $$;
 revoke execute on function bj_heart(text, text, boolean, bigint) from public, anon, authenticated;
 grant execute on function bj_heart(text, text, boolean, bigint) to service_role;
 
+-- 최초 박제판(2026-11-03, 마이그레이션 bakje_first_board): 글 종류 first(1:1) + 먼치킨 봇이 저절로 올리는 글
+alter table bj_posts drop constraint if exists bj_posts_kind_check;
+alter table bj_posts add constraint bj_posts_kind_check check (kind in ('board', 'first', 'letter'));
+alter table bj_posts add column if not exists src text;      -- 먼치킨이 올린 글: fb:<기기 번호 앞 16자>:<판 번호>
+alter table bj_posts add column if not exists extra jsonb;   -- {title, filled, total, bot, hash}
+create unique index if not exists bj_posts_src on bj_posts (src) where src is not null;
+create table if not exists bj_bots (
+  id text primary key,                 -- 먼치킨 승인 기기 번호(junlive_devices.id). 이 표에 있는 기기만 POST bot 을 쓸 수 있다
+  label text not null default '',
+  created bigint not null
+);
+create table if not exists bj_bot_gone (
+  src text primary key,                -- 주인이 지운 먼치킨 글(다시 만들지 않는다)
+  at bigint not null
+);
+alter table bj_bots enable row level security;
+alter table bj_bot_gone enable row level security;
+revoke all on bj_bots, bj_bot_gone from anon, authenticated;
+grant select, insert, update, delete on bj_bots, bj_bot_gone to service_role;
+-- 기기를 넣을 때(예: 이 PC 먼치킨): insert into bj_bots (id, label, created) select id, '이 PC 먼치킨', (extract(epoch from now())*1000)::bigint
+--   from junlive_devices where id like '<기기 번호 앞자리>%' and state = 'approved';
+
 -- 사진(원본 크기 줄인 것·작은 그림)과 미리 만든 목록 snap/feed.json
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values ('bakje', 'bakje', true, 15728640, array['image/jpeg', 'application/json'])
