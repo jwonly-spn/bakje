@@ -392,7 +392,8 @@ async function owner(req: Request, now: number) {
     }
     case 'blocks': {
       const rows: any = await q(db.from('bj_album_blocks').select('member,at,bj_members(nickname)').eq('album', A).order('at', { ascending: false }).limit(500));
-      return { ok: true, blocks: rows.map((r: any) => ({ member: r.member, nick: r.bj_members?.nickname || '(닉네임 없음)', at: r.at })) };
+      // on: 지금 댓글 받기(주인 설정 화면의 처음 값)
+      return { ok: true, on: (await getMeta(A, 'comments'))?.off !== true, blocks: rows.map((r: any) => ({ member: r.member, nick: r.bj_members?.nickname || '(닉네임 없음)', at: r.at })) };
     }
     case 'comments-set': {
       const on = p.on === true;
