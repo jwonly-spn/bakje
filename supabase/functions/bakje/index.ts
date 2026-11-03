@@ -17,11 +17,11 @@
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
 const db = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, { auth: { persistSession: false } });
-const VERSION = 5, BUCKET = 'bakje', PREFIX = 'BAKJE/1', BOT_PREFIX = 'JUN-LIVE-BAKJE/1';
+const VERSION = 6, BUCKET = 'bakje', PREFIX = 'BAKJE/1', BOT_PREFIX = 'JUN-LIVE-BAKJE/1';
 const LEGACY = 'hanijun', ALBUM_RE = /^[a-z][a-z0-9-]{1,30}$/, HOST_RE = /^[a-z0-9.-]{3,253}$/;
 const READONLY = '이 앨범은 지금 보기만 할 수 있어요. 운영자에게 문의해 주세요.';
 const KINDS = ['board', 'first', 'letter'];
-const BOT_ACTIONS = new Set(['board-begin', 'board-save', 'board-meta']);
+const BOT_ACTIONS = new Set(['board-begin', 'board-save', 'board-meta', 'album-info']);
 const BOARD_REF = /^[a-z0-9][a-z0-9-]{0,47}$/; // 먼치킨 판 번호(+ "-g<몇 번째 글>")
 const BROKEN = '잠시 문제가 생겼어요. 조금 뒤에 다시 해 주세요.';
 const MAX_PHOTOS = 10, MAX_DEVICES = 10;
@@ -374,6 +374,8 @@ async function owner(req: Request, now: number) {
 // board-save {board, post, f, w, h, title, filled, total, hash, ends?} → 처음이면 새 글(최초 박제판, 오늘 날짜), 있으면 사진만 바꾼다(글·날짜·고정은 주인이 고친 그대로)
 //  ends(종료 날짜)는 봇이 보낼 때만(0.19.14~) 고친다 — 봇이 정하는 값
 // board-meta {board, title, ends} → 그림은 그대로, 판 이름(extra.title)·종료 날짜만. 글이 없으면 {missing:true}
+// album-info {} (v6, 2026-11-04 — DJ 마다 앨범 시범) → 이 기기에 이어진 앨범 {album, name, state, site} · 없으면 {none:true}(오류 아님).
+//  봇은 이 답으로 화면에 앨범 칸을 보일지 정한다 — 운영자가 이어 주지 않은 먼치킨에는 아무것도 보이지 않는다.
 async function bot(req: Request, now: number) {
   const body = await readJson(req, 16384);
   const id = await verify(body, now, BOT_PREFIX, BOT_ACTIONS);
@@ -381,6 +383,15 @@ async function bot(req: Request, now: number) {
     q(db.from('junlive_devices').select('state').eq('id', id).maybeSingle()),
     q(db.from('bj_bots').select('id,album').eq('id', id).maybeSingle())
   ]);
+  if (body.action === 'album-info') {
+    if (!await hit('bjbi:' + id, 3600, 30)) throw fail(429, '너무 자주 물었어요. 조금 뒤에 다시 물어요.');
+    if (dev?.state !== 'approved' || !allow) return { ok: true, none: true };
+    const album = await albumRow(allow.album, now).catch(() => null);
+    if (!album) return { ok: true, none: true };
+    const hosts: any = await q(db.from('bj_hosts').select('host,created').eq('album', album.id));
+    const host = [...hosts].sort((a: any, b: any) => Number(a.host.startsWith('www.')) - Number(b.host.startsWith('www.')) || (a.created || 0) - (b.created || 0))[0]?.host || '';
+    return { ok: true, album: album.id, name: album.name || '', state: album.state, site: host ? `https://${host}/` : '' };
+  }
   if (dev?.state !== 'approved' || !allow) throw fail(403, '추억앨범에 올릴 수 있는 먼치킨이 아니에요.');
   const A: string = allow.album;
   writable(await albumRow(A, now));
@@ -572,7 +583,7 @@ Deno.serve(async (req) => {
   const route = new URL(req.url).pathname.replace(/^.*?\/bakje\/?/, '').replace(/\/+$/, '');
   const now = Date.now();
   try {
-    if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: VERSION, kinds: KINDS, bot: true, donor: true, theme: true, visit: true, ends: true, albums: true });
+    if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: VERSION, kinds: KINDS, bot: true, donor: true, theme: true, visit: true, ends: true, albums: true, albumInfo: true });
     if (req.method === 'GET' && route === 'feed') {
       const ip = await ipHash(req);
       if (!await hit('bjf:' + ip, 60, 20)) throw fail(429, '너무 자주 불러왔어요. 잠깐 뒤에 다시 해 주세요.');
