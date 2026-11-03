@@ -488,8 +488,8 @@ label, .label { font-size: 13px; font-weight: 600; color: var(--ink); margin-top
   .post.in-viewer { display: block; max-height: none; min-height: 100dvh; border-radius: 0; background: var(--bg); }
   .p-head { position: sticky; top: 0; z-index: 2; background: var(--bg); padding: 6px 4px; gap: 8px; }
   .p-back { display: inline-grid; }
-  /* 9:16 은 화면 너비에 꼭 맞게(휴대폰 화면이 낮으면 높이에 맞춘다) · 1:1 은 정사각 */
-  .p-media { width: 100%; height: min(calc(100dvh - 52px), calc(100vw * var(--ratio, 1))); aspect-ratio: auto; }
+  /* 사진 칸 = 첫 사진 비율 그대로 화면 너비에 꽉(2026-11-04 — 1:1 박제판은 정사각, 9:16 은 세로로 길게 · 흐린 여백 없음, 길면 아래로 넘겨 봄) */
+  .p-media { width: 100%; height: auto; aspect-ratio: 1 / var(--pratio, var(--ratio, 1)); }
   .p-media.letter-only { height: auto; padding: 4px 0; }
   .p-actions { border-top: 0; padding: 4px 6px 0; }
   .p-body { overflow: visible; padding: 4px 16px 36px; }
@@ -508,7 +508,7 @@ label, .label { font-size: 13px; font-weight: 600; color: var(--ink); margin-top
 .post.is-preview { pointer-events: none; }
 .pv-m .post.in-viewer { display: block; max-height: none; min-height: 0; border-radius: 0; background: var(--bg); }
 .pv-m .p-head { position: static; padding: 6px 4px 6px 12px; gap: 8px; border-bottom: 0; }
-.pv-m .p-media { width: 390px; height: 693px; aspect-ratio: auto; }
+.pv-m .p-media { width: 390px; height: calc(390px * var(--pratio, var(--ratio, 1))); aspect-ratio: auto; }
 .pv-m .p-actions { border-top: 0; padding: 4px 6px 0; }
 .pv-m .p-body { overflow: visible; padding: 4px 16px 24px; }
 .pv-pc .post.in-viewer { display: grid; grid-template-columns: 360px 405px; grid-template-rows: auto minmax(0, 1fr) auto; grid-template-areas: "media head" "media body" "media actions"; height: 640px; max-height: none; min-height: 0; border-radius: 0; background: var(--elev); }

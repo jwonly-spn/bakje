@@ -474,6 +474,10 @@ function postCard(post, { preview = false } = {}) {
     post.caption ? h('p', { class: 'p-caption', text: post.caption }) : null);
   const card = h('article', { class: 'post in-viewer' + (preview ? ' is-preview' : ''), dataset: { post: post.id } }, head, media, actions, body);
   card.style.setProperty('--ratio', String(FRAME));
+  // 휴대폰(2026-11-04 사용자 "모바일에서 이런 여백들이 너무 거슬려"): 사진 칸을 첫 사진 비율(세로/가로) 그대로 — 화면 너비를 꽉 채우고 흐린 여백이 없다.
+  //  비율이 너무 극단이면 0.5~2 사이로(나머지는 예전처럼 흐린 채움). 넓은 화면은 9:16 틀 그대로(--ratio).
+  const p0 = hasPhotos ? post.photos[0] : null;
+  if (p0?.w > 0 && p0?.h > 0) card.style.setProperty('--pratio', String(Math.min(2, Math.max(0.5, p0.h / p0.w))));
   return card;
 }
 // 사진 왼쪽 위 후원자 닉네임(워터마크처럼)
