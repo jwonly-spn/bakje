@@ -1,5 +1,6 @@
-// 한이준 추억앨범 — 최초 박제판·박제판을 모아 두는 개인 SNS.
-// 보기: 공개 버킷의 snap/feed.json(서버가 글이 바뀔 때마다 새로 씀). 하트·글쓰기: Supabase 함수 bakje.
+// 추억앨범 — 최초 박제판·박제판을 모아 두는 DJ 개인 SNS(DJ마다 따로 떨어진 앨범, 주소마다 하나).
+// 어느 앨범인지: 주소(호스트)로 고른다 — 공개 버킷 h/<호스트>.json(없으면 함수 GET host). 미리 보기(localhost)는 ?album=.
+// 보기: 공개 버킷의 snap/<앨범>/feed.json(서버가 글이 바뀔 때마다 새로 씀). 하트·글쓰기: Supabase 함수 bakje.
 // 글쓰기는 "주인 기기"만 — 이 브라우저가 만든 열쇠(IndexedDB, 밖으로 못 꺼냄)로 서명한다(BAKJE/1).
 
 const SB = 'https://aksegkhhugqvvaidgvro.supabase.co';
@@ -14,8 +15,13 @@ const FRAME = 16 / 9;
 // 탭: 게시물 = 최초 박제판(먼치킨 최초 박제판이 저절로 올라온다) · 박제판 = 올린 박제판 사진 · 달력 = 박제판을 달·날로 골라 보기
 const tabOf = (kind) => (kind === 'first' ? 'all' : 'board');
 const byDate = (list) => [...list].sort((a, b) => b.at - a.at);   // 날짜가 새것 먼저(같으면 서버 차례)
-const SITE_NAME = '한이준 추억앨범';
-const DEFAULT_AVATAR = 'profile.webp';   // 프로필 사진을 따로 올리지 않았을 때(설정 › 사진 바꾸기로 바꾼다)
+const LEGACY = 'hanijun';   // 한이준 앨범(처음 앨범)
+const ALBUM_RE = /^[a-z][a-z0-9-]{1,30}$/;
+const HOST = location.hostname.toLowerCase();
+const LOCAL = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(HOST);
+const siteName = () => S.feed?.album?.name || (ALBUM === LEGACY ? '한이준 추억앨범' : '추억앨범');
+// 프로필 사진을 따로 올리지 않았을 때(설정 › 사진 바꾸기로 바꾼다) — 한이준 앨범만 그림이 있다
+const defaultAvatar = () => (ALBUM === LEGACY ? 'profile.webp' : 'icon.svg');
 const enc = new TextEncoder();
 
 // ---------- 작은 도구 ----------
@@ -98,6 +104,22 @@ function vid() {
 }
 function readSet(k) { try { return new Set(JSON.parse(ls.get(k) || '[]')); } catch { return new Set(); } }
 
+// ---------- 어느 앨범인지 ----------
+// 한 번 알아낸 앨범은 이 브라우저에 기억해 두고(다음엔 바로 그린다), 뒤에서 다시 확인한다.
+const albumParam = LOCAL ? (param('album') || '') : '';
+let ALBUM = ALBUM_RE.test(albumParam) ? albumParam : (ls.get('bj_album') || (LOCAL ? LEGACY : ''));
+async function resolveAlbum() {
+  if (LOCAL) return ALBUM;
+  try {
+    const r = await fetch(PUB + 'h/' + HOST + '.json?t=' + Math.floor(Date.now() / 60000), { cache: 'no-store' });
+    if (r.ok) { const j = await r.json(); if (ALBUM_RE.test(j?.album || '')) return j.album; }
+  } catch { /* 함수로 */ }
+  try { const j = await call('host', { query: { h: HOST } }); if (ALBUM_RE.test(j.album || '')) return j.album; }
+  catch (e) { if (e.status === 404) return null; }
+  return ALBUM || undefined;   // 인터넷 문제: 기억한 앨범(없으면 모름)
+}
+const feedKey = () => (ALBUM === LEGACY ? 'bj_feed' : 'bj_feed:' + ALBUM);
+
 // ---------- 주인 기기 열쇠 ----------
 const DEV_DB = 'bakje-owner', DEV_STORE = 'keys', DEV_ID = 'main';
 const deviceSupported = () => typeof indexedDB !== 'undefined' && !!globalThis.crypto?.subtle && isSecureContext;
@@ -149,12 +171,13 @@ async function signed(action, payload) {
 }
 
 // ---------- 서버 ----------
-async function call(path, { method = 'GET', body, timeout = 25000 } = {}) {
+async function call(path, { method = 'GET', body, query = {}, timeout = 25000 } = {}) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeout);
   let res;
   try {
-    res = await fetch(API + path + (method === 'GET' ? `?apikey=${KEY}` : ''), {
+    const qs = method === 'GET' ? '?' + new URLSearchParams({ apikey: KEY, ...(ALBUM ? { album: ALBUM } : {}), ...query }) : '';
+    res = await fetch(API + path + qs, {
       method, signal: ctl.signal, cache: 'no-store',
       headers: method === 'GET' ? {} : { apikey: KEY, 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body)
@@ -167,10 +190,11 @@ async function call(path, { method = 'GET', body, timeout = 25000 } = {}) {
   if (!res.ok || !data?.ok) throw Object.assign(Error(data?.error || '잠시 문제가 생겼어요. 조금 뒤에 다시 해 주세요.'), { status: res.status });
   return data;
 }
-const ownerCall = async (action, payload) => call('owner', { method: 'POST', body: await signed(action, payload) });
+// 주인 요청에는 늘 이 앨범을 넣는다(서명 안 — 다른 앨범 주소에서 쓸 수 없다)
+const ownerCall = async (action, payload) => call('owner', { method: 'POST', body: await signed(action, { ...payload, album: ALBUM }) });
 async function fetchFeed(fresh) {
   try {
-    const r = await fetch(PUB + 'snap/feed.json?t=' + (fresh ? Date.now() : Math.floor(Date.now() / 10000)), { cache: 'no-store' });
+    const r = await fetch(PUB + `snap/${ALBUM}/feed.json?t=` + (fresh ? Date.now() : Math.floor(Date.now() / 10000)), { cache: 'no-store' });
     if (r.ok) { const j = await r.json(); if (j && Array.isArray(j.posts)) return j; }
   } catch { /* 함수로 */ }
   return (await call('feed')).snap;
@@ -237,12 +261,12 @@ function shown() {
   if (S.tab === 'cal') return calSelection();
   return byDate(posts().filter((p) => tabOf(p.kind) === S.tab));
 }
-const profileName = () => S.feed?.profile?.name || SITE_NAME;
+const profileName = () => S.feed?.profile?.name || siteName();
 function setFeed(feed) {
   if (!feed || !Array.isArray(feed.posts)) return;
   if (S.feed && feed.snapAt < S.feed.snapAt) return;
   S.feed = feed;
-  try { ls.set('bj_feed', JSON.stringify(feed)); } catch { /* 너무 크면 안 남김 */ }
+  try { ls.set(feedKey(), JSON.stringify(feed)); } catch { /* 너무 크면 안 남김 */ }
 }
 
 // ---------- 알림·확인 ----------
@@ -346,7 +370,7 @@ function burst(host) {
 // ---------- 글 그리기(인스타그램처럼) ----------
 // 저장소 경로 → 주소(글쓰기 미리 보기는 이 브라우저의 blob: 주소를 그대로 쓴다)
 const photoUrl = (path) => (/^(blob:|https?:)/.test(path) ? path : PUB + path);
-const avatarSrc = (path) => (path ? photoUrl(path) : DEFAULT_AVATAR);
+const avatarSrc = (path) => (path ? photoUrl(path) : defaultAvatar());
 function avatarEl(size = '', ring = false) {
   return h('span', { class: `avatar ${size}${ring ? ' ring' : ''}` },
     h('img', { class: 'avatar-img', src: avatarSrc(S.feed?.profile?.avatar), alt: '' }));
@@ -653,7 +677,7 @@ function render() {
   document.title = profileName();
   const topbar = h('header', { class: 'topbar' },
     h('div', { class: 'topbar-in' },
-      h('a', { class: 'brand', href: './', text: SITE_NAME }),
+      h('a', { class: 'brand', href: './', text: siteName() }),
       h('div', { class: 'row' },
         S.owner ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': '새 게시물', title: '새 게시물', onclick: () => openComposer() }, icon('plus-square')) : null,
         S.owner ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': '설정', title: '설정', onclick: () => openSettings() }, icon('gear')) : null,
@@ -697,7 +721,7 @@ function render() {
     S.owner && S.tab === 'board' ? h('button', { class: 'link-btn', type: 'button', onclick: () => openComposer(), text: '첫 박제판 올리기' }) : null);
   else body = h('div', { class: 'grid' }, list.map((p) => tile(p)));
   const footer = h('footer', { class: 'foot' },
-    h('p', null, SITE_NAME, !S.owner ? [' · ', h('a', { href: '?owner', text: '주인 기기 등록' })] : null));
+    h('p', null, siteName(), !S.owner ? [' · ', h('a', { href: '?owner', text: '주인 기기 등록' })] : null));
   app.replaceChildren(topbar, h('main', { class: 'wrap' }, profile, highlights, tabs, body), footer);
 }
 
@@ -982,7 +1006,7 @@ function openSettings() {
       paintAvatar();
     } catch (e) { toast(e.message, true); }
   });
-  const name = h('input', { class: 'input', id: 'pname', maxlength: '30', value: prof.name || '', placeholder: SITE_NAME });
+  const name = h('input', { class: 'input', id: 'pname', maxlength: '30', value: prof.name || '', placeholder: siteName() });
   const bio = h('textarea', { class: 'input', id: 'pbio', rows: '3', maxlength: '300', value: prof.bio || '', placeholder: '소개를 적어 주세요' });
   const link = h('input', { class: 'input', id: 'plink', type: 'url', maxlength: '300', value: prof.link || '', placeholder: 'https://' });
   const pstatus = h('p', { class: 'status', role: 'status' });
@@ -1087,14 +1111,29 @@ async function refresh(fresh = false) {
 const visitParts = () => ['오늘 ', h('b', { text: num(S.visits.today) }), h('span', { class: 'sep', text: '·' }), '전체 ', h('b', { text: num(S.visits.total) })];
 async function countVisit() {
   try {
-    const r = await call('visit', { method: 'POST', body: { vid: S.vid, peek: S.owner } });
+    const r = await call('visit', { method: 'POST', body: { album: ALBUM, vid: S.vid, peek: S.owner } });
     S.visits = { today: Number(r.today) || 0, total: Number(r.total) || 0 };
     const el = $('#visits');
     if (el) el.replaceChildren(...visitParts());
   } catch { /* 못 세도 화면은 그대로 */ }
 }
+function noAlbum(message) {
+  $('#app').replaceChildren(h('main', { class: 'wrap narrow' }, h('section', { class: 'card' },
+    h('h1', { text: '앨범을 찾을 수 없어요' }), h('p', { text: message }))));
+}
 (async function start() {
-  try { const cached = JSON.parse(ls.get('bj_feed') || 'null'); if (cached?.posts) S.feed = cached; } catch { /* 없음 */ }
+  // 처음 오는 브라우저는 앨범부터 알아낸다. 기억한 앨범이 있으면 바로 그리고 뒤에서 확인(바뀌었으면 다시 연다).
+  if (!ALBUM) {
+    const a = await resolveAlbum();
+    if (!a) return noAlbum(a === null ? '주소를 다시 확인해 주세요.' : '인터넷 연결을 확인하고 다시 열어 주세요.');
+    ALBUM = a; ls.set('bj_album', a);
+  } else if (!LOCAL) {
+    resolveAlbum().then((a) => {
+      if (a === null) { ls.del('bj_album'); ls.del(feedKey()); location.reload(); }
+      else if (a && a !== ALBUM) { ls.set('bj_album', a); location.reload(); }
+    });
+  }
+  try { const cached = JSON.parse(ls.get(feedKey()) || 'null'); if (cached?.posts && (cached.album?.id || LEGACY) === ALBUM) S.feed = cached; } catch { /* 없음 */ }
   render();
   await refresh();
   const p = param('p');

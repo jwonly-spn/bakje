@@ -122,6 +122,83 @@ end $$;
 revoke all on function bj_visit(text, text, boolean) from public, anon, authenticated;
 grant execute on function bj_visit(text, text, boolean) to service_role;
 
+-- 추억앨범 여러 개(2026-11-04, 마이그레이션 bakje_albums): DJ마다 따로 떨어진 앨범. 지금 있는 것은 모두 앨범 hanijun.
+--  사이트는 주소(호스트)로 앨범을 고른다(공개 버킷 h/<호스트>.json). 목록은 snap/<앨범>/feed.json. 모든 앨범을 모아 보는 곳은 없다.
+create table if not exists bj_albums (
+  id text primary key check (id ~ '^[a-z][a-z0-9-]{1,30}$'),
+  name text not null default '',
+  state text not null default 'active' check (state in ('active', 'readonly')),   -- readonly: 보기만(글쓰기·봇 올리기 막힘)
+  note text not null default '',
+  created bigint not null
+);
+create table if not exists bj_hosts (
+  host text primary key check (host ~ '^[a-z0-9.-]{3,253}$'),   -- 퓨니코드 소문자
+  album text not null references bj_albums(id) on delete cascade,
+  created bigint not null
+);
+alter table bj_albums enable row level security;
+alter table bj_hosts enable row level security;
+revoke all on bj_albums, bj_hosts from anon, authenticated;
+grant select, insert, update, delete on bj_albums, bj_hosts to service_role;
+
+insert into bj_albums (id, name, created) values ('hanijun', '한이준 추억앨범', (extract(epoch from now()) * 1000)::bigint) on conflict do nothing;
+insert into bj_hosts (host, album, created)
+select h, 'hanijun', (extract(epoch from now()) * 1000)::bigint
+from unnest(array['xn--hu5bi2af5y.com', 'www.xn--hu5bi2af5y.com', 'jwonly-spn.github.io']) as h
+on conflict do nothing;
+
+alter table bj_posts add column if not exists album text not null default 'hanijun' references bj_albums(id) on delete cascade;
+alter table bj_devices add column if not exists album text not null default 'hanijun' references bj_albums(id) on delete cascade;
+alter table bj_bots add column if not exists album text not null default 'hanijun' references bj_albums(id) on delete cascade;
+alter table bj_meta add column if not exists album text not null default 'hanijun' references bj_albums(id) on delete cascade;
+alter table bj_meta drop constraint if exists bj_meta_pkey;
+alter table bj_meta add primary key (album, key);
+create index if not exists bj_posts_album_order on bj_posts (album, pinned desc, at desc, created desc);
+create index if not exists bj_devices_album on bj_devices (album);
+
+-- 방문자 수: 앨범마다 따로(열쇠 = <앨범>:<날짜> · <앨범>:total)
+update bj_visit_counts set key = 'hanijun:' || key where key not like '%:%';
+create or replace function bj_visit(p_album text, p_day text, p_voter text, p_count boolean) returns json language plpgsql set search_path = public as $$
+declare added int := 0; t bigint; a bigint;
+begin
+  if p_count then
+    insert into bj_visits (day, voter) values (p_day, p_voter) on conflict do nothing;
+    get diagnostics added = row_count;
+    if added > 0 then
+      insert into bj_visit_counts (key, n) values (p_album || ':' || p_day, 1), (p_album || ':total', 1)
+        on conflict (key) do update set n = bj_visit_counts.n + 1;
+      delete from bj_visits where day < to_char(p_day::date - 2, 'YYYY-MM-DD');
+    end if;
+  end if;
+  select n into t from bj_visit_counts where key = p_album || ':' || p_day;
+  select n into a from bj_visit_counts where key = p_album || ':total';
+  return json_build_object('today', coalesce(t, 0), 'total', coalesce(a, 0));
+end $$;
+revoke all on function bj_visit(text, text, text, boolean) from public, anon, authenticated;
+grant execute on function bj_visit(text, text, text, boolean) to service_role;
+
+-- 하트: 어느 앨범 글인지도 돌려준다(그 앨범 목록만 다시 쓰게)
+create or replace function bj_heart(p_post text, p_voter text, p_on boolean, p_now bigint)
+returns json language plpgsql security definer set search_path = public as $$
+declare n integer;
+begin
+  if not exists (select 1 from bj_posts where id = p_post) then
+    return json_build_object('ok', false);
+  end if;
+  if p_on then
+    insert into bj_hearts(post, voter, created) values (p_post, p_voter, p_now) on conflict do nothing;
+    get diagnostics n = row_count;
+    if n > 0 then update bj_posts set hearts = hearts + 1 where id = p_post; end if;
+  else
+    delete from bj_hearts where post = p_post and voter = p_voter;
+    get diagnostics n = row_count;
+    if n > 0 then update bj_posts set hearts = greatest(hearts - 1, 0) where id = p_post; end if;
+  end if;
+  return json_build_object('ok', true, 'changed', n > 0, 'hearts', (select hearts from bj_posts where id = p_post), 'album', (select album from bj_posts where id = p_post));
+end $$;
+revoke execute on function bj_heart(text, text, boolean, bigint) from public, anon, authenticated;
+grant execute on function bj_heart(text, text, boolean, bigint) to service_role;
+
 -- 사진(원본 크기 줄인 것·작은 그림)과 미리 만든 목록 snap/feed.json
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values ('bakje', 'bakje', true, 15728640, array['image/jpeg', 'application/json'])
