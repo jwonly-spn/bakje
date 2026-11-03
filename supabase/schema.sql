@@ -199,6 +199,75 @@ end $$;
 revoke execute on function bj_heart(text, text, boolean, bigint) from public, anon, authenticated;
 grant execute on function bj_heart(text, text, boolean, bigint) to service_role;
 
+-- 회원·본인인증·댓글(2026-11-04, 마이그레이션 bakje_members): 사용자 "회원가입 한 사람들은 댓글을 달 수 있어 · 악플러 방지를 위해 본인인증".
+--  한 계정을 모든 앨범에서. 로그인 = 아이디·비밀번호(PBKDF2) 또는 카카오(회원번호의 소금 해시). 본인인증(포트원 V2·다날)은 가입 때 한 번 —
+--  저장하는 것은 같은 사람 값(DI)의 소금 해시(person)뿐(이름·전화번호·생년월일은 저장하지 않는다). 한 사람 = 한 계정(person 유일).
+--  운영자가 쫓아낸 사람(bj_banned_people)은 새 계정도 인증이 안 된다. 세션·표는 원문 대신 sha256 만 둔다.
+create table if not exists bj_members (
+  id text primary key check (id ~ '^m[a-z2-9]{11}$'),
+  login_id text unique check (login_id is null or login_id ~ '^[a-z0-9_]{4,20}$'),
+  pw text,                                  -- pbkdf2$<반복>$<소금>$<값>
+  kakao text unique,                        -- sha256(소금 + 카카오 회원번호) 앞 40자
+  nickname text not null default '',
+  person text unique,                       -- sha256(소금 + DI) 앞 48자 — 본인인증한 사람
+  verified bigint,                          -- 본인인증한 때(ms) · null = 아직
+  state text not null default 'active' check (state in ('active', 'banned')),
+  created bigint not null,
+  seen bigint not null,
+  check (login_id is not null or kakao is not null)
+);
+create unique index if not exists bj_members_nick on bj_members (lower(nickname)) where nickname <> '';
+create table if not exists bj_banned_people (person text primary key, at bigint not null, note text not null default '');
+create table if not exists bj_sessions (
+  token text primary key,                   -- sha256(세션 열쇠)
+  member text not null references bj_members(id) on delete cascade,
+  created bigint not null, seen bigint not null, expires bigint not null
+);
+create index if not exists bj_sessions_member on bj_sessions (member);
+create table if not exists bj_tickets (       -- 카카오 로그인 뒤 사이트로 넘기는 표(login, 2분) · 비밀번호 새로 정하기 표(reset, 10분) — 한 번만
+  token text primary key, kind text not null check (kind in ('login', 'reset')),
+  member text not null references bj_members(id) on delete cascade, host text not null default '', expires bigint not null
+);
+create table if not exists bj_oauth_states (state text primary key, host text not null, path text not null, expires bigint not null);
+create table if not exists bj_verifications (  -- 본인인증 번호(포트원 identityVerificationId) — join: 가입 · find: 아이디·비밀번호 찾기
+  id text primary key, purpose text not null check (purpose in ('join', 'find')),
+  member text references bj_members(id) on delete cascade, created bigint not null, done bigint
+);
+create table if not exists bj_comments (
+  id text primary key,
+  album text not null references bj_albums(id) on delete cascade,
+  post text not null references bj_posts(id) on delete cascade,
+  member text not null references bj_members(id) on delete cascade,
+  text text not null,
+  created bigint not null,
+  state text not null default 'visible' check (state in ('visible', 'deleted')),
+  deleted_by text
+);
+create index if not exists bj_comments_post on bj_comments (post, created);
+create index if not exists bj_comments_album on bj_comments (album, state);
+create index if not exists bj_comments_member on bj_comments (member);
+create table if not exists bj_album_blocks (   -- 앨범 주인이 막은 회원(그 앨범에서만)
+  album text not null references bj_albums(id) on delete cascade,
+  member text not null references bj_members(id) on delete cascade,
+  at bigint not null, primary key (album, member)
+);
+create table if not exists bj_reports (
+  comment text not null references bj_comments(id) on delete cascade,
+  reporter text not null references bj_members(id) on delete cascade,
+  reason text not null default '', at bigint not null, primary key (comment, reporter)
+);
+alter table bj_members enable row level security;
+alter table bj_banned_people enable row level security;
+alter table bj_sessions enable row level security;
+alter table bj_tickets enable row level security;
+alter table bj_oauth_states enable row level security;
+alter table bj_verifications enable row level security;
+alter table bj_comments enable row level security;
+alter table bj_album_blocks enable row level security;
+alter table bj_reports enable row level security;
+revoke all on bj_members, bj_banned_people, bj_sessions, bj_tickets, bj_oauth_states, bj_verifications, bj_comments, bj_album_blocks, bj_reports from anon, authenticated;
+grant select, insert, update, delete on bj_members, bj_banned_people, bj_sessions, bj_tickets, bj_oauth_states, bj_verifications, bj_comments, bj_album_blocks, bj_reports to service_role;
+
 -- 사진(원본 크기 줄인 것·작은 그림)과 미리 만든 목록 snap/feed.json
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values ('bakje', 'bakje', true, 15728640, array['image/jpeg', 'application/json'])
