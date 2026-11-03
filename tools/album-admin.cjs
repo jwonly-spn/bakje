@@ -35,7 +35,7 @@ async function call(body) {
       const { albums } = await call({ action: 'list' });
       for (const a of albums) {
         console.log(`${a.id}  ${a.name || '(이름 없음)'}  [${a.state}]  글 ${a.posts} · 주인 기기 ${a.owners} · 봇 ${a.bots.length}`);
-        for (const h of a.hosts) console.log(`   주소 ${new URL('https://' + h).hostname} → https://${h}/`);
+        for (const h of a.hosts) console.log(`   주소 ${require('node:url').domainToUnicode(h)} (https://${h}/)`);
         for (const b of a.bots) console.log(`   봇 ${b.id}… ${b.label}`);
       }
       return;
