@@ -62,7 +62,12 @@ const ICONS = {
   trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
   edit: '<path d="M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4"/>',
   trophy: '<path d="M8 4h8v5a4 4 0 0 1-8 0V4z"/><path d="M8 6H5.5a2.5 2.5 0 0 0 2.6 4.4M16 6h2.5a2.5 2.5 0 0 1-2.6 4.4M12 13v3.5M8.5 20h7M10 16.5h4l.5 3.5h-5z"/>',
-  calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/><circle cx="8.5" cy="14.5" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="14.5" r="1" fill="currentColor" stroke="none"/>'
+  calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/><circle cx="8.5" cy="14.5" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="14.5" r="1" fill="currentColor" stroke="none"/>',
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4 20.5c1.4-3.6 4.4-5.5 8-5.5s6.6 1.9 8 5.5"/>',
+  comment: '<path d="M20.5 11.6c0 4.4-3.8 7.9-8.5 7.9-1.3 0-2.6-.3-3.7-.8L3.5 20l1.3-3.9c-.9-1.3-1.3-2.8-1.3-4.5 0-4.4 3.8-7.9 8.5-7.9s8.5 3.5 8.5 7.9z"/>',
+  flag: '<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>',
+  block: '<circle cx="12" cy="12" r="8.5"/><path d="M6 6l12 12"/>',
+  check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>'
 };
 function icon(name, cls = '') {
   const el = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -76,6 +81,12 @@ const ls = {
   get(k) { try { return localStorage.getItem(k); } catch { return null; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* 저장 못 해도 됨 */ } },
   del(k) { try { localStorage.removeItem(k); } catch { /* 없음 */ } }
+};
+// 이 탭에서만 기억(휴대폰 본인인증 창에 갔다 돌아올 때 무엇을 하던 중이었는지)
+const ss = {
+  get(k) { try { return sessionStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { sessionStorage.setItem(k, v); } catch { /* 저장 못 해도 됨 */ } },
+  del(k) { try { sessionStorage.removeItem(k); } catch { /* 없음 */ } }
 };
 const b64url = (bytes) => {
   let s = '';
@@ -103,6 +114,31 @@ function vid() {
   return v;
 }
 function readSet(k) { try { return new Set(JSON.parse(ls.get(k) || '[]')); } catch { return new Set(); } }
+
+// ---------- 카카오 로그인·휴대폰 본인인증에서 돌아온 자리 ----------
+// 주소에 붙어 온 값(#bjlogin=… · ?bjverify=1&identityVerificationId=…)을 맨 먼저 떼어 두고 주소를 원래대로 돌린다
+//  (앨범·탭·글 번호를 읽기 전에 — 본인인증을 시작할 때 있던 주소로 되돌린다).
+const RETURN = (() => {
+  try {
+    const m = /^#(bjlogin|bjlogin-error)=([-_A-Za-z0-9]{1,64})$/.exec(location.hash);
+    if (m) {
+      history.replaceState(history.state, '', location.pathname + location.search);
+      return m[1] === 'bjlogin' ? { kind: 'ticket', ticket: m[2] } : { kind: 'login-error', code: m[2] };
+    }
+    const q = new URLSearchParams(location.search);
+    if (q.get('bjverify') !== '1') return null;
+    let saved = null;
+    try { saved = JSON.parse(ss.get('bj_verify') || 'null'); } catch { /* 없음 */ }
+    ss.del('bj_verify');
+    const back = typeof saved?.back === 'string' && /^(\?.*)?$/.test(saved.back) && !saved.back.includes('bjverify') ? saved.back : '';
+    history.replaceState(null, '', location.pathname + back);
+    const id = q.get('identityVerificationId') || '';
+    return {
+      kind: 'verify', mode: saved?.mode === 'find' || saved?.mode === 'join' ? saved.mode : '', savedId: typeof saved?.id === 'string' ? saved.id : '',
+      id: /^[-_A-Za-z0-9]{4,80}$/.test(id) ? id : '', code: q.get('code') || '', message: (q.get('message') || '').slice(0, 200)
+    };
+  } catch { return null; }
+})();
 
 // ---------- 어느 앨범인지 ----------
 // 한 번 알아낸 앨범은 이 브라우저에 기억해 두고(다음엔 바로 그린다), 뒤에서 다시 확인한다.
@@ -171,15 +207,17 @@ async function signed(action, payload) {
 }
 
 // ---------- 서버 ----------
-async function call(path, { method = 'GET', body, query = {}, timeout = 25000 } = {}) {
+// session: 회원 로그인 표(x-bj-session)를 함께 보낸다(있을 때만)
+async function call(path, { method = 'GET', body, query = {}, timeout = 25000, session = false } = {}) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeout);
+  const sess = session && S.session ? { 'x-bj-session': S.session } : {};
   let res;
   try {
     const qs = method === 'GET' ? '?' + new URLSearchParams({ apikey: KEY, ...(ALBUM ? { album: ALBUM } : {}), ...query }) : '';
     res = await fetch(API + path + qs, {
       method, signal: ctl.signal, cache: 'no-store',
-      headers: method === 'GET' ? {} : { apikey: KEY, 'Content-Type': 'application/json' },
+      headers: method === 'GET' ? sess : { apikey: KEY, 'Content-Type': 'application/json', ...sess },
       body: body === undefined ? undefined : JSON.stringify(body)
     });
   } catch {
@@ -187,7 +225,7 @@ async function call(path, { method = 'GET', body, query = {}, timeout = 25000 } 
   } finally { clearTimeout(timer); }
   let data = null;
   try { data = await res.json(); } catch { /* 아래 */ }
-  if (!res.ok || !data?.ok) throw Object.assign(Error(data?.error || '잠시 문제가 생겼어요. 조금 뒤에 다시 해 주세요.'), { status: res.status });
+  if (!res.ok || !data?.ok) throw Object.assign(Error(data?.error || '잠시 문제가 생겼어요. 조금 뒤에 다시 해 주세요.'), { status: res.status, data });
   return data;
 }
 // 주인 요청에는 늘 이 앨범을 넣는다(서명 안 — 다른 앨범 주소에서 쓸 수 없다)
@@ -252,8 +290,14 @@ const S = {
   owner: ls.get('bj_owner') === '1',
   hearted: readSet('bj_hearted'),
   vid: vid(),
-  cal: calFromUrl()   // 달력: {ym: 'YYYY-MM' | null(가장 최근 박제판이 있는 달), day: 'YYYY-MM-DD' | null(그 달 전체)}
+  cal: calFromUrl(),   // 달력: {ym: 'YYYY-MM' | null(가장 최근 박제판이 있는 달), day: 'YYYY-MM-DD' | null(그 달 전체)}
+  // 회원: members = 서버의 회원 설정(없으면 예전 서버 — 회원·댓글 화면을 숨긴다), session = 로그인 표(이 주소의 localStorage), me = 내 계정
+  members: null,
+  session: /^[-_A-Za-z0-9]{43}$/.test(ls.get('bj_session') || '') ? ls.get('bj_session') : '',
+  me: null,
+  banned: false
 };
+if (S.session) { try { const m = JSON.parse(ls.get('bj_me') || 'null'); if (m && typeof m.id === 'string') S.me = m; } catch { /* 없음 */ } }
 const posts = () => S.feed?.posts || [];
 const findPost = (id) => posts().find((p) => p.id === id);
 // 지금 보이는 글(큰 화면의 이전·다음 차례와 같다): 날짜가 새것 먼저. 달력 탭은 고른 달·날의 박제판
@@ -457,8 +501,10 @@ function postCard(post, { preview = false } = {}) {
   const media = hasPhotos
     ? h('div', { class: 'p-media' }, carousel(post), donorMark(post))
     : h('div', { class: 'p-media letter-only paper-' + (post.letter?.paper || 'cream') }, letterCard(post.letter || {}, post.at));
+  const talk = !preview && !!S.members;   // 댓글(서버가 회원 기능을 아는 판일 때만)
   const actions = h('div', { class: 'p-actions' },
     heartButton(post),
+    talk ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': '댓글 달기', onclick: () => focusComposer(post.id) }, icon('comment')) : null,
     h('button', { class: 'icon-btn', type: 'button', 'aria-label': '링크 공유', onclick: () => sharePost(post) }, icon('share')),
     h('p', { class: 'p-likes' }, '하트 ', h('b', { dataset: { heartsOf: post.id }, text: num(post.hearts) }), '개'));
   const theme = post.theme || fi?.title || '';
@@ -471,8 +517,10 @@ function postCard(post, { preview = false } = {}) {
         h('span', { class: 'p-dday', text: end.tag }), end.long) : null,
       h('time', { class: 'p-day', datetime: new Date(post.at).toISOString(), text: dateText(post.at) })),
     hasPhotos && post.letter ? letterCard(post.letter, post.at) : null,
-    post.caption ? h('p', { class: 'p-caption', text: post.caption }) : null);
-  const card = h('article', { class: 'post in-viewer' + (preview ? ' is-preview' : ''), dataset: { post: post.id } }, head, media, actions, body);
+    post.caption ? h('p', { class: 'p-caption', text: post.caption }) : null,
+    talk ? h('section', { class: 'cm', 'aria-label': '댓글', dataset: { comments: post.id } }) : null);
+  const card = h('article', { class: 'post in-viewer' + (preview ? ' is-preview' : '') + (talk ? ' has-compose' : ''), dataset: { post: post.id } },
+    head, media, actions, body, talk ? h('div', { class: 'p-compose', dataset: { compose: post.id } }) : null);
   card.style.setProperty('--ratio', String(FRAME));
   // 휴대폰(2026-11-04 사용자 "모바일에서 이런 여백들이 너무 거슬려"): 사진 칸을 첫 사진 비율(세로/가로) 그대로 — 화면 너비를 꽉 채우고 흐린 여백이 없다.
   //  비율이 너무 극단이면 0.5~2 사이로(나머지는 예전처럼 흐린 채움). 넓은 화면은 9:16 틀 그대로(--ratio).
@@ -528,13 +576,18 @@ function tile(post) {
       l.to ? h('span', { class: 'to', text: 'To. ' + l.to }) : null,
       h('span', { class: 'body', text: (l.text || '').slice(0, 160) }));
   }
+  // 댓글 수(cc — 서버가 미리 만든 목록에 있을 때만, 0이면 안 보임 · 회원 기능을 숨긴 동안은 안 보임)
+  const cc = S.members && Number(post.cc) > 0 ? Number(post.cc) : 0;
   const badges = h('span', { class: 'badges' },
+    cc ? h('span', { class: 'cc' }, icon('comment', 'fillable'), h('span', { text: num(cc) })) : null,
     post.pinned ? icon('pin') : null,
     post.photos?.length > 1 ? icon('stack') : null,
     post.kind === 'letter' && first ? icon('letter') : null);
-  const over = h('span', { class: 't-over' }, icon('heart', 'fillable'), h('span', { dataset: { heartsOf: post.id }, text: num(post.hearts) }));
+  const over = h('span', { class: 't-over' },
+    h('span', { class: 'o-item' }, icon('heart', 'fillable'), h('span', { dataset: { heartsOf: post.id }, text: num(post.hearts) })),
+    cc ? h('span', { class: 'o-item' }, icon('comment', 'fillable'), h('span', { text: num(cc) })) : null);
   const endLabel = fi ? endsInfo(post)?.long : '';
-  return h('button', { class: 'tile', type: 'button', 'aria-label': `${KIND_NAME[post.kind]} · ${post.donor ? post.donor + ' · ' : ''}${endLabel ? endLabel + ' · ' : ''}${dateText(post.at)} 열기`, onclick: () => openViewer(post.id) },
+  return h('button', { class: 'tile', type: 'button', 'aria-label': `${KIND_NAME[post.kind]} · ${post.donor ? post.donor + ' · ' : ''}${endLabel ? endLabel + ' · ' : ''}${cc ? `댓글 ${num(cc)}개 · ` : ''}${dateText(post.at)} 열기`, onclick: () => openViewer(post.id) },
     body, first ? donorMark(post, 'donor-mark t-donor') : null, badges, over);
 }
 
@@ -629,11 +682,13 @@ let viewer = null, pushedViewer = false;
 function viewerStage(post) {
   const list = shown(), i = list.findIndex((p) => p.id === post.id);
   const prev = i > 0 ? list[i - 1] : null, next = i >= 0 && i < list.length - 1 ? list[i + 1] : null;
-  return h('div', { class: 'v-stage', onclick: (e) => { if (e.target.classList.contains('v-stage')) closeViewer(); } },
+  const stage = h('div', { class: 'v-stage', onclick: (e) => { if (e.target.classList.contains('v-stage')) closeViewer(); } },
     h('button', { class: 'v-close', type: 'button', 'aria-label': '닫기', onclick: () => closeViewer() }, icon('close')),
     prev ? h('button', { class: 'v-nav prev', type: 'button', 'aria-label': '이전 글', onclick: () => openViewer(prev.id, { replace: true }) }, icon('left')) : null,
     postCard(post),
     next ? h('button', { class: 'v-nav next', type: 'button', 'aria-label': '다음 글', onclick: () => openViewer(next.id, { replace: true }) }, icon('right')) : null);
+  if (S.members) paintComments(post.id, stage);   // 받아 둔 댓글이 있으면 바로 그린다(새로 받는 건 openViewer)
+  return stage;
 }
 function openViewer(id, { push = true, replace = false } = {}) {
   const post = findPost(id);
@@ -644,6 +699,7 @@ function openViewer(id, { push = true, replace = false } = {}) {
     viewer.addEventListener('cancel', (e) => { e.preventDefault(); closeViewer(); });
     viewer.addEventListener('keydown', (e) => {
       if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      if (e.target?.closest?.('textarea, input')) return;   // 댓글을 쓰는 중에는 글을 넘기지 않는다
       const b = viewer?.querySelector(e.key === 'ArrowLeft' ? '.v-nav.prev' : '.v-nav.next');
       if (b) { e.preventDefault(); b.click(); }
     });
@@ -651,6 +707,7 @@ function openViewer(id, { push = true, replace = false } = {}) {
     viewer.showModal();
   }
   viewer.dataset.post = id;
+  if (S.members) loadComments(id);
   if (replace) history.replaceState(history.state, '', urlWith({ p: id }));
   else if (push) { history.pushState({ p: id }, '', urlWith({ p: id })); pushedViewer = true; }
 }
@@ -685,7 +742,8 @@ function render() {
       h('div', { class: 'row' },
         S.owner ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': '새 게시물', title: '새 게시물', onclick: () => openComposer() }, icon('plus-square')) : null,
         S.owner ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': '설정', title: '설정', onclick: () => openSettings() }, icon('gear')) : null,
-        !S.owner ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': '이 앨범 링크 공유', title: '링크 공유', onclick: () => sharePost(null) }, icon('share')) : null)));
+        !S.owner ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': '이 앨범 링크 공유', title: '링크 공유', onclick: () => sharePost(null) }, icon('share')) : null,
+        h('span', { id: 'member-slot', class: 'member-slot' }, memberButton()))));
   const stat = (n, label, id) => h('li', null, h('b', { id, text: num(n) }), h('span', { text: label }));
   const profile = h('section', { class: 'pf' },
     h('div', { class: 'pf-avatar' }, avatarEl('xl', true)),
@@ -725,7 +783,10 @@ function render() {
     S.owner && S.tab === 'board' ? h('button', { class: 'link-btn', type: 'button', onclick: () => openComposer(), text: '첫 박제판 올리기' }) : null);
   else body = h('div', { class: 'grid' }, list.map((p) => tile(p)));
   const footer = h('footer', { class: 'foot' },
-    h('p', null, siteName(), !S.owner ? [' · ', h('a', { href: '?owner', text: '주인 기기 등록' })] : null));
+    h('p', null, siteName(), !S.owner ? [' · ', h('a', { href: '?owner', text: '주인 기기 등록' })] : null),
+    S.members ? h('p', { class: 'foot-links' },
+      h('a', { href: 'terms.html', target: '_blank', rel: 'noopener', text: '이용약관' }), ' · ',
+      h('a', { href: 'privacy.html', target: '_blank', rel: 'noopener', text: '개인정보처리방침' })) : null);
   app.replaceChildren(topbar, h('main', { class: 'wrap' }, profile, highlights, tabs, body), footer);
 }
 
@@ -1080,6 +1141,7 @@ function openSettings() {
       h('label', { for: 'pbio', text: '소개' }), bio,
       h('label', { for: 'plink', text: '링크 (예: 스푼 방송 주소)' }), link,
       h('div', { class: 'row end' }, pstatus, save),
+      S.members ? ownerCommentSettings(() => d.dismiss()) : null,
       h('h3', { text: '주인 기기' }),
       h('p', { class: 'muted small', text: '여기 있는 기기에서만 글을 올리고 고칠 수 있어요.' }),
       devList,
@@ -1087,6 +1149,827 @@ function openSettings() {
       h('p', { class: 'muted small', text: '새 휴대폰이나 PC에서 이 사이트 맨 아래 "주인 기기 등록"을 누르고 코드를 넣으면 돼요.' }),
       h('div', { class: 'row end' }, leave)
     )), { cls: 'settings-sheet', label: '설정' });
+}
+
+// ---------- 회원(로그인·가입·본인인증) ----------
+// 한 계정을 모든 앨범에서 쓰지만, 로그인은 주소(앨범 사이트)마다 따로다 — 로그인 표는 이 주소의 localStorage(bj_session).
+// 서버가 예전 판이라 members-config 가 없으면 회원·댓글 화면은 모두 숨긴다(S.members = null).
+// 본인인증은 포트원 V2 브라우저 SDK(누를 때만 불러온다). PC 는 결과가 바로 오고, 휴대폰은 ?bjverify=1 로 돌아온다(RETURN).
+const PORTONE_SDK = 'https://cdn.portone.io/v2/browser-sdk.js';
+const NO_SESSION = new Set(['signup', 'login', 'ticket', 'find-start', 'find-done', 'reset']);
+const LOGIN_ID_RE = /^[a-z0-9_]{4,20}$/;
+const VERIFY_TEXT = '악플을 막으려고 휴대폰 본인인증을 한 번 해요. 이름·전화번호·생년월일은 저장하지 않아요. 만 14세 이상만 가입할 수 있어요.';
+const KAKAO_ERRORS = {
+  cancel: '카카오 로그인을 그만뒀어요.',
+  fail: '카카오 로그인을 하지 못했어요. 다시 해 주세요.',
+  banned: '이용이 막힌 계정이에요.',
+  setup: '카카오 로그인 준비 중이에요.'
+};
+// 시험용: 주소에 ?members=1 이 있으면(이 탭에서는 계속) 본인인증이 아직 준비되지 않았어도 회원·댓글 화면을 보인다
+if (param('members') === '1') ss.set('bj_members_test', '1');
+const membersTest = () => ss.get('bj_members_test') === '1';
+// 'ok' · 'old'(예전 서버 — 회원 기능 없음) · 'hidden'(본인인증이 아직 준비 안 됨 — 회원·댓글을 모두 숨김) · 'net'(인터넷 문제)
+async function loadMembersConfig() {
+  try {
+    const m = (await call('members-config')).members;
+    if (!m || typeof m !== 'object') return 'old';
+    const v = m.verify;
+    const verify = v && typeof v.storeId === 'string' && v.storeId && typeof v.channelKey === 'string' && v.channelKey ? { storeId: v.storeId, channelKey: v.channelKey } : null;
+    if (!verify && !membersTest()) return 'hidden';
+    S.members = { password: m.password !== false, kakao: m.kakao === true, verify };
+    return 'ok';
+  } catch (e) { return e.status === 0 ? 'net' : 'old'; }
+}
+function saveMe(member, banned) {
+  S.me = member && typeof member.id === 'string' ? member : null;
+  if (banned !== undefined) S.banned = banned === true;
+  if (S.me) ls.set('bj_me', JSON.stringify(S.me)); else ls.del('bj_me');
+}
+function setSession(token, member) {
+  if (!/^[-_A-Za-z0-9]{43}$/.test(token || '')) throw Error('로그인을 처음부터 다시 해 주세요.');
+  S.session = token;
+  ls.set('bj_session', token);
+  saveMe(member, false);
+  memberChanged();
+}
+function dropSession() {
+  const had = Boolean(S.session || S.me);
+  S.session = '';
+  ls.del('bj_session');
+  saveMe(null, false);
+  if (had) memberChanged();
+}
+// 로그인·로그아웃·닉네임·본인인증이 바뀌면: 맨 위 줄 + 열린 글의 댓글(내 댓글·쓰기 칸)
+function memberChanged() {
+  paintMember();
+  if (!S.session) for (const st of CM.values()) {
+    st.list?.forEach((c) => { c.mine = false; });
+    if (st.me) st.me = { can: false, why: st.off ? 'off' : 'login' };
+  }
+  const id = viewer?.dataset.post;
+  if (id) { paintComments(id); loadComments(id); }
+}
+async function memberCall(action, body = {}) {
+  const auth = !NO_SESSION.has(action);
+  try { return await call('member', { method: 'POST', body: { action, ...body }, session: auth }); }
+  catch (e) { if (auth && e.status === 401) dropSession(); throw e; }
+}
+async function commentCall(action, body = {}) {
+  try { return await call('comment', { method: 'POST', body: { action, ...body }, session: true }); }
+  catch (e) { if (e.status === 401) dropSession(); throw e; }
+}
+async function loadMe() {
+  if (!S.session) { saveMe(null, false); return; }
+  try { const r = await memberCall('me'); saveMe(r.member, r.banned === true); }
+  catch { /* 401 이면 이미 로그아웃했고, 인터넷 문제면 기억해 둔 계정으로 */ }
+}
+
+// 맨 위 줄: 로그인 전 "로그인", 로그인 뒤 닉네임(할 일이 남았으면 빨간 점)
+function memberButton() {
+  if (!S.members) return null;
+  if (!S.me) return h('button', { class: 'btn small primary login-btn', type: 'button', text: '로그인', onclick: () => openAccount('login') });
+  const todo = !S.me.verified || !S.me.nickname;
+  return h('button', { class: 'me-btn', type: 'button', title: '내 정보', 'aria-label': `내 정보${S.me.nickname ? ' · ' + S.me.nickname : ''}${todo ? ' · 할 일이 남았어요' : ''}`, onclick: () => openAccount('me') },
+    icon('user'), h('span', { class: 'me-name', text: S.me.nickname || '내 정보' }), todo ? h('i', { class: 'me-dot', 'aria-hidden': 'true' }) : null);
+}
+function paintMember() {
+  const slot = $('#member-slot');
+  if (slot) slot.replaceChildren(...[memberButton()].filter(Boolean));
+}
+
+// ---------- 회원 창(로그인·가입·본인인증·닉네임·찾기·내 정보) — 한 창 안에서 단계만 바꾼다 ----------
+let acct = null;   // {d, box, step}
+function openAccount(step, data = {}) {
+  if (!S.members) return null;
+  if (!acct) {
+    const box = h('div', { class: 'acct' });
+    const d = sheet(box, { cls: 'small acct-sheet', label: '회원', sticky: true, onClose: () => { if (acct?.d === d) acct = null; } });
+    acct = { d, box, step: '' };
+  }
+  showStep(step, data);
+  return acct;
+}
+function closeAccount() { acct?.d.dismiss(); }
+function showStep(step, data = {}) {
+  if (!acct) return void openAccount(step, data);
+  const v = (STEPS[step] || STEPS.login)(data || {});
+  acct.step = v.name || step;
+  const head = h('div', { class: 'sheet-head' },
+    v.back ? h('button', { class: 'icon-btn sheet-back', type: 'button', 'aria-label': '뒤로', onclick: () => showStep(v.back, v.backData || {}) }, icon('left')) : null,
+    h('h2', { text: v.title }),
+    h('button', { class: 'icon-btn', type: 'button', 'aria-label': '닫기', onclick: () => closeAccount() }, icon('close')));
+  const body = h('div', { class: 'sheet-body stack acct-body' }, v.body);
+  acct.box.replaceChildren(head, body);
+  acct.d.setAttribute('aria-label', v.title);
+  if (v.focus && !matchMedia('(pointer: coarse)').matches) setTimeout(() => v.focus.focus(), 30);
+  v.after?.();
+}
+const statusEl = () => h('p', { class: 'status', role: 'status', 'aria-live': 'polite' });
+function say(el, message, bad = false) { el.textContent = message || ''; el.classList.toggle('bad', !!bad); }
+async function busy(btn, st, fn) {
+  if (btn.dataset.busy) return;
+  btn.dataset.busy = '1'; btn.disabled = true; say(st, '');
+  try { await fn(); } catch (e) { say(st, e.message, true); } finally { delete btn.dataset.busy; btn.disabled = false; }
+}
+const linkBtn = (text, onclick) => h('button', { class: 'link-btn', type: 'button', text, onclick });
+function field(id, label, input, hint) {
+  if (hint) input.setAttribute('aria-describedby', id + '-hint');
+  return [h('label', { for: id, text: label }), input, hint ? h('p', { class: 'field-hint', id: id + '-hint', text: hint }) : null];
+}
+const pwInput = (id, auto) => h('input', { class: 'input', id, type: 'password', autocomplete: auto, maxlength: '64' });
+function checkNewPassword(pw, pw2) {
+  const n = [...pw.value].length;
+  if (n < 8 || n > 64) { pw.focus(); return '비밀번호는 8~64자로 정해 주세요.'; }
+  if (pw.value !== pw2.value) { pw2.focus(); return '비밀번호 두 칸이 서로 달라요.'; }
+  return '';
+}
+// 가입 단계 표시(1 가입 → 2 본인인증 → 3 닉네임)
+function joinSteps(at) {
+  return h('ol', { class: 'join-steps', 'aria-label': `가입 ${at}단계 (모두 3단계)` }, ['가입', '본인인증', '닉네임'].map((t, i) =>
+    h('li', { class: i + 1 === at ? 'on' : i + 1 < at ? 'done' : '' }, h('b', null, i + 1 < at ? icon('check') : String(i + 1)), h('span', { text: t }))));
+}
+// 카카오 로그인 단추(카카오 디자인 안내: 노란 #FEE500 · 검은 말풍선 · 글자 85% 검정 · 모서리 12px)
+function kakaoSymbol() {
+  const el = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  el.setAttribute('viewBox', '0 0 18 18');
+  el.setAttribute('aria-hidden', 'true');
+  el.setAttribute('class', 'kakao-sym');
+  el.innerHTML = '<path fill="#000" d="M9 1.6C4.58 1.6 1 4.4 1 7.86c0 2.21 1.47 4.16 3.69 5.27l-.94 3.45c-.08.3.26.55.52.38l4.12-2.72c.2.02.4.02.61.02 4.42 0 8-2.8 8-6.4S13.42 1.6 9 1.6z"/>';
+  return el;
+}
+function kakaoButton() {
+  return h('button', { class: 'kakao-btn', type: 'button', onclick: () => kakaoLogin() }, kakaoSymbol(), h('span', { text: '카카오 로그인' }));
+}
+// 카카오에서 돌아오면 같은 주소 #bjlogin=<표> (RETURN → handleReturn)
+function kakaoLogin() {
+  location.href = API + 'kakao-start?' + new URLSearchParams({ apikey: KEY, h: location.host, r: location.pathname + location.search });
+}
+function afterLogin(message) {
+  toast(message);
+  if (S.me && !S.me.verified) openAccount('verify', { join: true });
+  else if (S.me && !S.me.nickname) openAccount('nickname', { join: true });
+  else closeAccount();
+}
+
+// 포트원 본인인증 SDK — 처음 쓸 때만 불러온다(본인인증 단계를 열면 미리 받아 둔다)
+let portoneLoading = null;
+function loadPortOne() {
+  if (window.PortOne?.requestIdentityVerification) return Promise.resolve(window.PortOne);
+  if (portoneLoading) return portoneLoading;
+  portoneLoading = new Promise((resolve, reject) => {
+    const s = h('script', {
+      src: PORTONE_SDK, async: true,
+      onload: () => (window.PortOne?.requestIdentityVerification ? resolve(window.PortOne) : reject(Error('본인인증 창을 열지 못했어요. 다시 해 주세요.'))),
+      onerror: () => { portoneLoading = null; s.remove(); reject(Error('본인인증 창을 불러오지 못했어요. 인터넷 연결을 확인해 주세요.')); }
+    });
+    document.head.append(s);
+  });
+  return portoneLoading;
+}
+// mode: 'join'(내 계정 본인인증) · 'find'(아이디·비밀번호 찾기). PC 는 끝난 본인인증 번호를 돌려주고,
+//  휴대폰은 본인인증 창으로 넘어갔다가 ?bjverify=1 로 돌아온다(이 함수는 끝나지 않는다).
+async function portoneVerify(mode) {
+  const cfg = S.members?.verify;
+  if (!cfg) throw Error('본인인증 준비 중이에요. 조금 뒤에 다시 해 주세요.');
+  const sdk = loadPortOne();
+  sdk.catch(() => {});
+  const { id } = await memberCall(mode === 'find' ? 'find-start' : 'verify-start');
+  const PortOne = await sdk;
+  ss.set('bj_verify', JSON.stringify({ mode, id, back: location.search, at: Date.now() }));
+  let res;
+  try {
+    res = await PortOne.requestIdentityVerification({
+      storeId: cfg.storeId, identityVerificationId: id, channelKey: cfg.channelKey,
+      redirectUrl: location.origin + location.pathname + '?bjverify=1',
+      // 다날: 만 14세 미만은 인증 창에서부터 막고(서버도 다시 확인한다), 인증 창에 서비스 이름을 보인다
+      bypass: { danal: { AGELIMIT: 14, CPTITLE: '먼치킨 추억앨범' } }
+    });
+  } catch (e) {
+    ss.del('bj_verify');
+    throw Error(e?.message || '본인인증 창을 열지 못했어요. 다시 해 주세요.');
+  }
+  ss.del('bj_verify');
+  if (!res) throw Error('본인인증 결과를 받지 못했어요. 다시 해 주세요.');
+  if (res.code != null) throw Error(res.message || '본인인증을 마치지 못했어요. 다시 해 주세요.');
+  return id;
+}
+
+const STEPS = {
+  login(x) {
+    if (S.me) return STEPS.me();
+    const id = h('input', { class: 'input', id: 'm-id', name: 'username', autocomplete: 'username', autocapitalize: 'none', spellcheck: 'false', maxlength: '20', value: x.loginId || '' });
+    const pw = pwInput('m-pw', 'current-password');
+    const st = statusEl();
+    const go = h('button', { class: 'btn primary block', type: 'submit', text: '로그인' });
+    const form = h('form', { class: 'stack', onsubmit: (e) => {
+      e.preventDefault();
+      const loginId = id.value.trim().toLowerCase();
+      if (!loginId || !pw.value) { say(st, '아이디와 비밀번호를 넣어 주세요.', true); (loginId ? pw : id).focus(); return; }
+      busy(go, st, async () => {
+        const r = await memberCall('login', { loginId, password: pw.value });
+        setSession(r.session, r.member);
+        afterLogin('로그인했어요');
+      });
+    } }, field('m-id', '아이디', id), field('m-pw', '비밀번호', pw), st, go);
+    return {
+      title: '로그인', focus: x.loginId ? pw : id,
+      body: [
+        h('p', { class: 'acct-lead', text: '로그인하면 앨범에 댓글을 달 수 있어요.' }),
+        S.members.kakao ? [kakaoButton(), h('p', { class: 'or' }, h('span', { text: '또는' }))] : null,
+        form,
+        h('div', { class: 'acct-links' }, linkBtn('회원가입', () => showStep('signup')), h('span', { class: 'sep', 'aria-hidden': 'true' }), linkBtn('아이디·비밀번호 찾기', () => showStep('find')))
+      ]
+    };
+  },
+
+  signup() {
+    if (S.me) return STEPS.me();
+    const id = h('input', { class: 'input', id: 's-id', name: 'username', autocomplete: 'username', autocapitalize: 'none', spellcheck: 'false', maxlength: '20' });
+    id.addEventListener('input', (e) => { if (e.isComposing) return; const v = id.value.toLowerCase().replace(/[^a-z0-9_]/g, ''); if (v !== id.value) id.value = v; });
+    const pw = pwInput('s-pw', 'new-password'), pw2 = pwInput('s-pw2', 'new-password');
+    const all = h('input', { type: 'checkbox', id: 'agree-all' });
+    const terms = h('input', { type: 'checkbox', id: 'agree-terms' });
+    const privacy = h('input', { type: 'checkbox', id: 'agree-privacy' });
+    all.addEventListener('change', () => { terms.checked = privacy.checked = all.checked; });
+    for (const c of [terms, privacy]) c.addEventListener('change', () => { all.checked = terms.checked && privacy.checked; });
+    const agreeRow = (box, forId, text, href) => h('div', { class: 'agree-row' },
+      h('label', { class: 'check', for: forId }, box, h('span', null, h('em', { text: '(필수)' }), ' ' + text)),
+      h('a', { class: 'agree-view', href, target: '_blank', rel: 'noopener', text: '보기', 'aria-label': text.replace(/에 동의해요$/, '') + ' 보기' }));
+    const st = statusEl();
+    const go = h('button', { class: 'btn primary block', type: 'submit', text: '가입하기' });
+    const form = h('form', { class: 'stack', onsubmit: (e) => {
+      e.preventDefault();
+      const loginId = id.value.trim().toLowerCase();
+      if (!LOGIN_ID_RE.test(loginId)) { say(st, '아이디는 영어 소문자·숫자·_ 로 4~20자예요.', true); id.focus(); return; }
+      const bad = checkNewPassword(pw, pw2);
+      if (bad) { say(st, bad, true); return; }
+      if (!terms.checked || !privacy.checked) { say(st, '이용약관과 개인정보 수집·이용에 동의해 주세요.', true); return; }
+      busy(go, st, async () => {
+        const r = await memberCall('signup', { loginId, password: pw.value, agree: true });
+        setSession(r.session, r.member);
+        toast('가입했어요');
+        showStep('verify', { join: true });
+      });
+    } },
+      field('s-id', '아이디', id, '영어 소문자·숫자·_ 로 4~20자'),
+      field('s-pw', '비밀번호', pw, '8자 이상'),
+      field('s-pw2', '비밀번호 확인', pw2),
+      h('div', { class: 'agree' },
+        h('label', { class: 'check agree-all', for: 'agree-all' }, all, h('span', { text: '모두 동의해요' })),
+        agreeRow(terms, 'agree-terms', '이용약관에 동의해요', 'terms.html'),
+        agreeRow(privacy, 'agree-privacy', '개인정보 수집·이용에 동의해요', 'privacy.html')),
+      h('p', { class: 'field-hint', text: '만 14세 이상만 가입할 수 있어요.' }),
+      st, go);
+    return {
+      title: '회원가입', back: 'login', focus: id,
+      body: [
+        joinSteps(1),
+        S.members.kakao ? [kakaoButton(), h('p', { class: 'or' }, h('span', { text: '또는 아이디로 가입' }))] : null,
+        form
+      ]
+    };
+  },
+
+  verify(x) {
+    if (!S.me) return STEPS.login({});
+    if (S.me.verified) return {
+      title: '본인인증', back: x.from === 'me' ? 'me' : null,
+      body: [h('p', { class: 'acct-lead' }, '이미 본인인증했어요.'), h('button', { class: 'btn primary block', type: 'button', text: '확인', onclick: () => (x.from === 'me' ? showStep('me') : closeAccount()) })]
+    };
+    const cfg = S.members.verify;
+    const st = statusEl();
+    const go = h('button', { class: 'btn primary block', type: 'button', text: '휴대폰 본인인증하기', disabled: !cfg });
+    const conflict = h('div', { class: 'notice', hidden: true });
+    const next = () => {
+      if (x.from === 'me') { showStep('me'); return; }
+      if (!S.me?.nickname) showStep('nickname', { join: x.join });
+      else { closeAccount(); toast('이제 댓글을 달 수 있어요'); }
+    };
+    const finish = async (id) => {
+      say(st, '본인인증 결과를 확인하는 중…');
+      try {
+        const r = await memberCall('verify-done', { id });
+        saveMe(r.member);
+        memberChanged();
+        toast('본인인증을 마쳤어요');
+        next();
+      } catch (e) {
+        // 같은 사람이 이미 다른 계정으로 인증했다 → 그 계정을 알려 준다(아이디는 일부만)
+        if (e.status === 409 && e.data?.hint) {
+          const hint = e.data.hint;
+          say(st, '');
+          go.hidden = true;
+          conflict.hidden = false;
+          conflict.replaceChildren(...[
+            h('strong', { text: e.data.error || '이미 본인인증한 계정이 있어요. 그 계정으로 로그인해 주세요.' }),
+            hint.loginId ? h('p', null, '그 계정의 아이디: ', h('b', { text: hint.loginId })) : null,
+            hint.kakao ? h('p', { text: '그 계정은 카카오로 가입했어요.' }) : null,
+            h('button', { class: 'btn small primary', type: 'button', text: '로그아웃하고 그 계정으로 로그인', onclick: async () => { await memberCall('logout').catch(() => {}); dropSession(); showStep('login', {}); } })
+          ].filter(Boolean));
+          return;
+        }
+        throw e;
+      }
+    };
+    go.addEventListener('click', () => busy(go, st, async () => { await finish(await portoneVerify('join')); }));
+    if (!cfg) say(st, '본인인증 준비 중이에요. 조금 뒤에 다시 해 주세요.');
+    else if (x.error) say(st, x.error, true);
+    return {
+      title: '본인인증', back: x.from === 'me' ? 'me' : null,
+      body: [
+        x.join ? joinSteps(2) : null,
+        h('p', { class: 'acct-lead strong', text: VERIFY_TEXT }),
+        h('ul', { class: 'acct-points' }, h('li', { text: '가입할 때 한 번만 하면 돼요.' }), h('li', { text: '한 사람은 계정을 하나만 만들 수 있어요.' })),
+        conflict, st, go,
+        x.from === 'me' ? null : h('div', { class: 'acct-links' }, linkBtn('나중에 할게요', () => { if (!S.me?.nickname) showStep('nickname', { join: x.join }); else closeAccount(); }))
+      ],
+      after: () => {
+        if (cfg) loadPortOne().catch(() => {});
+        if (x.pendingId) busy(go, st, () => finish(x.pendingId));
+      }
+    };
+  },
+
+  nickname(x) {
+    if (!S.me) return STEPS.login({});
+    const had = S.me.nickname || '';
+    const nk = h('input', { class: 'input', id: 'm-nick', maxlength: '12', value: had, autocomplete: 'nickname', spellcheck: 'false' });
+    const st = statusEl();
+    const go = h('button', { class: 'btn primary block', type: 'submit', text: had ? '바꾸기' : '정하기' });
+    const form = h('form', { class: 'stack', onsubmit: (e) => {
+      e.preventDefault();
+      const v = nk.value.normalize('NFC').trim().replace(/\s+/g, ' ');
+      const n = [...v].length;
+      if (n < 2 || n > 12) { say(st, '닉네임은 2~12자로 정해 주세요.', true); nk.focus(); return; }
+      busy(go, st, async () => {
+        if (v !== had) {
+          const r = await memberCall('nickname', { nickname: v });
+          saveMe(r.member);
+          memberChanged();
+          toast(had ? '닉네임을 바꿨어요' : '닉네임을 정했어요');
+        }
+        if (x.from === 'me') showStep('me');
+        else { closeAccount(); if (S.me?.verified) toast('이제 댓글을 달 수 있어요'); }
+      });
+    } }, field('m-nick', '닉네임', nk, '한글·영문·숫자·_ 로 2~12자예요. 가운데 빈칸도 쓸 수 있어요.'), st, go);
+    return {
+      title: had ? '닉네임 바꾸기' : '닉네임 정하기', back: x.from === 'me' ? 'me' : null, focus: nk,
+      body: [
+        x.join ? joinSteps(3) : null,
+        h('p', { class: 'acct-lead', text: '댓글에는 닉네임만 보여요.' }),
+        form,
+        !S.me.verified && x.from !== 'me' ? h('p', { class: 'field-hint center' }, '본인인증을 마치면 댓글을 달 수 있어요. ', linkBtn('본인인증하기', () => showStep('verify', { join: x.join }))) : null
+      ]
+    };
+  },
+
+  find(x) {
+    const cfg = S.members.verify;
+    const st = statusEl();
+    const go = h('button', { class: 'btn primary block', type: 'button', text: '휴대폰 본인인증하기', disabled: !cfg });
+    const done = async (id) => {
+      say(st, '본인인증 결과를 확인하는 중…');
+      const r = await memberCall('find-done', { id });
+      showStep('found', { account: r.account || {}, reset: typeof r.reset === 'string' ? r.reset : null });
+    };
+    go.addEventListener('click', () => busy(go, st, async () => { await done(await portoneVerify('find')); }));
+    if (!cfg) say(st, '본인인증 준비 중이에요. 조금 뒤에 다시 해 주세요.');
+    else if (x.error) say(st, x.error, true);
+    return {
+      title: '아이디·비밀번호 찾기', back: S.me ? null : 'login',
+      body: [
+        h('p', { class: 'acct-lead', text: '가입할 때 한 휴대폰 본인인증을 다시 하면 아이디를 알려 드리고, 비밀번호를 새로 정할 수 있어요.' }),
+        st, go,
+        h('div', { class: 'acct-links' }, linkBtn('회원가입', () => showStep('signup')))
+      ],
+      after: () => {
+        if (cfg) loadPortOne().catch(() => {});
+        if (x.pendingId) busy(go, st, () => done(x.pendingId));
+      }
+    };
+  },
+
+  found(x) {
+    const a = x.account || {};
+    const parts = [];
+    if (a.loginId) {
+      parts.push(h('div', { class: 'found-id' }, h('span', { text: '내 아이디' }), h('strong', { text: a.loginId })));
+      if (x.reset && !S.me) {
+        const pw = pwInput('r-pw', 'new-password'), pw2 = pwInput('r-pw2', 'new-password');
+        const st = statusEl();
+        const go = h('button', { class: 'btn primary block', type: 'submit', text: '새 비밀번호로 로그인' });
+        parts.push(h('form', { class: 'stack', onsubmit: (e) => {
+          e.preventDefault();
+          const bad = checkNewPassword(pw, pw2);
+          if (bad) { say(st, bad, true); return; }
+          busy(go, st, async () => {
+            const r = await memberCall('reset', { reset: x.reset, password: pw.value });
+            setSession(r.session, r.member);
+            afterLogin('비밀번호를 바꾸고 로그인했어요');
+          });
+        } },
+          h('p', { class: 'acct-lead', text: '비밀번호를 새로 정하면 바로 로그인돼요. 10분 안에 해 주세요.' }),
+          // 비밀번호 관리 프로그램이 아이디를 함께 기억하게
+          h('input', { type: 'text', class: 'hidden', autocomplete: 'username', value: a.loginId, tabindex: '-1', 'aria-hidden': 'true' }),
+          field('r-pw', '새 비밀번호', pw, '8자 이상'), field('r-pw2', '새 비밀번호 확인', pw2), st, go));
+        parts.push(h('div', { class: 'acct-links' }, linkBtn('지금 비밀번호로 로그인할게요', () => showStep('login', { loginId: a.loginId }))));
+      } else parts.push(h('button', { class: 'btn primary block', type: 'button', text: '로그인하러 가기', onclick: () => showStep('login', { loginId: a.loginId }) }));
+    }
+    if (a.kakao) parts.push(h('p', { class: 'acct-lead', text: '카카오로 가입한 계정이에요. 카카오 로그인을 눌러 주세요.' }), S.members.kakao ? kakaoButton() : null);
+    if (!a.loginId && !a.kakao) parts.push(h('p', { class: 'acct-lead', text: '계정을 찾지 못했어요.' }));
+    return { title: '계정 찾기', back: 'login', body: parts };
+  },
+
+  me() {
+    if (!S.me) return STEPS.login({});
+    const m = S.me;
+    const row = (k, ...v) => h('div', { class: 'kv-row' }, h('dt', { text: k }), h('dd', null, ...v));
+    const todo = !m.verified ? h('button', { class: 'btn primary block', type: 'button', text: '본인인증하기', onclick: () => showStep('verify', { from: 'me' }) })
+      : !m.nickname ? h('button', { class: 'btn primary block', type: 'button', text: '닉네임 정하기', onclick: () => showStep('nickname', { from: 'me' }) }) : null;
+    const item = (label, fn, cls = '') => h('button', { type: 'button', class: cls, onclick: fn }, label);
+    return {
+      title: '내 정보',
+      body: [
+        S.banned ? h('p', { class: 'notice bad-notice', text: '이용이 막힌 계정이에요. 댓글을 달 수 없어요.' }) : null,
+        h('dl', { class: 'kv' },
+          row('닉네임', m.nickname ? h('b', { text: m.nickname }) : h('span', { class: 'muted', text: '아직 안 정했어요' })),
+          row('로그인', m.loginId ? `아이디 ${m.loginId}` : m.kakao ? '카카오' : '—'),
+          row('본인인증', m.verified ? h('span', { class: 'ok' }, icon('check'), '했어요') : h('span', { class: 'bad', text: '아직 안 했어요' }))),
+        !m.verified ? h('p', { class: 'field-hint', text: '본인인증과 닉네임이 있어야 댓글을 달 수 있어요.' }) : null,
+        todo,
+        h('div', { class: 'menu acct-menu' },
+          m.nickname ? item('닉네임 바꾸기', () => showStep('nickname', { from: 'me' })) : null,
+          m.loginId ? item('비밀번호 바꾸기', () => showStep('password')) : null,
+          item('로그아웃', async () => { await memberCall('logout').catch(() => {}); dropSession(); closeAccount(); toast('로그아웃했어요'); }),
+          item('탈퇴하기', () => showStep('withdraw'), 'danger')),
+        h('p', { class: 'acct-foot' },
+          h('a', { href: 'terms.html', target: '_blank', rel: 'noopener', text: '이용약관' }), ' · ',
+          h('a', { href: 'privacy.html', target: '_blank', rel: 'noopener', text: '개인정보처리방침' }))
+      ]
+    };
+  },
+
+  password() {
+    if (!S.me?.loginId) return STEPS.me();
+    const old = pwInput('p-old', 'current-password'), pw = pwInput('p-new', 'new-password'), pw2 = pwInput('p-new2', 'new-password');
+    const st = statusEl();
+    const go = h('button', { class: 'btn primary block', type: 'submit', text: '바꾸기' });
+    const form = h('form', { class: 'stack', onsubmit: (e) => {
+      e.preventDefault();
+      if (!old.value) { say(st, '지금 비밀번호를 넣어 주세요.', true); old.focus(); return; }
+      const bad = checkNewPassword(pw, pw2);
+      if (bad) { say(st, bad, true); return; }
+      busy(go, st, async () => {
+        await memberCall('password', { old: old.value, password: pw.value });
+        toast('비밀번호를 바꿨어요');
+        showStep('me');
+      });
+    } },
+      h('input', { type: 'text', class: 'hidden', autocomplete: 'username', value: S.me.loginId, tabindex: '-1', 'aria-hidden': 'true' }),
+      field('p-old', '지금 비밀번호', old), field('p-new', '새 비밀번호', pw, '8자 이상'), field('p-new2', '새 비밀번호 확인', pw2),
+      h('p', { class: 'field-hint', text: '바꾸면 다른 기기에서는 다시 로그인해야 해요.' }), st, go);
+    return { title: '비밀번호 바꾸기', back: 'me', focus: old, body: [form] };
+  },
+
+  withdraw() {
+    if (!S.me) return STEPS.login({});
+    const m = S.me;
+    const pw = m.loginId ? pwInput('w-pw', 'current-password') : null;
+    const st = statusEl();
+    const go = h('button', { class: 'btn danger-fill block', type: 'button', text: '탈퇴하기' });
+    go.addEventListener('click', async () => {
+      if (pw && !pw.value) { say(st, '비밀번호를 넣어 주세요.', true); pw.focus(); return; }
+      if (!await confirmBox('정말 탈퇴할까요? 계정과 내가 단 댓글이 모두 지워지고 되돌릴 수 없어요.', '탈퇴하기', true)) return;
+      busy(go, st, async () => {
+        await memberCall('withdraw', pw ? { password: pw.value } : {});
+        dropSession();
+        closeAccount();
+        toast('탈퇴했어요');
+      });
+    });
+    return {
+      title: '탈퇴하기', back: 'me', focus: pw,
+      body: [
+        h('div', { class: 'notice' },
+          h('strong', { text: '탈퇴하면' }),
+          h('ul', null, h('li', { text: '계정과 내가 단 댓글이 모두 지워져요.' }), h('li', { text: '되돌릴 수 없어요.' }))),
+        pw ? field('w-pw', '비밀번호', pw) : h('p', { class: 'field-hint', text: '카카오로 가입한 계정은 비밀번호 없이 탈퇴해요.' }),
+        st, go
+      ]
+    };
+  }
+};
+
+// ---------- 댓글(큰 화면) ----------
+const CM = new Map();       // 글 번호 → {list, off, me:{can, why}} 또는 {err}
+const cmSeq = new Map();    // 늦게 온 옛 답이 새 답을 덮지 않게
+const drafts = new Map();   // 쓰던 댓글(다시 그려도 남게)
+function ago(t) {
+  const s = Math.max(0, (Date.now() - t) / 1000);
+  if (s < 60) return '방금';
+  if (s < 3600) return `${Math.floor(s / 60)}분 전`;
+  if (s < 86400) return `${Math.floor(s / 3600)}시간 전`;
+  if (s < 86400 * 7) return `${Math.floor(s / 86400)}일 전`;
+  const sameYear = dayOf(t).slice(0, 4) === dayOf(Date.now()).slice(0, 4);
+  return new Intl.DateTimeFormat('ko-KR', { timeZone: KST, ...(sameYear ? {} : { year: 'numeric' }), month: 'long', day: 'numeric' }).format(new Date(t));
+}
+const fullTime = (t) => new Intl.DateTimeFormat('ko-KR', { timeZone: KST, year: 'numeric', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(t));
+async function loadComments(id) {
+  if (!S.members || !id) return;
+  const seq = (cmSeq.get(id) || 0) + 1;
+  cmSeq.set(id, seq);
+  let next;
+  try {
+    const r = await call('comments', { query: { post: id }, session: true });
+    next = {
+      list: Array.isArray(r.comments) ? r.comments.filter((c) => c && typeof c.id === 'string') : [],
+      off: r.off === true,
+      me: r.me && typeof r.me === 'object' ? r.me : { can: false, why: 'login' }
+    };
+  } catch (e) {
+    if (cmSeq.get(id) !== seq) return;
+    if (e.status === 401) dropSession();
+    if (!CM.get(id) || CM.get(id).err) CM.set(id, { list: [], err: e.status === 404 ? '댓글을 불러오지 못했어요.' : e.message });
+    paintComments(id);
+    return;
+  }
+  if (cmSeq.get(id) !== seq) return;
+  CM.set(id, next);
+  if (S.session && next.me.why === 'login') dropSession();   // 서버에서는 로그인이 이미 끝났다
+  const p = findPost(id);
+  if (p && (Number(p.cc) || 0) !== next.list.length) { p.cc = next.list.length; render(); }
+  paintComments(id);
+}
+function paintComments(id, root = viewer) {
+  if (!root) return;
+  const st = CM.get(id);
+  const box = root.querySelector(`[data-comments="${id}"]`);
+  if (box) box.replaceChildren(...commentsContent(id, st));
+  const comp = root.querySelector(`[data-compose="${id}"]`);
+  if (!comp) return;
+  const state = composerState(st);
+  if (state === 'can' && comp.dataset.state === 'can' && comp.querySelector('textarea')) return;   // 쓰던 칸은 그대로
+  comp.dataset.state = state;
+  comp.replaceChildren(...composerContent(id, st));
+}
+function commentsContent(id, st) {
+  const n = st?.list?.length || 0;
+  const out = [h('h3', { class: 'cm-title' }, '댓글', n ? h('span', { text: num(n) }) : null)];
+  if (!st) out.push(h('p', { class: 'cm-empty', text: '댓글을 불러오는 중…' }));
+  else if (st.err) out.push(h('p', { class: 'cm-empty' }, st.err + ' ', h('button', { class: 'link-btn', type: 'button', text: '다시 불러오기', onclick: () => { CM.delete(id); paintComments(id); loadComments(id); } })));
+  else if (!n) out.push(h('p', { class: 'cm-empty', text: st.off ? '아직 댓글이 없어요.' : '아직 댓글이 없어요. 첫 댓글을 남겨 보세요.' }));
+  else out.push(h('ul', { class: 'cm-list' }, st.list.map((c) => commentItem(id, c))));
+  return out;
+}
+function commentItem(postId, c) {
+  const at = Number(c.at) || Date.now();
+  return h('li', { class: 'cm-item' + (c.mine ? ' mine' : ''), dataset: { cid: c.id } },
+    h('div', { class: 'cm-main' },
+      h('p', { class: 'cm-head' },
+        h('b', { class: 'cm-nick', text: c.nick || '(알 수 없음)' }),
+        c.mine ? h('span', { class: 'cm-tag', text: '내 댓글' }) : null,
+        h('time', { class: 'cm-time', datetime: new Date(at).toISOString(), title: fullTime(at), text: ago(at) })),
+      h('p', { class: 'cm-text', text: c.text || '' })),
+    h('button', { class: 'icon-btn cm-more', type: 'button', 'aria-label': `${c.nick || ''} 댓글 메뉴`, onclick: () => commentMenu(postId, c) }, icon('more')));
+}
+function composerState(st) {
+  if (!st) return 'loading';
+  if (st.err) return 'error';
+  if (st.me?.can) return 'can';
+  return st.me?.why || (st.off ? 'off' : 'login');
+}
+// 맨 아래 쓰기 칸 — 쓸 수 없으면 왜 그런지와 할 일(로그인·본인인증·닉네임)
+function composerContent(id, st) {
+  const state = composerState(st);
+  if (state === 'loading' || state === 'error') return [];
+  if (state === 'can') return [commentForm(id)];
+  const cta = (label, fn, ic) => h('button', { class: 'cm-cta', type: 'button', onclick: fn }, icon(ic), h('span', { text: label }));
+  const note = (text, btn) => h('p', { class: 'cm-why' }, h('span', { text }), btn || null);
+  if (state === 'login') return [cta('로그인하고 댓글 달기', () => openAccount('login'), 'user')];
+  if (state === 'verify') return [cta('본인인증하고 댓글 달기', () => openAccount('verify', {}), 'check')];
+  if (state === 'nickname') return [note('닉네임을 정하면 댓글을 달 수 있어요', h('button', { class: 'btn small primary', type: 'button', text: '닉네임 정하기', onclick: () => openAccount('nickname', {}) }))];
+  if (state === 'blocked') return [note('이 앨범에서는 댓글을 달 수 없어요')];
+  if (state === 'off') return [note('댓글을 받지 않는 앨범이에요')];
+  if (state === 'banned') return [note('이용이 막힌 계정이라 댓글을 달 수 없어요')];
+  return [note('지금은 댓글을 달 수 없어요')];
+}
+function commentForm(id) {
+  const ta = h('textarea', { class: 'cm-input', rows: '1', maxlength: '300', placeholder: '댓글 달기…', 'aria-label': '댓글 쓰기' });
+  ta.value = drafts.get(id) || '';
+  const send = h('button', { class: 'cm-send', type: 'submit', text: '게시' });
+  const count = h('span', { class: 'cm-count', 'aria-live': 'polite' });
+  const grow = () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight + 2, 128) + 'px'; };
+  const sync = () => {
+    send.disabled = !ta.value.trim() || ta.readOnly;
+    const n = [...ta.value].length;
+    count.textContent = n > 250 ? `${n}/300` : '';
+  };
+  ta.addEventListener('input', () => { drafts.set(id, ta.value); sync(); grow(); });
+  const form = h('form', { class: 'cm-form', onsubmit: (e) => { e.preventDefault(); postComment(id, ta, sync, grow); } }, ta, count, send);
+  // PC: Ctrl(⌘)+Enter 로 바로 게시(Enter 는 줄바꿈 — 5줄까지)
+  ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); form.requestSubmit(); } });
+  sync();
+  requestAnimationFrame(grow);
+  return form;
+}
+async function postComment(id, ta, sync, grow) {
+  const text = ta.value.replace(/\r\n?/g, '\n').trim();
+  if (!text || ta.readOnly) return;
+  ta.readOnly = true;
+  sync();
+  try {
+    const r = await commentCall('add', { album: ALBUM, post: id, text });
+    drafts.delete(id);
+    ta.value = '';
+    grow();
+    const st = CM.get(id);
+    if (st?.list && r.comment && !st.list.some((c) => c.id === r.comment.id)) st.list.push({ ...r.comment, mine: true });
+    bumpCc(id, 1);
+    paintComments(id);
+    viewer?.querySelector(`[data-comments="${id}"] .cm-list > li:last-child`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  } catch (e) {
+    toast(e.message, true);
+    if (e.status === 403) loadComments(id);   // 차단·댓글 끔 등 — 쓰기 칸을 새로(쓰던 글은 drafts 에 남는다)
+  } finally {
+    ta.readOnly = false;
+    sync();
+  }
+}
+// 하트 줄의 말풍선: 쓸 수 있으면 쓰기 칸으로, 아니면 할 일(로그인·본인인증·닉네임) 창으로
+function focusComposer(id) {
+  const comp = viewer?.querySelector(`[data-compose="${id}"]`);
+  const ta = comp?.querySelector('textarea');
+  if (ta) { comp.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); ta.focus({ preventScroll: true }); return; }
+  const why = composerState(CM.get(id));
+  if (why === 'login' || (why === 'loading' && !S.me)) openAccount('login');
+  else if (why === 'verify') openAccount('verify', {});
+  else if (why === 'nickname') openAccount('nickname', {});
+  else comp?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+function bumpCc(id, d) {
+  const p = findPost(id);
+  if (!p) return;
+  p.cc = Math.max(0, (Number(p.cc) || 0) + d);
+  render();
+}
+function dropComment(postId, cid) {
+  const st = CM.get(postId);
+  if (st?.list) st.list = st.list.filter((c) => c.id !== cid);
+  bumpCc(postId, -1);
+  paintComments(postId);
+}
+function commentMenu(postId, c) {
+  const item = (label, ic, fn, danger = false) => h('button', { type: 'button', class: danger ? 'danger' : '', onclick: () => { d.dismiss(); fn(); } }, icon(ic), label);
+  const items = [];
+  if (c.mine) items.push(item('내 댓글 지우기', 'trash', () => deleteMyComment(postId, c), true));
+  else items.push(item('신고하기', 'flag', () => reportComment(c)));
+  if (S.owner && !c.mine) {
+    items.push(item('댓글 지우기 (앨범 주인)', 'trash', () => ownerDeleteComment(postId, c), true));
+    if (c.m) items.push(item('이 회원 차단하기', 'block', () => blockMember(c.m, c.nick), true));
+  }
+  items.push(h('button', { type: 'button', onclick: () => d.dismiss() }, '그만두기'));
+  const d = sheet(h('div', { class: 'menu' }, h('p', { class: 'menu-title', text: `${c.nick || ''}님의 댓글` }), items), { cls: 'small', label: '댓글 메뉴' });
+}
+async function deleteMyComment(postId, c) {
+  if (!await confirmBox('내 댓글을 지울까요?', '지우기', true)) return;
+  try { await commentCall('delete', { id: c.id }); dropComment(postId, c.id); toast('댓글을 지웠어요'); }
+  catch (e) { toast(e.message, true); }
+}
+async function ownerDeleteComment(postId, c) {
+  if (!await confirmBox('이 댓글을 지울까요? 되돌릴 수 없어요.', '지우기', true)) return;
+  try { await ownerCall('comment-delete', { id: c.id }); dropComment(postId, c.id); toast('댓글을 지웠어요'); }
+  catch (e) { toast(e.message, true); }
+}
+async function blockMember(member, nick) {
+  if (!member) return false;
+  if (!await confirmBox(`${nick || '이 회원'}님이 이 앨범에 댓글을 달지 못하게 할까요? 이미 단 댓글은 남아 있어요. ⚙ 설정에서 언제든 풀 수 있어요.`, '차단하기', true)) return false;
+  try { await ownerCall('member-block', { member }); toast(`${nick || '회원'}님을 차단했어요`); return true; }
+  catch (e) { toast(e.message, true); return false; }
+}
+function reportComment(c) {
+  if (!S.me) { toast('로그인하면 신고할 수 있어요.'); openAccount('login'); return; }
+  const reasons = ['욕설·비하', '괴롭힘·따돌림', '광고·도배', '개인정보 노출', '그 밖의 이유'];
+  const d = sheet(h('div', { class: 'menu' },
+    h('p', { class: 'menu-title', text: '신고하는 이유를 골라 주세요' }),
+    reasons.map((reason) => h('button', { type: 'button', onclick: async () => {
+      d.dismiss();
+      try { await commentCall('report', { id: c.id, reason }); toast('신고했어요. 앨범 주인과 운영자가 확인해요.'); }
+      catch (e) { toast(e.message, true); }
+    } }, reason)),
+    h('button', { type: 'button', onclick: () => d.dismiss() }, '그만두기')), { cls: 'small', label: '댓글 신고' });
+}
+
+// ---------- 댓글 관리(주인 ⚙ 설정) ----------
+function ownerCommentSettings(closeSettings) {
+  const on = h('input', { type: 'checkbox', id: 'cm-on', class: 'switch', role: 'switch', disabled: true });
+  const onNote = h('p', { class: 'muted small', text: '지금 상태를 확인하는 중…' });
+  const blockList = h('ul', { class: 'devices' }, h('li', { class: 'muted', text: '불러오는 중…' }));
+  const reportList = h('ul', { class: 'devices reports' }, h('li', { class: 'muted', text: '불러오는 중…' }));
+  const paintOn = (v) => {
+    on.checked = v;
+    on.disabled = false;
+    onNote.textContent = v ? '본인인증한 회원이 글마다 댓글을 달 수 있어요.' : '새 댓글을 받지 않아요. 이미 달린 댓글은 그대로 보여요.';
+  };
+  on.addEventListener('change', async () => {
+    const want = on.checked;
+    on.disabled = true;
+    try {
+      const r = await ownerCall('comments-set', { on: want });
+      paintOn(typeof r.on === 'boolean' ? r.on : want);
+      CM.clear();
+      toast(want ? '댓글을 받아요' : '댓글을 받지 않아요');
+    } catch (e) { paintOn(!want); toast(e.message, true); }
+  });
+  async function loadBlocks() {
+    try {
+      const r = await ownerCall('blocks', {});
+      const rows = Array.isArray(r.blocks) ? r.blocks : [];
+      blockList.replaceChildren(...(rows.length ? rows.map((b) => h('li', null,
+        h('div', null, h('strong', { text: b.nick || '(닉네임 없음)' }), h('p', { class: 'muted small', text: b.at ? `${dateText(b.at)}에 차단` : '차단함' })),
+        h('button', { class: 'btn small', type: 'button', text: '풀기', onclick: async () => {
+          if (!await confirmBox(`${b.nick || '이 회원'}님의 차단을 풀까요?`, '풀기')) return;
+          try { await ownerCall('member-unblock', { member: b.member }); toast('차단을 풀었어요'); loadBlocks(); } catch (e) { toast(e.message, true); }
+        } }))) : [h('li', { class: 'muted', text: '차단한 회원이 없어요.' })]));
+      if (typeof r.on === 'boolean') { paintOn(r.on); return true; }   // 서버가 댓글 받기 상태를 함께 알려 주면 그 값
+    } catch (e) { blockList.replaceChildren(h('li', { class: 'bad', text: e.message })); }
+    return false;
+  }
+  // 댓글 받기 상태를 따로 묻는 동작이 없으면: 가장 새 글의 댓글 목록(off)으로 안다. 글이 없으면 처음 값(켜짐)
+  async function probeOn() {
+    const p0 = byDate(posts())[0];
+    if (!p0) { paintOn(true); return; }
+    try { paintOn((await call('comments', { query: { post: p0.id } })).off !== true); }
+    catch { paintOn(true); onNote.textContent = '지금 상태를 알 수 없어요. 바꾸면 그대로 저장돼요.'; }
+  }
+  async function loadReports() {
+    try {
+      const r = await ownerCall('reports', {});
+      const rows = Array.isArray(r.reports) ? r.reports : [];
+      reportList.replaceChildren(...(rows.length ? rows.map((x) => h('li', { class: 'report' },
+        h('div', { class: 'r-main' },
+          h('p', { class: 'r-head' }, h('strong', { text: x.nick || '(알 수 없음)' }), h('span', { class: 'tag warn', text: `신고 ${num(x.count || 1)}번` })),
+          h('p', { class: 'r-text', text: x.text || '' }),
+          h('p', { class: 'muted small', text: x.at ? `${ago(x.at)} 신고` : '' })),
+        h('div', { class: 'r-actions' },
+          findPost(x.post) ? h('button', { class: 'btn small', type: 'button', text: '글 보기', onclick: () => { closeSettings(); openViewer(x.post); } }) : null,
+          h('button', { class: 'btn small danger', type: 'button', text: '지우기', onclick: async () => {
+            if (!await confirmBox('신고된 이 댓글을 지울까요? 되돌릴 수 없어요.', '지우기', true)) return;
+            try { await ownerCall('comment-delete', { id: x.comment }); CM.delete(x.post); bumpCc(x.post, -1); toast('댓글을 지웠어요'); loadReports(); } catch (e) { toast(e.message, true); }
+          } }),
+          x.member ? h('button', { class: 'btn small danger', type: 'button', text: '차단', onclick: async () => { if (await blockMember(x.member, x.nick)) loadBlocks(); } }) : null))) : [h('li', { class: 'muted', text: '신고된 댓글이 없어요.' })]));
+    } catch (e) { reportList.replaceChildren(h('li', { class: 'bad', text: e.message })); }
+  }
+  loadBlocks().then((known) => { if (!known) probeOn(); });
+  loadReports();
+  return [
+    h('h3', { text: '댓글' }),
+    h('label', { class: 'switch-row', for: 'cm-on' }, h('span', { text: '댓글 받기' }), on),
+    onNote,
+    h('h4', { text: '차단한 회원' }),
+    h('p', { class: 'muted small', text: '차단한 회원은 이 앨범에 댓글을 달 수 없어요.' }),
+    blockList,
+    h('h4', { text: '신고된 댓글' }),
+    reportList
+  ];
+}
+
+// 카카오·휴대폰 본인인증에서 돌아왔을 때 마무리(RETURN — 맨 위에서 주소를 이미 정리했다)
+async function handleReturn() {
+  const R = RETURN;
+  if (!R) return;
+  if (R.kind === 'login-error') { toast(KAKAO_ERRORS[R.code] || KAKAO_ERRORS.fail, R.code !== 'cancel'); return; }
+  if (R.kind === 'ticket') {
+    try {
+      const r = await memberCall('ticket', { ticket: R.ticket });
+      setSession(r.session, r.member);
+      afterLogin('카카오로 로그인했어요');
+    } catch (e) { toast(e.message, true); }
+    return;
+  }
+  const mode = R.mode || (S.session ? 'join' : 'find');
+  if (R.savedId && R.id && R.savedId !== R.id) { toast('본인인증을 처음부터 다시 해 주세요.', true); return; }
+  if (mode === 'join' && !S.me) { toast('로그인이 풀렸어요. 다시 로그인한 뒤 본인인증을 해 주세요.', true); openAccount('login'); return; }
+  if (R.code) { openAccount(mode === 'find' ? 'find' : 'verify', { error: R.message || '본인인증을 마치지 못했어요. 다시 해 주세요.' }); return; }
+  if (!R.id) { toast('본인인증 결과를 받지 못했어요. 다시 해 주세요.', true); return; }
+  openAccount(mode === 'find' ? 'find' : 'verify', { pendingId: R.id });
+}
+async function startMembers(pageReady) {
+  let r = await loadMembersConfig();
+  if (r === 'net') { await new Promise((ok) => setTimeout(ok, 5000)); r = await loadMembersConfig(); }
+  if (r !== 'ok') {
+    if (RETURN) {
+      await pageReady;
+      toast(RETURN.kind === 'login-error' ? (KAKAO_ERRORS[RETURN.code] || KAKAO_ERRORS.fail) : '지금은 로그인할 수 없어요. 조금 뒤에 다시 해 주세요.', RETURN.code !== 'cancel');
+    }
+    return;
+  }
+  await loadMe();
+  if (!(param('owner') !== null && !S.owner)) render();   // 맨 위 로그인 단추·바닥 약관 링크(주인 기기 등록 화면은 그대로)
+  // 회원 설정보다 먼저 열린 큰 화면에는 댓글 칸이 없다 → 다시 그린다(이미 있으면 openViewer 가 불러왔다)
+  const id = viewer?.dataset.post;
+  if (id && findPost(id) && !viewer.querySelector('[data-comments]')) { viewer.replaceChildren(viewerStage(findPost(id))); loadComments(id); }
+  await pageReady;
+  await handleReturn();
 }
 
 // ---------- 시작 ----------
@@ -1105,7 +1988,13 @@ async function refresh(fresh = false) {
     setFeed(await fetchFeed(fresh));
     if ((S.feed?.snapAt || 0) !== before) {
       if (!viewer) render();
-      else { const id = viewer.dataset.post; render(); if (findPost(id)) viewer.replaceChildren(viewerStage(findPost(id))); }
+      else {
+        const id = viewer.dataset.post;
+        render();
+        // 댓글을 쓰고 있으면 큰 화면은 그대로 둔다(쓰던 칸·커서가 사라지지 않게)
+        const typing = viewer.contains(document.activeElement) && document.activeElement.matches('textarea, input');
+        if (!typing && findPost(id)) viewer.replaceChildren(viewerStage(findPost(id)));
+      }
     }
   } catch (e) {
     if (!S.feed) { $('#app').replaceChildren(h('main', { class: 'wrap narrow' }, h('section', { class: 'card' }, h('h1', { text: '불러오지 못했어요' }), h('p', { text: e.message }), h('button', { class: 'btn primary', type: 'button', text: '다시 불러오기', onclick: () => refresh(true) })))); }
@@ -1139,10 +2028,13 @@ function noAlbum(message) {
   }
   try { const cached = JSON.parse(ls.get(feedKey()) || 'null'); if (cached?.posts && (cached.album?.id || LEGACY) === ALBUM) S.feed = cached; } catch { /* 없음 */ }
   render();
+  let pageReady;
+  startMembers(new Promise((r) => { pageReady = r; }));
   await refresh();
   const p = param('p');
   if (p && findPost(p)) openViewer(p, { push: false });
   else if (p) history.replaceState(null, '', urlWith({ p: null }));
+  pageReady();
   countVisit();
   checkOwner();
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && Date.now() - (S.feed?.snapAt || 0) > 30000) refresh(); });
