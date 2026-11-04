@@ -1341,8 +1341,10 @@ async function portoneVerify(mode) {
     res = await PortOne.requestIdentityVerification({
       storeId: cfg.storeId, identityVerificationId: id, channelKey: cfg.channelKey,
       redirectUrl: location.origin + location.pathname + '?bjverify=1',
-      // 다날: 만 14세 미만은 인증 창에서부터 막고(서버도 다시 확인한다), 인증 창에 서비스 이름을 보인다
-      bypass: { danal: { AGELIMIT: 14, CPTITLE: '먼치킨 추억앨범' } }
+      // 다날: 만 14세 미만은 인증 창에서부터 막고(서버도 다시 확인한다), 인증 창에 서비스 이름을 보인다.
+      // KG이니시스 통합인증(포트원 시험 채널은 이것만 있음): 고객 정보를 미리 채우지 않음(flgFixedUser 는 꼭 넣어야 함).
+      // 채널의 결제대행사 것만 쓰이고 나머지는 무시된다.
+      bypass: { danal: { AGELIMIT: 14, CPTITLE: '먼치킨 추억앨범' }, inicisUnified: { flgFixedUser: 'N' } }
     });
   } catch (e) {
     ss.del('bj_verify');
