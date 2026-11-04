@@ -384,6 +384,17 @@ label, .label { font-size: 13px; font-weight: 600; color: var(--ink); margin-top
 .seg.wide button { display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 42px; padding: 0 4px; border: 0; background: transparent; color: var(--ink-2); font-weight: 600; white-space: nowrap; }
 .seg.wide button + button { border-left: 1px solid var(--line); }
 .seg.wide button.on { background: var(--surface-2); color: var(--ink); }
+/* 글 종류·가입 종류: 고른 것을 확실히(파란 칸 + 체크) — 2026-11-05 "어느 걸 누른 건지 모르겠어" */
+.seg.wide .kind-opt { flex-direction: column; gap: 2px; min-height: 52px; padding: 6px 4px; }
+.seg.wide .kind-opt .kind-top { display: inline-flex; align-items: center; gap: 6px; }
+.seg.wide .kind-opt .kind-where { font-size: 11px; font-weight: 500; opacity: .75; }
+.seg.wide .kind-opt.on { background: var(--blue, #0095f6); color: #fff; }
+.seg.wide .kind-opt.on .ic { stroke: #fff; }
+.role-seg .kind-opt { min-height: 44px; }
+.sso-btn { gap: 6px; background: var(--surface-2); font-weight: 600; }
+/* 큰 화면 사진: 남는 곳은 흐린 사진 대신 검정(휴대폰은 칸이 사진 비율 그대로라 남는 곳이 없다) — 2026-11-05 */
+.p-media .s-bg { display: none; }
+.p-media .slide { background: #000; }
 .seg .ic { width: 18px; height: 18px; }
 .strip { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
 .thumb { position: relative; flex: none; width: 90px; height: 160px; border-radius: 8px; overflow: hidden; background: var(--surface-2); display: grid; place-items: center; }

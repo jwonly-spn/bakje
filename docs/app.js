@@ -9,11 +9,11 @@ const API = SB + '/functions/v1/bakje/';
 const PUB = SB + '/storage/v1/object/public/bakje/';
 const MAX_PHOTOS = 10;
 const PAPERS = [['cream', '크림'], ['rose', '분홍'], ['sky', '하늘'], ['lilac', '라일락'], ['mint', '민트']];
-const KIND_NAME = { board: '박제판', first: '최초 박제판', letter: '박제 편지' };
+const KIND_NAME = { post: '게시물', board: '박제판', first: '최초 박제판', letter: '박제 편지' };
 // 화면 틀(세로 ÷ 가로): 모든 글 9:16. 사진이 틀과 다르면 자르지 않고 남는 곳을 같은 사진으로 흐리게 채운다.
 const FRAME = 16 / 9;
-// 탭: 게시물 = 최초 박제판(먼치킨 최초 박제판이 저절로 올라온다) · 박제판 = 올린 박제판 사진 · 달력 = 박제판을 달·날로 골라 보기
-const tabOf = (kind) => (kind === 'first' ? 'all' : 'board');
+// 탭: 게시물 = 일반 게시물(post, 2026-11-05) + 최초 박제판(먼치킨 최초 박제판이 저절로 올라온다) · 박제판 = 올린 박제판 사진 · 달력 = 박제판을 달·날로 골라 보기
+const tabOf = (kind) => (kind === 'first' || kind === 'post' ? 'all' : 'board');
 const byDate = (list) => [...list].sort((a, b) => b.at - a.at);   // 날짜가 새것 먼저(같으면 서버 차례)
 const LEGACY = 'hanijun';   // 한이준 앨범(처음 앨범)
 const ALBUM_RE = /^[a-z][a-z0-9-]{1,30}$/;
@@ -120,10 +120,10 @@ function readSet(k) { try { return new Set(JSON.parse(ls.get(k) || '[]')); } cat
 //  (앨범·탭·글 번호를 읽기 전에 — 본인인증을 시작할 때 있던 주소로 되돌린다).
 const RETURN = (() => {
   try {
-    const m = /^#(bjlogin|bjlogin-error)=([-_A-Za-z0-9]{1,64})$/.exec(location.hash);
+    const m = /^#(bjlogin|bjlogin-error|bjsso)=([-_A-Za-z0-9]{1,64})$/.exec(location.hash);
     if (m) {
       history.replaceState(history.state, '', location.pathname + location.search);
-      return m[1] === 'bjlogin' ? { kind: 'ticket', ticket: m[2] } : { kind: 'login-error', code: m[2] };
+      return m[1] === 'bjlogin' ? { kind: 'ticket', ticket: m[2] } : m[1] === 'bjsso' ? { kind: 'sso', code: m[2] } : { kind: 'login-error', code: m[2] };
     }
     const q = new URLSearchParams(location.search);
     if (q.get('bjverify') !== '1') return null;
@@ -229,7 +229,16 @@ async function call(path, { method = 'GET', body, query = {}, timeout = 25000, s
   return data;
 }
 // 주인 요청에는 늘 이 앨범을 넣는다(서명 안 — 다른 앨범 주소에서 쓸 수 없다)
-const ownerCall = async (action, payload) => call('owner', { method: 'POST', body: await signed(action, { ...payload, album: ALBUM }) });
+// 주인 동작: 이 기기가 주인 기기면 기기 서명, 아니면 DJ 계정(로그인 + 이 앨범 연결)으로(2026-11-05)
+const acctOwner = () => Boolean(S.session && Array.isArray(S.owns) && S.owns.includes(ALBUM));
+const ownerCall = async (action, payload) => (acctOwner() && ls.get('bj_owner') !== '1')
+  ? call('owner', { method: 'POST', body: { action, payload: { ...payload, album: ALBUM } }, session: true })
+  : call('owner', { method: 'POST', body: await signed(action, { ...payload, album: ALBUM }) });
+// 주인 표시 = 주인 기기 또는 DJ 계정
+function syncOwner() {
+  const on = ls.get('bj_owner') === '1' || acctOwner();
+  if (on !== S.owner) { S.owner = on; render(); }
+}
 async function fetchFeed(fresh) {
   try {
     const r = await fetch(PUB + `snap/${ALBUM}/feed.json?t=` + (fresh ? Date.now() : Math.floor(Date.now() / 10000)), { cache: 'no-store' });
@@ -295,9 +304,14 @@ const S = {
   members: null,
   session: /^[-_A-Za-z0-9]{43}$/.test(ls.get('bj_session') || '') ? ls.get('bj_session') : '',
   me: null,
+  owns: [],      // 내 계정이 관리하는 앨범(DJ 계정) — 서버 me 의 owns
   banned: false
 };
-if (S.session) { try { const m = JSON.parse(ls.get('bj_me') || 'null'); if (m && typeof m.id === 'string') S.me = m; } catch { /* 없음 */ } }
+if (S.session) {
+  try { const m = JSON.parse(ls.get('bj_me') || 'null'); if (m && typeof m.id === 'string') S.me = m; } catch { /* 없음 */ }
+  try { const o = JSON.parse(ls.get('bj_owns') || '[]'); if (Array.isArray(o)) S.owns = o.filter((x) => typeof x === 'string'); } catch { /* 없음 */ }
+  if (S.owns.includes(ALBUM)) S.owner = true;
+}
 const posts = () => S.feed?.posts || [];
 const findPost = (id) => posts().find((p) => p.id === id);
 // 지금 보이는 글(큰 화면의 이전·다음 차례와 같다): 날짜가 새것 먼저. 달력 탭은 고른 달·날의 박제판
@@ -428,7 +442,9 @@ function letterCard(letter, at) {
       h('p', { class: 'when', text: dateText(at) }))
   );
 }
-// 사진 넘기기: 사진은 자르지 않고(contain), 남는 곳은 같은 사진을 흐리게 깐다
+// 사진 비율(세로 ÷ 가로) — 휴대폰 큰 화면의 사진 칸 높이. 아주 극단적인 사진만 0.25~4 로 막는다.
+const photoRatio = (ph) => (ph?.w > 0 && ph?.h > 0 ? String(Math.min(4, Math.max(0.25, ph.h / ph.w))) : '');
+// 사진 넘기기: 사진은 자르지 않는다(contain). 휴대폰은 칸이 사진 비율 그대로, PC 는 남는 곳이 검정(2026-11-05)
 function carousel(post) {
   const list = post.photos;
   const track = h('div', { class: 'slides', tabindex: '0', 'aria-label': '사진' });
@@ -447,6 +463,8 @@ function carousel(post) {
     cancelAnimationFrame(raf);
     raf = requestAnimationFrame(() => {
       const i = Math.round(track.scrollLeft / Math.max(1, track.clientWidth));
+      // 휴대폰: 사진 칸 높이를 지금 사진 비율에 맞춘다(사진마다 비율이 달라도 여백 없이)
+      if (list[i]) wrap.closest('.post')?.style.setProperty('--pratio', photoRatio(list[i]));
       if (dots) [...dots.children].forEach((d, k) => d.classList.toggle('on', k === i));
       if (counter) counter.textContent = `${i + 1}/${list.length}`;
       if (prev) prev.disabled = i <= 0;
@@ -525,7 +543,7 @@ function postCard(post, { preview = false } = {}) {
   // 휴대폰(2026-11-04 사용자 "모바일에서 이런 여백들이 너무 거슬려"): 사진 칸을 첫 사진 비율(세로/가로) 그대로 — 화면 너비를 꽉 채우고 흐린 여백이 없다.
   //  비율이 너무 극단이면 0.5~2 사이로(나머지는 예전처럼 흐린 채움). 넓은 화면은 9:16 틀 그대로(--ratio).
   const p0 = hasPhotos ? post.photos[0] : null;
-  if (p0?.w > 0 && p0?.h > 0) card.style.setProperty('--pratio', String(Math.min(2, Math.max(0.5, p0.h / p0.w))));
+  if (photoRatio(p0)) card.style.setProperty('--pratio', photoRatio(p0));   // 넘기면 carousel 이 그 사진 비율로 바꾼다
   return card;
 }
 // 사진 왼쪽 위 후원자 닉네임(워터마크처럼)
@@ -863,7 +881,8 @@ function refreshAfterChange(id) {
 // ---------- 글쓰기(주인) ----------
 function openComposer(post = null) {
   const editing = !!post;
-  let kind = KIND_NAME[post?.kind] ? post.kind : 'board';
+  // 새 글: 지금 보는 탭에 맞춰(게시물 탭 → 일반 게시물, 박제판·달력 탭 → 박제판)
+  let kind = KIND_NAME[post?.kind] ? post.kind : (S.tab === 'all' ? 'post' : 'board');
   const photos = (post?.photos || []).map((p) => ({ kind: 'old', ...p, preview: photoUrl(p.t) }));
   const L = post?.letter || {};
   let paper = L.paper || 'cream';
@@ -922,24 +941,28 @@ function openComposer(post = null) {
   const status = h('p', { class: 'status', role: 'status' });
   const submit = h('button', { class: 'btn primary', type: 'submit', text: editing ? '고친 내용 저장' : '올리기' });
 
-  // 박제판(박제판·달력 탭) · 최초 박제판(게시물 탭). 예전 박제 편지 글을 고칠 때만 편지가 보인다.
-  const KINDS = [['board', '박제판', 'photo'], ['first', '최초 박제판', 'trophy'], ...(post?.kind === 'letter' ? [['letter', '박제 편지', 'letter']] : [])];
+  // 종류 = 올라갈 탭(2026-11-05 사용자 "탭은 게시물·박제판인데 올릴 땐 박제판·최초 박제판이라 이상해 · 어느 걸 누른 건지 모르겠어"):
+  //  일반 게시물·최초 박제판 → 게시물 탭, 박제판 → 박제판·달력 탭. 고른 것은 파란 칸 + 체크. 예전 박제 편지 글을 고칠 때만 편지가 보인다.
+  const KINDS = [['post', '일반 게시물', 'grid', '게시물 탭'], ['board', '박제판', 'photo', '박제판 탭'], ['first', '최초 박제판', 'trophy', '게시물 탭'],
+    ...(post?.kind === 'letter' ? [['letter', '박제 편지', 'letter', '박제판 탭']] : [])];
   function paintKind() {
-    kindSeg.replaceChildren(...KINDS.map(([k, label, ic]) => h('button', {
-      type: 'button', role: 'radio', 'aria-checked': String(kind === k), class: kind === k ? 'on' : '',
+    kindSeg.replaceChildren(...KINDS.map(([k, label, ic, where]) => h('button', {
+      type: 'button', role: 'radio', 'aria-checked': String(kind === k), class: 'kind-opt' + (kind === k ? ' on' : ''),
       onclick: () => { kind = k; paintKind(); paintStrip(); }
-    }, icon(ic), label)));
+    }, h('span', { class: 'kind-top' }, kind === k ? icon('check') : icon(ic), label), h('span', { class: 'kind-where', text: where }))));
     letterBox.hidden = kind !== 'letter';
     endsBox.hidden = kind !== 'first';
-    photoHint.textContent = kind === 'board' ? `9:16 박제판 사진을 골라 주세요 (${MAX_PHOTOS}장까지)`
-      : kind === 'first' ? '최초 박제판 사진을 골라 주세요 (게시물 탭에 올라가요 · 먼치킨 최초 박제판은 저절로 올라와요)'
+    boardRow.hidden = kind === 'post';
+    photoHint.textContent = kind === 'post' ? `사진을 골라 주세요 (${MAX_PHOTOS}장까지 · 어떤 비율이든 괜찮아요)`
+      : kind === 'board' ? `9:16 박제판 사진을 골라 주세요 (${MAX_PHOTOS}장까지)`
+      : kind === 'first' ? '최초 박제판 사진을 골라 주세요 (먼치킨 최초 박제판은 저절로 올라와요)'
       : '편지를 그림으로 올리려면 9:16 사진을 골라 주세요 (안 골라도 돼요)';
-    caption.placeholder = kind === 'letter' ? '한마디 더 적어 보세요 (안 써도 돼요)' : '이 박제판 이야기를 적어 보세요 (안 써도 돼요)';
+    caption.placeholder = kind === 'letter' ? '한마디 더 적어 보세요 (안 써도 돼요)' : kind === 'post' ? '이야기를 적어 보세요 (안 써도 돼요)' : '이 박제판 이야기를 적어 보세요 (안 써도 돼요)';
   }
-  // 고른 사진이 9:16 이 아니면 알려 준다(자르지 않고 남는 곳을 흐리게 채운다)
+  // 박제판 사진이 9:16 이 아니면 알려 준다(일반 게시물은 어떤 비율이든 그대로)
   function paintRatio() {
-    const off = photos.filter((p) => p.w && p.h && Math.abs(p.h / p.w - FRAME) / FRAME > 0.03).length;
-    ratioHint.textContent = off ? `${off}장은 9:16 사진이 아니라 남는 곳이 흐리게 채워져요.` : '';
+    const off = kind === 'post' ? 0 : photos.filter((p) => p.w && p.h && Math.abs(p.h / p.w - FRAME) / FRAME > 0.03).length;
+    ratioHint.textContent = off ? `${off}장은 9:16 사진이 아니에요. 휴대폰에선 사진 비율 그대로, PC에선 남는 곳이 검게 보여요.` : '';
   }
   function paintPapers() {
     papers.replaceChildren(...PAPERS.map(([k, label]) => h('button', {
@@ -974,6 +997,10 @@ function openComposer(post = null) {
       finally { preparing--; paintStrip(); }
     }
   });
+  // 후원자 닉네임·스푼 테마(박제판만 — 일반 게시물에선 숨김)
+  const boardRow = h('div', { class: 'row two' },
+    h('div', { class: 'stack' }, h('label', { for: 'donor', text: '후원자 닉네임' }), donor),
+    h('div', { class: 'stack' }, h('label', { for: 'theme', text: '스푼 테마' }), theme));
   paintKind(); paintPapers(); paintStrip();
   letterBox.append(
     h('label', { for: 'to', text: '받는 사람' }), to,
@@ -985,7 +1012,7 @@ function openComposer(post = null) {
     e.preventDefault();
     if (busy) return;
     if (preparing) { status.textContent = '사진을 준비하고 있어요. 잠깐만 기다려 주세요.'; return; }
-    if (kind !== 'letter' && !photos.length) { status.textContent = '박제판 사진을 한 장 이상 골라 주세요.'; status.classList.add('bad'); return; }
+    if (kind !== 'letter' && !photos.length) { status.textContent = '사진을 한 장 이상 골라 주세요.'; status.classList.add('bad'); return; }
     if (kind === 'letter' && !photos.length && !text.value.trim()) { status.textContent = '편지 내용을 쓰거나 사진을 골라 주세요.'; status.classList.add('bad'); text.focus(); return; }
     busy = true; submit.disabled = true; status.classList.remove('bad');
     try {
@@ -1029,9 +1056,7 @@ function openComposer(post = null) {
       kindSeg,
       h('span', { class: 'label', text: '사진' }), photoHint, strip, ratioHint, fileInput,
       letterBox,
-      h('div', { class: 'row two' },
-        h('div', { class: 'stack' }, h('label', { for: 'donor', text: '후원자 닉네임' }), donor),
-        h('div', { class: 'stack' }, h('label', { for: 'theme', text: '스푼 테마' }), theme)),
+      boardRow,
       endsBox,
       h('label', { for: 'caption', text: '글' }), caption,
       h('div', { class: 'row two' },
@@ -1216,12 +1241,12 @@ function openSettings() {
       h('label', { for: 'plink', text: '링크 (예: 스푼 방송 주소)' }), link,
       h('div', { class: 'row end' }, pstatus, save),
       S.members ? ownerCommentSettings(() => d.dismiss()) : null,
-      h('h3', { text: '주인 기기' }),
-      h('p', { class: 'muted small', text: '여기 있는 기기에서만 글을 올리고 고칠 수 있어요.' }),
+      h('h3', { text: '관리 · 주인 기기' }),
+      h('p', { class: 'muted small', text: '앨범에 연결한 DJ 계정과, 여기 있는 주인 기기에서 글을 올리고 고칠 수 있어요.' }),
       devList,
       h('div', { class: 'stack tight' }, makeCode, codeOut),
-      h('p', { class: 'muted small', text: '새 휴대폰이나 PC에서 이 사이트 맨 아래 "주인 기기 등록"을 누르고 코드를 넣으면 돼요.' }),
-      h('div', { class: 'row end' }, leave)
+      h('p', { class: 'muted small', text: '이 코드는 다른 DJ 계정을 이 앨범에 연결할 때(내 정보 › DJ 계정으로 이 앨범 관리하기)나, 이 사이트 맨 아래 "주인 기기 등록"에 넣으면 돼요.' }),
+      ls.get('bj_owner') === '1' ? h('div', { class: 'row end' }, leave) : h('p', { class: 'muted small', text: 'DJ 계정으로 관리하고 있어요. 다른 기기에서도 로그인만 하면 돼요.' })
     )), { cls: 'settings-sheet', label: '설정' });
 }
 
@@ -1237,7 +1262,8 @@ const KAKAO_ERRORS = {
   cancel: '카카오 로그인을 그만뒀어요.',
   fail: '카카오 로그인을 하지 못했어요. 다시 해 주세요.',
   banned: '이용이 막힌 계정이에요.',
-  setup: '카카오 로그인 준비 중이에요.'
+  setup: '카카오 로그인 준비 중이에요.',
+  'sso-none': '다른 추억앨범에서 로그인한 기록이 없어요. 여기서 로그인해 주세요.'
 };
 // 시험용: 주소에 ?members=1 이 있으면(이 탭에서는 계속) 본인인증이 아직 준비되지 않았어도 회원·댓글 화면을 보인다
 if (param('members') === '1') ss.set('bj_members_test', '1');
@@ -1266,15 +1292,58 @@ function setSession(token, member) {
   saveMe(member, false);
   memberChanged();
 }
+function setOwns(list) {
+  S.owns = Array.isArray(list) ? list.filter((x) => typeof x === 'string') : [];
+  if (S.owns.length) ls.set('bj_owns', JSON.stringify(S.owns)); else ls.del('bj_owns');
+  syncOwner();
+}
 function dropSession() {
   const had = Boolean(S.session || S.me);
   S.session = '';
   ls.del('bj_session');
   saveMe(null, false);
+  setOwns([]);
   if (had) memberChanged();
+}
+// 로그아웃 = 모든 추억앨범에서(서버가 이 계정의 세션을 모두 지운다 — 다른 앨범 주소도 다음에 열면 로그아웃)
+async function logoutAll() {
+  await memberCall('logout').catch(() => {});
+  dropSession();
+  ls.del('bj_sso_at'); ss.set('bj_sso_tried', '1');
+}
+// ---- 앨범 사이 로그인 이어 주기(2026-11-05) ----
+// 다른 DJ 앨범 주소(예: 한이준.com ↔ 도담.먼치킨.com)는 로그인 표를 서로 못 보므로, 서버 주소에 쿠키를 하나 맡겨 둔다(sso-set).
+//  열 때: 로그인 표가 없으면 그 쿠키로 바로 로그인(쿠키를 막는 브라우저는 로그인 창의 "다른 앨범 계정으로 계속" 한 번)
+const SSO_FRESH_MS = 50 * 86400000;
+async function trySso() {
+  if (S.session || ss.get('bj_sso_tried')) return;
+  ss.set('bj_sso_tried', '1');
+  try {
+    const r = await fetch(API + 'sso-check?' + new URLSearchParams({ h: location.host }), { credentials: 'include', cache: 'no-store' }).then((x) => x.json());
+    if (!r?.ticket || S.session) return;
+    const t = await memberCall('ticket', { ticket: r.ticket });
+    setSession(t.session, t.member);
+    ls.set('bj_sso_at', String(Date.now()));
+    await loadMe();
+    toast('다른 추억앨범에서 로그인한 계정으로 이어서 로그인했어요');
+  } catch { /* 조용히 — 로그인 단추로 하면 된다 */ }
+}
+// 로그인한 뒤: 서버에 쿠키를 맡겨 둔다(이미 있으면 그대로, 없으면 서버 주소에 잠깐 들렀다 돌아온다 — 50일에 한 번쯤)
+async function ssoRemember() {
+  if (!S.session || Date.now() - Number(ls.get('bj_sso_at') || 0) < SSO_FRESH_MS) return;
+  try {
+    const r = await fetch(API + 'sso-check?' + new URLSearchParams({ h: location.host, peek: '1' }), { credentials: 'include', cache: 'no-store' }).then((x) => x.json());
+    if (r?.has) { ls.set('bj_sso_at', String(Date.now())); return; }
+    const t = await memberCall('sso-ticket');
+    location.href = API + 'sso-set?' + new URLSearchParams({ t: t.ticket, h: location.host, r: location.pathname + location.search });
+  } catch { /* 다음에 다시 */ }
+}
+function ssoContinue() {
+  location.href = API + 'sso?' + new URLSearchParams({ h: location.host, r: location.pathname + location.search });
 }
 // 로그인·로그아웃·닉네임·본인인증이 바뀌면: 맨 위 줄 + 열린 글의 댓글(내 댓글·쓰기 칸)
 function memberChanged() {
+  syncOwner();
   paintMember();
   if (!S.session) for (const st of CM.values()) {
     st.list?.forEach((c) => { c.mine = false; });
@@ -1294,7 +1363,7 @@ async function commentCall(action, body = {}) {
 }
 async function loadMe() {
   if (!S.session) { saveMe(null, false); return; }
-  try { const r = await memberCall('me'); saveMe(r.member, r.banned === true); }
+  try { const r = await memberCall('me'); saveMe(r.member, r.banned === true); setOwns(r.owns); }
   catch { /* 401 이면 이미 로그아웃했고, 인터넷 문제면 기억해 둔 계정으로 */ }
 }
 
@@ -1382,7 +1451,13 @@ function afterLogin(message) {
   toast(message);
   if (S.me && !S.me.verified) openAccount('verify', { join: true });
   else if (S.me && !S.me.nickname) openAccount('nickname', { join: true });
-  else closeAccount();
+  else { closeAccount(); afterJoin(); }
+}
+// 가입·로그인을 다 마친 뒤: DJ 로 가입했으면 앨범 연결로, 아니면 서버에 로그인 맡겨 두기
+function afterJoin() {
+  if (ss.get('bj_join_role') === 'dj' && !acctOwner()) { openAccount('claim', { join: true }); return; }
+  ss.del('bj_join_role');
+  ssoRemember();
 }
 
 // 포트원 본인인증 SDK — 처음 쓸 때만 불러온다(본인인증 단계를 열면 미리 받아 둔다)
@@ -1450,7 +1525,8 @@ const STEPS = {
     return {
       title: '로그인', focus: x.loginId ? pw : id,
       body: [
-        h('p', { class: 'acct-lead', text: '로그인하면 앨범에 댓글을 달 수 있어요.' }),
+        h('p', { class: 'acct-lead', text: '로그인하면 앨범에 댓글을 달 수 있어요. 계정 하나로 모든 DJ 추억앨범에서 써요.' }),
+        h('button', { class: 'btn block sso-btn', type: 'button', onclick: () => ssoContinue() }, icon('check'), '다른 추억앨범에서 로그인했다면 → 그 계정으로 계속'),
         S.members.kakao ? [kakaoButton(), h('p', { class: 'or' }, h('span', { text: '또는' }))] : null,
         form,
         h('div', { class: 'acct-links' }, linkBtn('회원가입', () => showStep('signup')), h('span', { class: 'sep', 'aria-hidden': 'true' }), linkBtn('아이디·비밀번호 찾기', () => showStep('find')))
@@ -1471,6 +1547,20 @@ const STEPS = {
     const agreeRow = (box, forId, text, href) => h('div', { class: 'agree-row' },
       h('label', { class: 'check', for: forId }, box, h('span', null, h('em', { text: '(필수)' }), ' ' + text)),
       h('a', { class: 'agree-view', href, target: '_blank', rel: 'noopener', text: '보기', 'aria-label': text.replace(/에 동의해요$/, '') + ' 보기' }));
+    // 청취자 / DJ(2026-11-05) — DJ 는 가입을 마친 뒤 앨범 등록 코드(먼치킨 이용권 결제 뒤 받음)로 내 앨범을 잇는다
+    let role = ss.get('bj_join_role') === 'dj' ? 'dj' : 'listener';
+    const roleSeg = h('div', { class: 'seg wide role-seg', role: 'radiogroup', 'aria-label': '가입 종류' });
+    const roleHint = h('p', { class: 'field-hint' });
+    const paintRole = () => {
+      roleSeg.replaceChildren(...[['listener', '청취자로 가입'], ['dj', 'DJ로 가입']].map(([k, label]) => h('button', {
+        type: 'button', role: 'radio', 'aria-checked': String(role === k), class: 'kind-opt' + (role === k ? ' on' : ''),
+        onclick: () => { role = k; paintRole(); }
+      }, h('span', { class: 'kind-top' }, role === k ? icon('check') : null, label))));
+      roleHint.textContent = role === 'dj'
+        ? 'DJ는 가입한 뒤 앨범 등록 코드를 넣으면 이 계정으로 내 추억앨범을 관리해요. 코드는 먼치킨 이용권을 결제하면 드려요.'
+        : '댓글을 달고 하트를 누를 수 있어요.';
+    };
+    paintRole();
     const st = statusEl();
     const go = h('button', { class: 'btn primary block', type: 'submit', text: '가입하기' });
     const form = h('form', { class: 'stack', onsubmit: (e) => {
@@ -1481,12 +1571,14 @@ const STEPS = {
       if (bad) { say(st, bad, true); return; }
       if (!terms.checked || !privacy.checked) { say(st, '이용약관과 개인정보 수집·이용에 동의해 주세요.', true); return; }
       busy(go, st, async () => {
-        const r = await memberCall('signup', { loginId, password: pw.value, agree: true });
+        const r = await memberCall('signup', { loginId, password: pw.value, agree: true, role });
+        if (role === 'dj') ss.set('bj_join_role', 'dj'); else ss.del('bj_join_role');
         setSession(r.session, r.member);
         toast('가입했어요');
         showStep('verify', { join: true });
       });
     } },
+      roleSeg, roleHint,
       field('s-id', '아이디', id, '영어 소문자·숫자·_ 로 4~20자'),
       field('s-pw', '비밀번호', pw, '8자 이상'),
       field('s-pw2', '비밀번호 확인', pw2),
@@ -1540,7 +1632,7 @@ const STEPS = {
             h('strong', { text: e.data.error || '이미 본인인증한 계정이 있어요. 그 계정으로 로그인해 주세요.' }),
             hint.loginId ? h('p', null, '그 계정의 아이디: ', h('b', { text: hint.loginId })) : null,
             hint.kakao ? h('p', { text: '그 계정은 카카오로 가입했어요.' }) : null,
-            h('button', { class: 'btn small primary', type: 'button', text: '로그아웃하고 그 계정으로 로그인', onclick: async () => { await memberCall('logout').catch(() => {}); dropSession(); showStep('login', {}); } })
+            h('button', { class: 'btn small primary', type: 'button', text: '로그아웃하고 그 계정으로 로그인', onclick: async () => { await logoutAll(); showStep('login', {}); } })
           ].filter(Boolean));
           return;
         }
@@ -1585,7 +1677,7 @@ const STEPS = {
           toast(had ? '닉네임을 바꿨어요' : '닉네임을 정했어요');
         }
         if (x.from === 'me') showStep('me');
-        else { closeAccount(); if (S.me?.verified) toast('이제 댓글을 달 수 있어요'); }
+        else { closeAccount(); if (S.me?.verified) toast('이제 댓글을 달 수 있어요'); afterJoin(); }
       });
     } }, field('m-nick', '닉네임', nk, '한글·영문·숫자·_ 로 2~12자예요. 가운데 빈칸도 쓸 수 있어요.'), st, go);
     return {
@@ -1670,17 +1762,50 @@ const STEPS = {
         h('dl', { class: 'kv' },
           row('닉네임', m.nickname ? h('b', { text: m.nickname }) : h('span', { class: 'muted', text: '아직 안 정했어요' })),
           row('로그인', m.loginId ? `아이디 ${m.loginId}` : m.kakao ? '카카오' : '—'),
+          row('계정', acctOwner() ? h('b', { text: 'DJ · 이 앨범 관리 중' }) : m.role === 'dj' ? 'DJ' : '청취자'),
           row('본인인증', m.verified ? h('span', { class: 'ok' }, icon('check'), '했어요') : h('span', { class: 'bad', text: '아직 안 했어요' }))),
         !m.verified ? h('p', { class: 'field-hint', text: '본인인증과 닉네임이 있어야 댓글을 달 수 있어요.' }) : null,
         todo,
         h('div', { class: 'menu acct-menu' },
           m.nickname ? item('닉네임 바꾸기', () => showStep('nickname', { from: 'me' })) : null,
           m.loginId ? item('비밀번호 바꾸기', () => showStep('password')) : null,
-          item('로그아웃', async () => { await memberCall('logout').catch(() => {}); dropSession(); closeAccount(); toast('로그아웃했어요'); }),
+          !acctOwner() ? item('DJ 계정으로 이 앨범 관리하기', () => showStep('claim', { from: 'me' })) : null,
+          item('로그아웃', async () => { await logoutAll(); closeAccount(); toast('모든 추억앨범에서 로그아웃했어요'); }),
           item('탈퇴하기', () => showStep('withdraw'), 'danger')),
         h('p', { class: 'acct-foot' },
           h('a', { href: 'terms.html', target: '_blank', rel: 'noopener', text: '이용약관' }), ' · ',
           h('a', { href: 'privacy.html', target: '_blank', rel: 'noopener', text: '개인정보처리방침' }))
+      ]
+    };
+  },
+
+  // DJ 계정: 앨범 등록 코드로 이 앨범을 내 계정에 잇는다(주인 기기 대신 — 어느 기기에서든 로그인만 하면 관리)
+  claim(x) {
+    if (!S.me) return STEPS.login({});
+    const code = h('input', { class: 'input', id: 'c-code', maxlength: '9', autocomplete: 'off', autocapitalize: 'characters', spellcheck: 'false', placeholder: 'ABCD-2345' });
+    const st = statusEl();
+    const go = h('button', { class: 'btn primary block', type: 'submit', text: '이 앨범 연결하기' });
+    const done = () => { ss.del('bj_join_role'); closeAccount(); ssoRemember(); };
+    const form = h('form', { class: 'stack', onsubmit: (e) => {
+      e.preventDefault();
+      if (!S.me.verified) { showStep('verify', { from: 'me' }); return; }
+      if (code.value.replace(/[^A-Za-z0-9]/g, '').length !== 8) { say(st, '등록 코드 8자리를 넣어 주세요.', true); code.focus(); return; }
+      busy(go, st, async () => {
+        const r = await memberCall('album-claim', { album: ALBUM, code: code.value });
+        if (r.member) saveMe(r.member);
+        setOwns(r.owns);
+        memberChanged();
+        toast('이제 이 계정으로 앨범을 관리할 수 있어요');
+        done();
+      });
+    } }, field('c-code', '앨범 등록 코드', code, '운영자에게 받은 8자리'), st, go);
+    return {
+      title: 'DJ 앨범 연결', back: x.from === 'me' ? 'me' : undefined, focus: code,
+      body: [
+        h('p', { class: 'acct-lead', text: `${siteName()}을(를) 이 계정으로 관리해요. 연결하면 어느 기기에서든 로그인만 하면 글을 올리고 고칠 수 있어요.` }),
+        h('p', { class: 'field-hint', text: '앨범 등록 코드는 먼치킨 이용권을 결제하면 운영자가 드려요. 본인인증을 한 계정만 연결할 수 있어요.' }),
+        form,
+        x.join ? h('div', { class: 'acct-links' }, linkBtn('나중에 할게요', done)) : null
       ]
     };
   },
@@ -2013,12 +2138,18 @@ function ownerCommentSettings(closeSettings) {
 async function handleReturn() {
   const R = RETURN;
   if (!R) return;
-  if (R.kind === 'login-error') { toast(KAKAO_ERRORS[R.code] || KAKAO_ERRORS.fail, R.code !== 'cancel'); return; }
+  if (R.kind === 'sso') { if (R.code === 'ok') ls.set('bj_sso_at', String(Date.now())); return; }
+  if (R.kind === 'login-error') {
+    if (R.code === 'sso-none') { toast(KAKAO_ERRORS['sso-none']); openAccount('login'); return; }
+    toast(KAKAO_ERRORS[R.code] || KAKAO_ERRORS.fail, R.code !== 'cancel'); return;
+  }
   if (R.kind === 'ticket') {
     try {
       const r = await memberCall('ticket', { ticket: R.ticket });
       setSession(r.session, r.member);
-      afterLogin('카카오로 로그인했어요');
+      ls.set('bj_sso_at', String(Date.now()));   // 카카오·다른 앨범 계정 둘 다 서버 쿠키가 이미 있다
+      await loadMe();
+      afterLogin('로그인했어요');
     } catch (e) { toast(e.message, true); }
     return;
   }
@@ -2040,7 +2171,9 @@ async function startMembers(pageReady) {
     return;
   }
   await loadMe();
+  syncOwner();
   if (!(param('owner') !== null && !S.owner)) render();   // 맨 위 로그인 단추·바닥 약관 링크(주인 기기 등록 화면은 그대로)
+  if (!RETURN) { if (!S.session) trySso(); else ssoRemember(); }
   // 회원 설정보다 먼저 열린 큰 화면에는 댓글 칸이 없다 → 다시 그린다(이미 있으면 openViewer 가 불러왔다)
   const id = viewer?.dataset.post;
   if (id && findPost(id) && !viewer.querySelector('[data-comments]')) { viewer.replaceChildren(viewerStage(findPost(id))); loadComments(id); }
@@ -2049,14 +2182,17 @@ async function startMembers(pageReady) {
 }
 
 // ---------- 시작 ----------
+// 주인 기기인지(기기 서명으로 묻는다) + DJ 계정인지 → S.owner
 async function checkOwner() {
   try {
     const me = await identity({ create: false });
-    if (!me) { if (S.owner) { S.owner = false; ls.del('bj_owner'); render(); } return; }
-    const r = await ownerCall('me', {});
-    const on = r.state === 'approved';
-    if (on !== S.owner) { S.owner = on; on ? ls.set('bj_owner', '1') : ls.del('bj_owner'); render(); }
+    if (!me) ls.del('bj_owner');
+    else {
+      const r = await call('owner', { method: 'POST', body: await signed('me', { album: ALBUM }) });
+      r.state === 'approved' ? ls.set('bj_owner', '1') : ls.del('bj_owner');
+    }
   } catch { /* 인터넷 문제면 그대로 둔다 */ }
+  syncOwner();
 }
 async function refresh(fresh = false) {
   try {

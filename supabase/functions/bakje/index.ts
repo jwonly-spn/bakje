@@ -17,14 +17,15 @@
 //  본인인증은 가입 때 한 번(포트원 V2 · 다날/KG이니시스 통합인증) — 같은 사람 값(CI, 없으면 DI)의 소금 해시만 남기고 이름·전화번호·생년월일은 버린다(만 14세 이상인지만 본다).
 //  댓글은 본인인증 + 닉네임 있는 회원만. 앨범 주인은 지우기·차단·댓글 받기 끄기, 운영자는 쫓아내기(그 사람은 새 계정도 인증이 안 된다).
 //  회원 세션은 머리말 x-bj-session(원문은 저장하지 않고 sha256 만). 서버 비밀 값: KAKAO_REST_KEY·KAKAO_CLIENT_SECRET·PORTONE_API_SECRET·PORTONE_STORE_ID·PORTONE_CHANNEL_KEY.
+// 2026-11-05: 일반 게시물(kind post) · 앨범 사이 로그인 이어 주기(서버 쿠키 bj_sso) · DJ 계정(bj_album_owners — 주인 기기 대신 계정으로 앨범 관리) · 앨범 결제 끝나는 날(paid_until).
 // 주의: MCP 로 올릴 때 백슬래시-u 글자 표기가 풀려 버리므로 이 파일에는 그런 표기를 쓰지 않는다.
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
 const db = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, { auth: { persistSession: false } });
-const VERSION = 7, BUCKET = 'bakje', PREFIX = 'BAKJE/1', BOT_PREFIX = 'JUN-LIVE-BAKJE/1';
+const VERSION = 8, BUCKET = 'bakje', PREFIX = 'BAKJE/1', BOT_PREFIX = 'JUN-LIVE-BAKJE/1';
 const LEGACY = 'hanijun', ALBUM_RE = /^[a-z][a-z0-9-]{1,30}$/, HOST_RE = /^[a-z0-9.-]{3,253}$/;
 const READONLY = '이 앨범은 지금 보기만 할 수 있어요. 운영자에게 문의해 주세요.';
-const KINDS = ['board', 'first', 'letter'];
+const KINDS = ['post', 'board', 'first', 'letter'];   // post = 일반 게시물(2026-11-05, 사진 비율 자유)
 const BOT_ACTIONS = new Set(['board-begin', 'board-save', 'board-meta', 'album-info']);
 const BOARD_REF = /^[a-z0-9][a-z0-9-]{0,47}$/; // 먼치킨 판 번호(+ "-g<몇 번째 글>")
 const BROKEN = '잠시 문제가 생겼어요. 조금 뒤에 다시 해 주세요.';
@@ -110,12 +111,13 @@ async function albumRow(id: unknown, now: number, fresh = false) {
   if (typeof id !== 'string' || !ALBUM_RE.test(id)) throw fail(400, '앨범이 올바르지 않아요.');
   const c = albumCache.get(id);
   if (!fresh && c && now - c.at < 60000) return c.row;
-  const row: any = await q(db.from('bj_albums').select('id,name,state').eq('id', id).maybeSingle());
+  const row: any = await q(db.from('bj_albums').select('id,name,state,paid_until').eq('id', id).maybeSingle());
   if (!row) throw fail(404, '없는 앨범이에요.');
   albumCache.set(id, { at: now, row });
   return row;
 }
-const writable = (a: any) => { if (a.state !== 'active') throw fail(403, READONLY); };
+// 보기만: readonly 앨범 · 결제 끝나는 날(paid_until)이 지난 앨범(비우면 시범 — 검사 안 함)
+const writable = (a: any) => { if (a.state !== 'active' || (a.paid_until && Number(a.paid_until) < Date.now())) throw fail(403, READONLY); };
 // 주소: 한글 주소도 퓨니코드 소문자로(new URL 이 바꿔 준다)
 function hostOf(v: unknown) {
   if (typeof v !== 'string' || !v.trim() || v.length > 253) throw fail(400, '주소가 올바르지 않아요.');
@@ -240,13 +242,23 @@ function letterOf(v: unknown) {
 }
 function checkPost(kind: unknown, photos: any[], letter: any) {
   if (typeof kind !== 'string' || !KINDS.includes(kind)) throw fail(400, '글 종류를 골라 주세요.');
-  if (kind !== 'letter' && !photos.length) throw fail(400, '박제판 사진을 한 장 이상 골라 주세요.');
+  if (kind !== 'letter' && !photos.length) throw fail(400, '사진을 한 장 이상 골라 주세요.');
   if (kind === 'letter' && !photos.length && !letter?.text) throw fail(400, '편지 내용을 쓰거나 사진을 골라 주세요.');
 }
 
 // ---- 주인 요청 ----
+// 두 길: 주인 기기 서명(BAKJE/1 — 예전 방식) · DJ 계정(x-bj-session + 그 앨범의 bj_album_owners, 2026-11-05)
+const DEVICE_ONLY = new Set(['register', 'me']);
 async function owner(req: Request, now: number) {
   const body = await readJson(req, 65536);
+  if (isObj(body) && body.publicKey === undefined) {
+    if (typeof body.action !== 'string' || !ACTIONS.has(body.action) || DEVICE_ONLY.has(body.action)) throw fail(400, '모르는 요청이에요.');
+    const me = await needMember(req, now);
+    const p = isObj(body.payload) ? body.payload : {};
+    const A = p.album === undefined ? LEGACY : p.album;
+    if (typeof A !== 'string' || !ALBUM_RE.test(A) || !await q(db.from('bj_album_owners').select('member').eq('album', A).eq('member', me.id).maybeSingle())) throw fail(403, '이 앨범을 관리하는 DJ 계정이 아니에요.');
+    return ownerAct(body.action, p, A, 'm:' + me.id, now);
+  }
   const id = await verify(body, now);
   const p = isObj(body.payload) ? body.payload : {};
   const dev: any = await q(db.from('bj_devices').select('id,state,label,created,seen,album').eq('id', id).maybeSingle());
@@ -277,12 +289,15 @@ async function owner(req: Request, now: number) {
     return { ok: true, state: 'approved' };
   }
   if (!dev || dev.state !== 'approved' || dev.album !== asked) throw fail(403, '주인 기기로 등록되지 않았어요.');
-  const A: string = dev.album;
+  if (now - Number(dev.seen || 0) > 60000) await q(db.from('bj_devices').update({ seen: now }).eq('id', id));
+  return ownerAct(body.action, p, dev.album, id, now);
+}
+// 주인 동작(기기·DJ 계정 같은 것). id = 기기 번호 또는 'm:<회원>' — 빠르기 제한 열쇠·"이 기기" 표시에만 쓴다
+async function ownerAct(action: string, p: Record<string, any>, A: string, id: string, now: number) {
   const album = await albumRow(A, now);
   if (!await hit('bjo:' + id, 60, 120)) throw fail(429, '너무 빨라요. 잠깐 뒤에 다시 해 주세요.');
-  if (now - Number(dev.seen || 0) > 60000) await q(db.from('bj_devices').update({ seen: now }).eq('id', id));
 
-  switch (body.action) {
+  switch (action) {
     case 'devices': {
       const rows: any = await q(db.from('bj_devices').select('id,label,state,created,seen').eq('album', A).order('created', { ascending: true }));
       return { ok: true, me: id, devices: rows };
@@ -385,7 +400,7 @@ async function owner(req: Request, now: number) {
     }
     case 'member-block': case 'member-unblock': {
       if (typeof p.member !== 'string' || !MID.test(p.member)) throw fail(400, '회원을 다시 골라 주세요.');
-      if (body.action === 'member-unblock') { await q(db.from('bj_album_blocks').delete().eq('album', A).eq('member', p.member)); return { ok: true }; }
+      if (action === 'member-unblock') { await q(db.from('bj_album_blocks').delete().eq('album', A).eq('member', p.member)); return { ok: true }; }
       if (!await q(db.from('bj_members').select('id').eq('id', p.member).maybeSingle())) throw fail(404, '회원을 찾을 수 없어요.');
       await q(db.from('bj_album_blocks').upsert({ album: A, member: p.member, at: now }));
       return { ok: true };
@@ -507,16 +522,18 @@ function pwOf(v: unknown) {
   if (typeof v !== 'string' || [...v].length < 8 || [...v].length > 64) throw fail(400, '비밀번호는 8~64자로 정해 주세요.');
   return v;
 }
-const memberOut = (m: any) => ({ id: m.id, nickname: m.nickname || '', verified: Boolean(m.verified), loginId: m.login_id || null, kakao: Boolean(m.kakao) });
-const MEMBER_COLS = 'id,login_id,pw,kakao,nickname,person,verified,state,created,seen';
+const memberOut = (m: any) => ({ id: m.id, nickname: m.nickname || '', verified: Boolean(m.verified), loginId: m.login_id || null, kakao: Boolean(m.kakao), role: m.role === 'dj' ? 'dj' : 'listener' });
+const MEMBER_COLS = 'id,login_id,pw,kakao,nickname,person,verified,state,created,seen,role';
+// 이 회원이 관리하는 앨범(DJ 계정)
+const ownsOf = async (member: string) => ((await q(db.from('bj_album_owners').select('album').eq('member', member))) as any[]).map((r) => r.album);
 async function newSession(memberId: string, now: number) {
   const token = newToken();
   await q(db.from('bj_sessions').insert({ token: await sha256hex(token), member: memberId, created: now, seen: now, expires: now + SESSION_MS }));
   return token;
 }
 // 세션 → 회원(없거나 끝났으면 null). 쫓겨난 회원도 돌려준다(화면이 이유를 보이게) — 쓰기는 각 동작이 막는다
-async function sessionMember(req: Request, now: number) {
-  const token = req.headers.get('x-bj-session') || '';
+const sessionMember = (req: Request, now: number) => sessionByToken(req.headers.get('x-bj-session') || '', now);
+async function sessionByToken(token: string, now: number) {
   if (!/^[-_A-Za-z0-9]{43}$/.test(token)) return null;
   const hash = await sha256hex(token);
   const s: any = await q(db.from('bj_sessions').select('member,expires,seen').eq('token', hash).maybeSingle());
@@ -597,7 +614,7 @@ async function member(req: Request, now: number) {
       if (!LOGIN_RE.test(loginId)) throw fail(400, '아이디는 영어 소문자·숫자·_ 로 4~20자예요.');
       const pw = await pwHash(pwOf(b.password));
       if (await q(db.from('bj_members').select('id').eq('login_id', loginId).maybeSingle())) throw fail(409, '이미 쓰는 아이디예요.');
-      const m = await createMember(now, { login_id: loginId, pw });
+      const m = await createMember(now, { login_id: loginId, pw, role: b.role === 'dj' ? 'dj' : 'listener' });
       return { ok: true, session: await newSession(m.id, now), member: memberOut(m) };
     }
     case 'login': {
@@ -657,8 +674,16 @@ async function member(req: Request, now: number) {
   // 아래는 로그인한 회원만
   const me = await sessionMember(req, now);
   if (!me) throw fail(401, '다시 로그인해 주세요.');
-  if (b.action === 'me') return { ok: true, member: memberOut(me), banned: me.state === 'banned' };
-  if (b.action === 'logout') { await q(db.from('bj_sessions').delete().eq('token', me.token)); return { ok: true }; }
+  if (b.action === 'me') return { ok: true, member: memberOut(me), banned: me.state === 'banned', owns: await ownsOf(me.id) };
+  // 로그아웃 = 모든 앨범에서(서버 쿠키 세션까지 지워 다른 주소에서 저절로 다시 로그인되지 않게)
+  if (b.action === 'logout') { await q(db.from('bj_sessions').delete().eq('member', me.id)); return { ok: true }; }
+  // 앨범 사이 로그인 이어 주기: 이 표로 GET sso-set 에 가면 서버 쿠키(bj_sso)를 심는다(2분·한 번)
+  if (b.action === 'sso-ticket') {
+    if (me.state === 'banned') throw fail(403, '이용이 막힌 계정이에요.');
+    const ticket = newToken();
+    await q(db.from('bj_tickets').insert({ token: await sha256hex(ticket), kind: 'sso', member: me.id, expires: now + 2 * 60000 }));
+    return { ok: true, ticket };
+  }
   if (me.state === 'banned') throw fail(403, '이용이 막힌 계정이에요.');
   switch (b.action) {
     case 'nickname': {
@@ -685,6 +710,22 @@ async function member(req: Request, now: number) {
       await q(db.from('bj_members').delete().eq('id', me.id));
       for (const a of new Set(albums.map((x: any) => x.album))) scheduleSnap(a as string);
       return { ok: true };
+    }
+    // DJ 계정: 앨범 등록 코드(운영자가 먼치킨 결제를 확인하고 준다)로 이 앨범을 내 계정에 잇는다 — 본인인증한 회원만
+    case 'album-claim': {
+      if (!me.verified) throw fail(403, '본인인증을 먼저 해 주세요.');
+      const album = await albumRow(b.album === undefined ? LEGACY : b.album, now, true);
+      if (await q(db.from('bj_album_owners').select('member').eq('album', album.id).eq('member', me.id).maybeSingle())) return { ok: true, owns: await ownsOf(me.id) };
+      if (!await hit('bjc:' + await ip(), 3600, 10)) throw fail(429, '여러 번 틀렸어요. 1시간 뒤에 다시 해 주세요.');
+      const code = normCode(b.code);
+      if (code.length !== 8) throw fail(400, '등록 코드 8자리를 넣어 주세요.');
+      const c = await getMeta(album.id, 'owner_code');
+      if (!c || c.expires < now || c.uses >= c.max || c.hash !== await sha256hex('bj-code:' + code)) throw fail(403, '등록 코드가 맞지 않거나 시간이 지났어요.');
+      const used: any = await q(db.from('bj_meta').update({ value: { ...c, uses: c.uses + 1 } }).eq('album', album.id).eq('key', 'owner_code').eq('value->>uses', String(c.uses)).select('key'));
+      if (!used?.length) throw fail(409, '잠깐 겹쳤어요. 다시 해 주세요.');
+      await q(db.from('bj_album_owners').upsert({ album: album.id, member: me.id, created: now }));
+      await q(db.from('bj_members').update({ role: 'dj' }).eq('id', me.id));
+      return { ok: true, owns: await ownsOf(me.id), member: memberOut({ ...me, role: 'dj' }) };
     }
     case 'verify-start': {
       if (me.verified) throw fail(409, '이미 본인인증했어요.');
@@ -732,7 +773,7 @@ async function siteOf(h: unknown) {
   return { host, origin: 'https://' + host };
 }
 const pathOf = (r: unknown) => typeof r === 'string' && r.startsWith('/') && !r.startsWith('//') && r.length <= 300 && !/[\s\\]/.test(r) ? r.replace(/#.*$/, '') : '/';
-const redirect = (to: string) => new Response(null, { status: 302, headers: { ...CORS, Location: to, 'Cache-Control': 'no-store' } });
+const redirect = (to: string, cookie = '') => new Response(null, { status: 302, headers: { ...CORS, Location: to, 'Cache-Control': 'no-store', ...(cookie ? { 'Set-Cookie': cookie } : {}) } });
 const htmlPage = (msg: string) => new Response(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>추억앨범</title><p style="font:16px/1.6 sans-serif;padding:24px">${msg}</p>`, { status: 400, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
 async function kakaoStart(req: Request, now: number) {
   const u = new URL(req.url), site = await siteOf(u.searchParams.get('h'));
@@ -769,11 +810,58 @@ async function kakaoBack(req: Request, now: number) {
     let m: any = await q(db.from('bj_members').select(MEMBER_COLS).eq('kakao', kakao).maybeSingle());
     if (!m) m = await createMember(now, { kakao });
     if (m.state === 'banned') return redirect(back + '#bjlogin-error=banned');
-    const ticket = newToken();
-    await q(db.from('bj_tickets').insert({ token: await sha256hex(ticket), kind: 'login', member: m.id, host: st.host, expires: now + 2 * 60000 }));
-    await q(db.from('bj_tickets').delete().lt('expires', now));
-    return redirect(back + '#bjlogin=' + ticket);
+    // 여기는 서버 주소(맨 위 창)라 서버 쿠키도 같이 심는다 — 다른 앨범 주소에서도 이어서 로그인
+    return redirect(back + '#bjlogin=' + await loginTicket(m.id, st.host, now), ssoCookie(await newSession(m.id, now)));
   } catch (e) { console.error(e); return redirect(back + '#bjlogin-error=fail'); }
+}
+
+// ---- 앨범 사이 로그인 이어 주기(2026-11-05 사용자 "한이준.com 에서 로그인한 사람이 도담.먼치킨.com 에선 또 로그인이 안 돼") ----
+// 로그인 표(localStorage)는 주소마다 따로라, 서버 주소에 쿠키(bj_sso = 세션 표, HttpOnly)를 하나 두고 다른 앨범 주소가 그걸로 로그인 표를 받는다.
+//  GET sso-set?t=<sso 표>&h=&r=  : 로그인한 앨범이 맨 위 창으로 한 번 들렀다 간다 → 쿠키를 심고 #bjsso=ok 로 돌려보낸다
+//  GET sso-check?h=[&peek=1]    : 앨범 화면이 쿠키를 실어 묻는다(크롬 등) → {ticket}·{has} 또는 {none}. 쿠키가 막힌 브라우저(사파리)는 늘 none
+//  GET sso?h=&r=                : 로그인 창의 "다른 앨범 계정으로 계속" — 맨 위 창이라 사파리도 쿠키가 실린다 → #bjlogin=<표> 또는 #bjlogin-error=sso-none
+// 로그아웃은 그 회원의 모든 세션(쿠키 것 포함)을 지운다.
+const SSO_PATH = '/functions/v1/bakje';
+const ssoCookie = (token: string) => `bj_sso=${token}; Path=${SSO_PATH}; Max-Age=${SESSION_MS / 1000}; HttpOnly; Secure; SameSite=None`;
+const ssoToken = (req: Request) => /(?:^|;\s*)bj_sso=([-_A-Za-z0-9]{43})(?:;|$)/.exec(req.headers.get('cookie') || '')?.[1] || '';
+async function loginTicket(member: string, host: string, now: number) {
+  const ticket = newToken();
+  await q(db.from('bj_tickets').insert({ token: await sha256hex(ticket), kind: 'login', member, host, expires: now + 2 * 60000 }));
+  await q(db.from('bj_tickets').delete().lt('expires', now));
+  return ticket;
+}
+async function ssoSet(req: Request, now: number) {
+  const u = new URL(req.url), site = await siteOf(u.searchParams.get('h'));
+  if (!site) return htmlPage('추억앨범 주소가 올바르지 않아요. 앨범 화면에서 다시 해 주세요.');
+  const back = site.origin + pathOf(u.searchParams.get('r'));
+  const t = u.searchParams.get('t') || '';
+  if (!/^[-_A-Za-z0-9]{43}$/.test(t)) return redirect(back + '#bjsso=fail');
+  const rows: any = await q(db.from('bj_tickets').delete().eq('token', await sha256hex(t)).eq('kind', 'sso').select('member,expires'));
+  const row = rows?.[0];
+  if (!row || row.expires < now) return redirect(back + '#bjsso=fail');
+  return redirect(back + '#bjsso=ok', ssoCookie(await newSession(row.member, now)));
+}
+async function ssoGo(req: Request, now: number) {
+  const u = new URL(req.url), site = await siteOf(u.searchParams.get('h'));
+  if (!site) return htmlPage('추억앨범 주소가 올바르지 않아요. 앨범 화면에서 다시 해 주세요.');
+  const back = site.origin + pathOf(u.searchParams.get('r'));
+  if (!await hit('bjsg:' + await ipHash(req), 600, 30)) return redirect(back + '#bjlogin-error=fail');
+  const m: any = await sessionByToken(ssoToken(req), now);
+  if (!m || m.state === 'banned') return redirect(back + '#bjlogin-error=sso-none');
+  return redirect(back + '#bjlogin=' + await loginTicket(m.id, site.host, now));
+}
+async function ssoCheck(req: Request, now: number) {
+  const u = new URL(req.url), site = await siteOf(u.searchParams.get('h')), origin = req.headers.get('origin') || '';
+  const ok = Boolean(site && origin === site.origin);
+  const headers: Record<string, string> = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', Vary: 'Origin' };
+  if (ok) { headers['Access-Control-Allow-Origin'] = origin; headers['Access-Control-Allow-Credentials'] = 'true'; }
+  const out = (b: unknown) => new Response(JSON.stringify(b), { status: 200, headers });
+  if (!ok) return out({ ok: false });
+  if (!await hit('bjsc:' + await ipHash(req), 60, 30)) return out({ ok: true, none: true });
+  const m: any = await sessionByToken(ssoToken(req), now);
+  if (!m || m.state === 'banned') return out({ ok: true, none: true });
+  if (u.searchParams.get('peek') === '1') return out({ ok: true, has: true });
+  return out({ ok: true, ticket: await loginTicket(m.id, site!.host, now) });
 }
 
 // ---- 댓글 ----
@@ -908,7 +996,7 @@ async function admin(req: Request, now: number) {
   switch (b.action) {
     case 'list': {
       const [albums, hosts, devices, posts, bots]: any = await Promise.all([
-        q(db.from('bj_albums').select('id,name,state,note,created').order('created', { ascending: true })),
+        q(db.from('bj_albums').select('id,name,state,note,created,paid_until,bj_album_owners(member)').order('created', { ascending: true })),
         q(db.from('bj_hosts').select('host,album')),
         q(db.from('bj_devices').select('album,state')),
         q(db.from('bj_posts').select('album')),
@@ -941,6 +1029,8 @@ async function admin(req: Request, now: number) {
       if (b.name !== undefined) patch.name = name(b.name);
       if (b.note !== undefined) patch.note = text(b.note, 200, '메모');
       if (b.state !== undefined) { if (!['active', 'readonly'].includes(b.state)) throw fail(400, '상태가 올바르지 않아요.'); patch.state = b.state; }
+      // 결제 끝나는 날(ms) — null 이면 시범(검사 안 함). 지나면 글쓰기·봇 올리기가 막히고 보기만 된다
+      if (b.paidUntil !== undefined) { if (b.paidUntil !== null && !Number.isSafeInteger(b.paidUntil)) throw fail(400, '결제 끝나는 날이 올바르지 않아요.'); patch.paid_until = b.paidUntil; }
       await q(db.from('bj_albums').update(patch).eq('id', album.id));
       const fresh = await albumRow(album.id, now, true);
       const hosts: any = await q(db.from('bj_hosts').select('host').eq('album', album.id));
@@ -963,7 +1053,7 @@ async function admin(req: Request, now: number) {
       return { ok: true, host: h };
     }
     case 'code': {
-      // 주인 기기 등록 코드(DJ 에게 전한다). 처음 값: 7일 · 기기 2대(사용자에게 처음 줄 때와 같게)
+      // 주인 등록 코드(DJ 에게 전한다 — DJ 계정 연결·주인 기기 등록 둘 다). 처음 값: 7일 · 2번(사용자에게 처음 줄 때와 같게)
       const album = await albumRow(b.id, now, true);
       const days = b.days === undefined ? 7 : Number(b.days), uses = b.uses === undefined ? 2 : Number(b.uses);
       if (!Number.isInteger(days) || days < 1 || days > 30 || !Number.isInteger(uses) || uses < 1 || uses > MAX_DEVICES) throw fail(400, '기간·기기 수가 올바르지 않아요.');
@@ -1024,7 +1114,7 @@ Deno.serve(async (req) => {
   const route = new URL(req.url).pathname.replace(/^.*?\/bakje\/?/, '').replace(/\/+$/, '');
   const now = Date.now();
   try {
-    if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: VERSION, kinds: KINDS, bot: true, donor: true, theme: true, visit: true, ends: true, albums: true, albumInfo: true, members: true });
+    if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: VERSION, kinds: KINDS, bot: true, donor: true, theme: true, visit: true, ends: true, albums: true, albumInfo: true, members: true, post: true, sso: true, dj: true });
     if (req.method === 'GET' && route === 'feed') {
       const ip = await ipHash(req);
       if (!await hit('bjf:' + ip, 60, 20)) throw fail(429, '너무 자주 불러왔어요. 잠깐 뒤에 다시 해 주세요.');
@@ -1035,6 +1125,9 @@ Deno.serve(async (req) => {
     if (req.method === 'GET' && route === 'members-config') return json(200, { ok: true, members: { password: true, kakao: kakaoReady(), verify: verifyReady() ? { storeId: env('PORTONE_STORE_ID'), channelKey: env('PORTONE_CHANNEL_KEY') } : null } });
     if (req.method === 'GET' && route === 'kakao-start') return await kakaoStart(req, now);
     if (req.method === 'GET' && route === 'kakao') return await kakaoBack(req, now);
+    if (req.method === 'GET' && route === 'sso-set') return await ssoSet(req, now);
+    if (req.method === 'GET' && route === 'sso') return await ssoGo(req, now);
+    if (req.method === 'GET' && route === 'sso-check') return await ssoCheck(req, now);
     if (req.method === 'GET' && route === 'comments') return json(200, await commentsList(req, now));
     if (req.method === 'POST' && route === 'member') return json(200, await member(req, now));
     if (req.method === 'POST' && route === 'comment') return json(200, await comment(req, now));

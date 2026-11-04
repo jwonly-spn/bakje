@@ -69,6 +69,9 @@ grant execute on function bj_heart(text, text, boolean, bigint) to service_role;
 -- 최초 박제판(2026-11-03, 마이그레이션 bakje_first_board): 글 종류 first(1:1) + 먼치킨 봇이 저절로 올리는 글
 alter table bj_posts drop constraint if exists bj_posts_kind_check;
 alter table bj_posts add constraint bj_posts_kind_check check (kind in ('board', 'first', 'letter'));
+-- 2026-11-05 bakje_post_kind_sso: 일반 게시물(post)  (로그인 이어 주기 표는 파일 맨 끝)
+alter table bj_posts drop constraint if exists bj_posts_kind_check;
+alter table bj_posts add constraint bj_posts_kind_check check (kind in ('post', 'board', 'first', 'letter'));
 alter table bj_posts add column if not exists src text;      -- 먼치킨이 올린 글: fb:<기기 번호 앞 16자>:<판 번호>
 alter table bj_posts add column if not exists extra jsonb;   -- {title, filled, total, bot, hash}
 create unique index if not exists bj_posts_src on bj_posts (src) where src is not null;
@@ -272,3 +275,23 @@ grant select, insert, update, delete on bj_members, bj_banned_people, bj_session
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values ('bakje', 'bakje', true, 15728640, array['image/jpeg', 'application/json'])
 on conflict (id) do update set public = excluded.public, file_size_limit = excluded.file_size_limit, allowed_mime_types = excluded.allowed_mime_types;
+
+-- 2026-11-05 bakje_post_kind_sso: 앨범 사이 로그인 이어 주기(서버 쿠키 bj_sso — 한 번 로그인하면 다른 DJ 앨범 주소에서도)
+alter table bj_tickets drop constraint if exists bj_tickets_kind_check;
+alter table bj_tickets add constraint bj_tickets_kind_check check (kind in ('login', 'reset', 'sso'));
+
+-- 2026-11-05 bakje_dj_accounts: DJ 계정(회원가입 때 청취자/DJ, DJ 는 등록 코드로 앨범을 계정에 잇는다 — 주인 기기 대신). 앨범마다 결제 끝나는 날(비우면 시범 — 검사 안 함).
+alter table bj_members add column if not exists role text not null default 'listener';
+alter table bj_members drop constraint if exists bj_members_role_check;
+alter table bj_members add constraint bj_members_role_check check (role in ('listener', 'dj'));
+create table if not exists bj_album_owners (
+  album text not null references bj_albums(id) on delete cascade,
+  member text not null references bj_members(id) on delete cascade,
+  created bigint not null,
+  primary key (album, member)
+);
+create index if not exists bj_album_owners_member on bj_album_owners(member);
+alter table bj_album_owners enable row level security;
+revoke all on bj_album_owners from anon, authenticated;
+grant all on bj_album_owners to service_role;
+alter table bj_albums add column if not exists paid_until bigint;
