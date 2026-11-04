@@ -786,7 +786,9 @@ function render() {
     h('p', null, siteName(), !S.owner ? [' · ', h('a', { href: '?owner', text: '주인 기기 등록' })] : null),
     S.members ? h('p', { class: 'foot-links' },
       h('a', { href: 'terms.html', target: '_blank', rel: 'noopener', text: '이용약관' }), ' · ',
-      h('a', { href: 'privacy.html', target: '_blank', rel: 'noopener', text: '개인정보처리방침' })) : null);
+      h('a', { href: 'privacy.html', target: '_blank', rel: 'noopener', text: '개인정보처리방침' })) : null,
+    // 운영자 사업자 정보(결제·본인인증 회사 심사용 — 모든 앨범 같은 운영자)
+    h('p', { class: 'foot-biz', text: '제이원스튜디오 · 대표 이지원 · 사업자등록번호 174-93-02335 · 대구광역시 수성구 동대구로 336 · likegorogoro@naver.com' }));
   app.replaceChildren(topbar, h('main', { class: 'wrap' }, profile, highlights, tabs, body), footer);
 }
 
