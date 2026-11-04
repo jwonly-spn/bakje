@@ -295,3 +295,43 @@ alter table bj_album_owners enable row level security;
 revoke all on bj_album_owners from anon, authenticated;
 grant all on bj_album_owners to service_role;
 alter table bj_albums add column if not exists paid_until bigint;
+
+-- 2026-11-05 bakje_billing: 계좌이체 이용권(신청 → 운영자 계좌로 이체 → 운영자가 휴대폰 운영자 화면에서 확인 → 이용 기간 연장, 30일 단위)
+alter table bj_members add column if not exists is_admin boolean not null default false;
+create table if not exists bj_settings (key text primary key, value jsonb not null, updated bigint not null default 0);
+create table if not exists bj_orders (
+  id text primary key,
+  member text references bj_members(id) on delete set null,
+  nick text not null default '',
+  plan text not null check (plan in ('munchkin', 'album', 'bundle')),
+  months int not null check (months between 1 and 12),
+  amount int not null check (amount >= 0),
+  payer text not null,
+  album text references bj_albums(id) on delete set null,
+  state text not null default 'pending' check (state in ('pending', 'paid', 'rejected', 'canceled')),
+  created bigint not null,
+  sent bigint,
+  done bigint,
+  note text not null default ''
+);
+create index if not exists bj_orders_member on bj_orders(member, created desc);
+create index if not exists bj_orders_state on bj_orders(state, created desc);
+create table if not exists bj_entitlements (
+  member text not null references bj_members(id) on delete cascade,
+  product text not null check (product in ('munchkin', 'album')),
+  until bigint not null,
+  primary key (member, product)
+);
+alter table bj_settings enable row level security;
+alter table bj_orders enable row level security;
+alter table bj_entitlements enable row level security;
+revoke all on bj_settings, bj_orders, bj_entitlements from anon, authenticated;
+grant all on bj_settings, bj_orders, bj_entitlements to service_role;
+insert into bj_settings (key, value, updated) values ('billing', '{"bank":"","number":"","holder":"","prices":{"munchkin":3000,"album":0,"bundle":5000}}'::jsonb, 0) on conflict (key) do nothing;
+
+-- 2026-11-05 bakje_billing_addon: 1년 할인 가격(bj_settings billing.year) · 남은 기간에 맞춰 추가(add-album · add-munchkin, months 0, until_to)
+alter table bj_orders drop constraint if exists bj_orders_plan_check;
+alter table bj_orders add constraint bj_orders_plan_check check (plan in ('munchkin', 'album', 'bundle', 'add-album', 'add-munchkin'));
+alter table bj_orders drop constraint if exists bj_orders_months_check;
+alter table bj_orders add constraint bj_orders_months_check check (months between 0 and 12);
+alter table bj_orders add column if not exists until_to bigint;

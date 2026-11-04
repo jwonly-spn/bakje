@@ -520,6 +520,24 @@ label, .label { font-size: 13px; font-weight: 600; color: var(--ink); margin-top
 .kv dd { margin: 0; min-width: 0; font-size: 14px; text-align: right; overflow-wrap: anywhere; }
 .kv .ok { display: inline-flex; align-items: center; gap: 4px; color: #1a9c55; font-weight: 700; }
 .kv .ok .ic { width: 16px; height: 16px; stroke-width: 2.6; }
+/* 이용권(계좌이체) */
+.plan-box { gap: 12px; }
+.plan-order, .plan-add, .plan-pick, .plan-done { display: flex; flex-direction: column; gap: 8px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; }
+.plan-order { border-color: var(--blue); }
+.plan-order-title { margin: 0; font-weight: 700; font-size: 15px; }
+.plan-amount { margin: 0; font-size: 26px; font-weight: 800; letter-spacing: -.02em; }
+.plan-box .small { font-size: 13px; margin: 0; }
+.plan-box .ok { color: #1a9c55; font-weight: 600; }
+.plan-box .kv dd { display: inline-flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.plan-box .mono { font-variant-numeric: tabular-nums; }
+.copy-chip { border: 1px solid var(--line); background: var(--surface-2); color: var(--blue); border-radius: 8px; padding: 3px 9px; font-size: 12px; font-weight: 700; cursor: pointer; }
+.plan-btns { display: grid; grid-template-columns: 1fr 2fr; gap: 8px; }
+.plan-seg { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); width: 100%; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.plan-seg button { min-height: 42px; padding: 0 4px; border: 0; background: transparent; color: var(--ink-2); font-weight: 600; font-size: 13px; cursor: pointer; }
+.plan-seg button + button { border-left: 1px solid var(--line); }
+.plan-seg button.on { background: var(--blue, #0095f6); color: #fff; }
+.plan-seg button:disabled { opacity: .4; cursor: not-allowed; }
+.plan-done-row { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; }
 .acct-menu { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
 .acct-menu button { min-height: 46px; justify-content: flex-start; }
 .menu-title { margin: 0; padding: 14px 16px 12px; color: var(--ink-2); font-size: 13px; font-weight: 600; text-align: center; }
@@ -581,7 +599,12 @@ label, .label { font-size: 13px; font-weight: 600; color: var(--ink); margin-top
 .crop-img { position: absolute; left: 0; top: 0; max-width: none; transform-origin: 0 0; pointer-events: none; user-select: none; -webkit-user-drag: none; }
 .crop-ring { position: absolute; inset: 0; border-radius: 50%; box-shadow: 0 0 0 9999px rgba(0, 0, 0, .5); outline: 2px solid rgba(255, 255, 255, .9); outline-offset: -2px; pointer-events: none; }
 .crop-zoom { width: 100%; max-width: 320px; margin: 0 auto; display: block; accent-color: var(--accent, #0095f6); }
-.foot-biz { margin-top: 10px !important; font-size: 11px; line-height: 1.6; word-break: keep-all; opacity: .85; }
+.foot-biz { margin-top: 8px; font-size: 11px; line-height: 1.6; word-break: keep-all; opacity: .85; }
+.foot-biz summary { cursor: pointer; list-style: none; display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; }
+.foot-biz summary::-webkit-details-marker { display: none; }
+.foot-biz summary::after { content: '▾'; font-size: 10px; }
+.foot-biz[open] summary::after { content: '▴'; }
+.foot-biz p { margin: 2px 0 0; }
 
 /* 휴대폰 */
 @media (max-width: 735px) {

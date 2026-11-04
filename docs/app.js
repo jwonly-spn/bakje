@@ -556,13 +556,49 @@ function heartButton(post) {
     onclick: () => toggleHeart(post.id)
   }, icon('heart', 'fillable'));
 }
+// 한글 주소를 브라우저는 xn-- 글자로 보여 준다(주소창 복사도 그렇게 됨) → 공유할 때는 한글로 되돌린다(퓨니코드 풀기, RFC 3492)
+function punyLabel(label) {
+  if (!/^xn--/i.test(label)) return label;
+  try {
+    const src = label.slice(4).toLowerCase(), out = [];
+    let n = 128, i = 0, bias = 72, at = 0;
+    const cut = src.lastIndexOf('-');
+    if (cut > 0) { for (let j = 0; j < cut; j++) out.push(src.charCodeAt(j)); at = cut + 1; }
+    while (at < src.length) {
+      const old = i;
+      for (let w = 1, k = 36; ; k += 36) {
+        if (at >= src.length) return label;
+        const c = src.charCodeAt(at++);
+        const d = c >= 48 && c <= 57 ? c - 22 : c >= 97 && c <= 122 ? c - 97 : 36;
+        if (d >= 36) return label;
+        i += d * w;
+        const t = k <= bias ? 1 : k >= bias + 26 ? 26 : k - bias;
+        if (d < t) break;
+        w *= 36 - t;
+      }
+      const len = out.length + 1;
+      let delta = old === 0 ? Math.floor((i - old) / 700) : (i - old) >> 1;
+      delta += Math.floor(delta / len);
+      let k = 0;
+      while (delta > 455) { delta = Math.floor(delta / 35); k += 36; }
+      bias = k + Math.floor((36 * delta) / (delta + 38));
+      n += Math.floor(i / len); i %= len;
+      out.splice(i++, 0, n);
+    }
+    return String.fromCodePoint(...out);
+  } catch { return label; }
+}
+const prettyHost = (host = location.hostname) => host.split('.').map(punyLabel).join('.');
+// 공유 주소: https://도담.먼치킨.com · 게시물은 /?p=글
+const shareUrl = (post) => 'https://' + prettyHost() + (location.pathname === '/' ? '' : location.pathname) + (post ? (location.pathname === '/' ? '/' : '') + '?p=' + post.id : '');
 async function sharePost(post) {
-  const url = location.origin + location.pathname + (post ? '?p=' + post.id : '');
+  const url = /^(localhost|127\.)/.test(location.hostname) ? location.origin + location.pathname + (post ? '?p=' + post.id : '') : shareUrl(post);
   const title = post ? `${profileName()} · ${KIND_NAME[post.kind]}` : profileName();
   try {
-    if (navigator.share && matchMedia('(pointer: coarse)').matches) { await navigator.share({ title, url }); return; }
+    // url 칸으로 넘기면 아이폰이 다시 xn-- 로 바꾸므로 글(text)로 넘긴다
+    if (navigator.share && matchMedia('(pointer: coarse)').matches) { await navigator.share({ title, text: url }); return; }
   } catch (e) { if (e?.name === 'AbortError') return; }
-  try { await navigator.clipboard.writeText(url); toast('링크를 복사했어요'); } catch { prompt('이 링크를 복사해 주세요', url); }
+  try { await navigator.clipboard.writeText(url); toast('링크를 복사했어요 · ' + url.replace(/^https:\/\//, '')); } catch { prompt('이 링크를 복사해 주세요', url); }
 }
 
 // ---------- 모아 보기(3칸 격자 9:16 — 사진은 자르지 않고 남는 곳은 흐리게) ----------
@@ -760,7 +796,7 @@ function render() {
       h('div', { class: 'row' },
         S.owner ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': '새 게시물', title: '새 게시물', onclick: () => openComposer() }, icon('plus-square')) : null,
         S.owner ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': '설정', title: '설정', onclick: () => openSettings() }, icon('gear')) : null,
-        !S.owner ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': '이 앨범 링크 공유', title: '링크 공유', onclick: () => sharePost(null) }, icon('share')) : null,
+        h('button', { class: 'icon-btn', type: 'button', 'aria-label': '이 앨범 링크 공유', title: '링크 공유', onclick: () => sharePost(null) }, icon('share')),
         h('span', { id: 'member-slot', class: 'member-slot' }, memberButton()))));
   const stat = (n, label, id) => h('li', null, h('b', { id, text: num(n) }), h('span', { text: label }));
   const profile = h('section', { class: 'pf' },
@@ -805,8 +841,11 @@ function render() {
     S.members ? h('p', { class: 'foot-links' },
       h('a', { href: 'terms.html', target: '_blank', rel: 'noopener', text: '이용약관' }), ' · ',
       h('a', { href: 'privacy.html', target: '_blank', rel: 'noopener', text: '개인정보처리방침' })) : null,
-    // 운영자 사업자 정보(결제·본인인증 회사 심사용 — 모든 앨범 같은 운영자)
-    h('p', { class: 'foot-biz', text: '제이원스튜디오 · 대표 이지원 · 사업자등록번호 174-93-02335 · 대구광역시 수성구 동대구로 336 · likegorogoro@naver.com' }));
+    // 운영자 사업자 정보 — 평소엔 접어 두고 누르면 펼침(전자상거래법 표시 사항, 모든 앨범 같은 운영자)
+    h('details', { class: 'foot-biz' },
+      h('summary', { text: '사업자 정보' }),
+      h('p', { text: '제이원스튜디오 · 대표 이지원 · 사업자등록번호 174-93-02335' }),
+      h('p', { text: '대구광역시 수성구 동대구로 336 · likegorogoro@naver.com' })));
   app.replaceChildren(topbar, h('main', { class: 'wrap' }, profile, highlights, tabs, body), footer);
 }
 
@@ -1380,6 +1419,108 @@ function paintMember() {
   if (slot) slot.replaceChildren(...[memberButton()].filter(Boolean));
 }
 
+// ---------- 이용권(계좌이체, 서버 bakje-billing) ----------
+const PLAN_NAME = { munchkin: '먼치킨', album: '추억앨범', bundle: '먼치킨 + 추억앨범', 'add-album': '추억앨범 추가', 'add-munchkin': '먼치킨 추가' };
+const PLAN_STATE = { paid: '확인됐어요', rejected: '거절됐어요', canceled: '취소했어요' };
+const wonText = (n) => Number(n || 0).toLocaleString('ko-KR') + '원';
+const dayText = (ms) => { const d = new Date(Number(ms)); return `${d.getFullYear()}. ${d.getMonth() + 1}. ${d.getDate()}.`; };
+const planPeriod = (o) => (o.months ? (o.months === 12 ? '1년' : o.months + '개월') : `${dayText(o.until_to)}까지`);
+const WAIT_NOTE = '운영자가 직접 확인하고 이용기간이 연장되기까지 최대 24시간이 걸릴 수 있어요.';
+async function billCall(action, body = {}) {
+  try { return await call('../bakje-billing', { method: 'POST', body: { action, ...body }, session: true }); }
+  catch (e) { if (e.status === 401) dropSession(); throw e; }
+}
+async function copyLine(text, label) {
+  try { await navigator.clipboard.writeText(text); toast(`${label} 복사했어요`); } catch { prompt(`${label} 복사해 주세요`, text); }
+}
+async function paintPlan(box, pick = { plan: 'munchkin', months: 1 }) {
+  let info;
+  try { info = await billCall('info'); }
+  catch (e) { box.replaceChildren(h('p', { class: 'status bad', text: e.message })); return; }
+  if (!box.isConnected) return;
+  const again = (p = pick) => paintPlan(box, p);
+  const now = Date.now(), ents = info.ents || {}, owns = info.owns || [], album = owns[0];
+  const kv = (k, ...v) => h('div', { class: 'kv-row' }, h('dt', { text: k }), h('dd', null, ...v));
+  const copyBtn = (text, label) => h('button', { class: 'copy-chip', type: 'button', onclick: () => copyLine(text, label) }, '복사');
+  const until = (k) => (ents[k] > now ? h('b', { text: `${dayText(ents[k])}까지` }) : h('span', { class: 'muted', text: '없음' }));
+  const parts = [h('dl', { class: 'kv' }, kv('먼치킨', until('munchkin')), kv('추억앨범', until('album')))];
+  const bank = info.bank;
+
+  // 진행 중인 신청(입금 안내)
+  for (const o of info.orders.filter((x) => x.state === 'pending')) {
+    const st = statusEl();
+    parts.push(h('section', { class: 'plan-order' },
+      h('p', { class: 'plan-order-title', text: `${PLAN_NAME[o.plan] || o.plan} · ${planPeriod(o)}` }),
+      h('p', { class: 'plan-amount', text: wonText(o.amount) }),
+      bank ? h('dl', { class: 'kv' },
+        kv('은행', bank.bank),
+        kv('계좌', h('span', { class: 'mono', text: bank.number }), copyBtn(bank.number.replace(/[^0-9]/g, ''), '계좌번호')),
+        kv('예금주', bank.holder),
+        kv('입금자명', h('b', { class: 'mono', text: o.payer }), copyBtn(o.payer, '입금자명'))) : null,
+      o.sent ? h('p', { class: 'notice', text: `입금했다고 알렸어요. ${WAIT_NOTE}` })
+        : h('p', { class: 'field-hint', text: '이체할 때 받는 분에게 보이는 이름(입금자명)을 위 글자 그대로 적어 주세요. 이체한 뒤 "입금했어요"를 눌러 주세요.' }),
+      st,
+      h('div', { class: 'plan-btns' },
+        h('button', { class: 'btn', type: 'button', text: '신청 취소', onclick: (e) => busy(e.currentTarget, st, async () => {
+          if (!confirm('이 신청을 취소할까요? 이미 이체했다면 취소하지 말고 "입금했어요"를 눌러 주세요.')) return;
+          await billCall('cancel', { id: o.id }); toast('신청을 취소했어요'); again();
+        }) }),
+        !o.sent ? h('button', { class: 'btn primary', type: 'button', text: '입금했어요', onclick: (e) => busy(e.currentTarget, st, async () => {
+          await billCall('sent', { id: o.id }); toast('운영자에게 알렸어요'); again();
+        }) }) : null)));
+  }
+
+  if (!info.open) parts.push(h('p', { class: 'notice', text: '이용권 신청을 준비하고 있어요. 조금 뒤에 다시 와 주세요.' }));
+  else {
+    // 쓰는 중에 다른 것 더하기(끝나는 날을 맞춰서, 남은 날만큼)
+    for (const [key, q] of Object.entries(info.addons || {})) {
+      const needAlbum = key === 'add-album' && !album;
+      const st = statusEl();
+      const have = key === 'add-album' ? '먼치킨' : '추억앨범', add = key === 'add-album' ? '추억앨범' : '먼치킨';
+      parts.push(h('section', { class: 'plan-add' },
+        h('p', { class: 'plan-order-title', text: `${add} 더하기` }),
+        h('p', { class: 'small', text: `쓰고 있는 ${have}이 끝나는 ${dayText(q.until)}까지 ${add}도 함께 써요(${q.days}일).` }),
+        h('p', { class: 'small muted', text: `${add} ${q.yearly ? '1년 값 ÷ 12' : '한 달 값'} = 한 달 ${wonText(q.perMonth)} 기준으로 남은 날만큼` }),
+        h('p', { class: 'plan-amount', text: wonText(q.amount) }),
+        needAlbum ? h('p', { class: 'field-hint', text: '추억앨범은 앨범을 연결한 DJ 계정만 신청할 수 있어요. 내 정보 › "DJ 계정으로 이 앨범 관리하기"를 먼저 해 주세요.' }) : null,
+        st,
+        h('button', { class: 'btn primary block', type: 'button', text: '신청하기', disabled: needAlbum || !S.me.verified, onclick: (e) => busy(e.currentTarget, st, async () => {
+          await billCall('order', { plan: key, album }); toast('신청했어요. 계좌로 이체해 주세요'); again();
+        }) })));
+    }
+    // 새 이용권 고르기
+    const price = (plan, m) => (m === 12 ? info.year[plan] : info.prices[plan] * m);
+    const needs = (plan) => plan !== 'munchkin';
+    const usable = (plan) => info.prices[plan] > 0 && (!needs(plan) || album);
+    if (!usable(pick.plan)) pick = { ...pick, plan: ['munchkin', 'bundle', 'album'].find(usable) || pick.plan };
+    const seg = (items, cur, on) => h('div', { class: 'seg plan-seg', role: 'group' }, items.map(([v, label, ok = true]) =>
+      h('button', { type: 'button', class: v === cur ? 'on' : '', 'aria-pressed': String(v === cur), disabled: !ok, onclick: () => on(v) }, label)));
+    const amount = price(pick.plan, pick.months);
+    const full = info.prices[pick.plan] * 12;
+    const st = statusEl();
+    parts.push(h('section', { class: 'plan-pick' },
+      h('p', { class: 'plan-order-title', text: '이용권 신청' }),
+      seg([['munchkin', '먼치킨만', usable('munchkin')], ['album', '추억앨범만', usable('album')], ['bundle', '먼치킨 + 추억앨범', usable('bundle')]], pick.plan, (v) => again({ ...pick, plan: v })),
+      seg([[1, '1개월'], [3, '3개월'], [6, '6개월'], [12, '1년']], pick.months, (v) => again({ ...pick, months: v })),
+      h('p', { class: 'plan-amount', text: wonText(amount) }),
+      pick.months === 12 && full > amount ? h('p', { class: 'small ok', text: `한 달씩보다 ${wonText(full - amount)} 아껴요 (한 달 ${wonText(Math.round(amount / 12))}꼴)` }) : null,
+      !album ? h('p', { class: 'field-hint', text: '추억앨범 이용권은 앨범을 연결한 DJ 계정만 신청할 수 있어요.' }) : null,
+      !S.me.verified ? h('p', { class: 'field-hint', text: '본인인증을 먼저 해 주세요.' }) : null,
+      h('p', { class: 'small muted', text: '쓰고 있는 기간이 남아 있으면 그 끝에 이어서 늘어나요. 한 달 = 30일.' }),
+      st,
+      h('button', { class: 'btn primary block', type: 'button', text: '신청하기', disabled: !usable(pick.plan) || !S.me.verified, onclick: (e) => busy(e.currentTarget, st, async () => {
+        await billCall('order', { plan: pick.plan, months: pick.months, album }); toast('신청했어요. 계좌로 이체해 주세요'); again();
+      }) })));
+  }
+  parts.push(h('p', { class: 'notice' }, h('b', { text: '안내 · ' }), `계좌로 이체한 뒤 "입금했어요"를 눌러 주세요. ${WAIT_NOTE}`));
+  const done = info.orders.filter((o) => o.state !== 'pending').slice(0, 6);
+  if (done.length) parts.push(h('section', { class: 'plan-done' }, h('p', { class: 'plan-order-title', text: '지난 신청' }),
+    done.map((o) => h('div', { class: 'plan-done-row' },
+      h('span', { text: `${PLAN_NAME[o.plan] || o.plan} ${planPeriod(o)} · ${wonText(o.amount)}` }),
+      h('span', { class: o.state === 'paid' ? 'ok' : 'muted', text: (PLAN_STATE[o.state] || o.state) + (o.note ? ` (${o.note})` : '') })))));
+  box.replaceChildren(...parts);
+}
+
 // ---------- 회원 창(로그인·가입·본인인증·닉네임·찾기·내 정보) — 한 창 안에서 단계만 바꾼다 ----------
 let acct = null;   // {d, box, step}
 function openAccount(step, data = {}) {
@@ -1769,6 +1910,7 @@ const STEPS = {
         h('div', { class: 'menu acct-menu' },
           m.nickname ? item('닉네임 바꾸기', () => showStep('nickname', { from: 'me' })) : null,
           m.loginId ? item('비밀번호 바꾸기', () => showStep('password')) : null,
+          m.role === 'dj' || acctOwner() ? item('이용권 (먼치킨 · 추억앨범)', () => showStep('plan')) : null,
           !acctOwner() ? item('DJ 계정으로 이 앨범 관리하기', () => showStep('claim', { from: 'me' })) : null,
           item('로그아웃', async () => { await logoutAll(); closeAccount(); toast('모든 추억앨범에서 로그아웃했어요'); }),
           item('탈퇴하기', () => showStep('withdraw'), 'danger')),
@@ -1777,6 +1919,13 @@ const STEPS = {
           h('a', { href: 'privacy.html', target: '_blank', rel: 'noopener', text: '개인정보처리방침' }))
       ]
     };
+  },
+
+  // 이용권(계좌이체): 먼치킨만 · 추억앨범만 · 둘 다 × 1·3·6개월·1년, 쓰는 중에 다른 것 더하기
+  plan() {
+    if (!S.me) return STEPS.login({});
+    const box = h('div', { class: 'stack plan-box' }, h('p', { class: 'muted', text: '불러오는 중이에요…' }));
+    return { title: '이용권', back: 'me', body: [box], after: () => paintPlan(box) };
   },
 
   // DJ 계정: 앨범 등록 코드로 이 앨범을 내 계정에 잇는다(주인 기기 대신 — 어느 기기에서든 로그인만 하면 관리)

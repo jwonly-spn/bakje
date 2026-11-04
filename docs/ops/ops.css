@@ -1,0 +1,85 @@
+:root {
+  --bg: #f5f5f7; --card: #fff; --text: #111; --muted: #6e6e73; --line: #e2e2e7;
+  --blue: #0a84ff; --blue-ink: #fff; --green: #1f9d55; --green-bg: #e3f6ea; --gray-bg: #ececf0; --red: #d93025; --field: #fff;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #000; --card: #1c1c1e; --text: #f5f5f7; --muted: #98989f; --line: #38383a; --green: #34c759; --green-bg: #0f2e1a; --gray-bg: #2c2c2e; --red: #ff6961; --field: #2c2c2e; }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+  word-break: keep-all; overflow-wrap: anywhere;
+  padding: env(safe-area-inset-top) max(16px, env(safe-area-inset-right)) calc(24px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+}
+main { max-width: 560px; margin: 0 auto; }
+h1 { font-size: 28px; line-height: 1.2; margin: 0; letter-spacing: -.02em; }
+h2 { font-size: 13px; font-weight: 600; color: var(--muted); margin: 26px 4px 8px; }
+p { margin: 0; }
+.muted { color: var(--muted); }
+.small { font-size: 14px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+button { font: inherit; color: inherit; -webkit-tap-highlight-color: transparent; }
+
+.btn { border: 0; border-radius: 12px; padding: 12px 16px; background: var(--gray-bg); font-weight: 600; min-height: 46px; cursor: pointer; }
+.btn.primary { background: var(--blue); color: var(--blue-ink); }
+.btn.danger { background: var(--red); color: #fff; }
+.btn.wide { width: 100%; margin-top: 10px; }
+.btn.small { min-height: 36px; padding: 6px 12px; font-size: 14px; }
+.btn:disabled { opacity: .5; }
+.btn:active { transform: scale(.98); }
+.link { background: none; border: 0; color: var(--blue); padding: 12px; margin-top: 18px; }
+.field { width: 100%; font-size: 17px; padding: 13px 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--field); color: var(--text); }
+.field:focus { outline: 2px solid var(--blue); outline-offset: -1px; }
+
+/* 설치·로그인 */
+.install, .login { display: flex; flex-direction: column; align-items: stretch; gap: 12px; padding-top: 48px; text-align: center; }
+.app-icon { width: 84px; height: 84px; border-radius: 20px; margin: 0 auto 6px; box-shadow: 0 6px 20px rgb(0 0 0 / .15); }
+.steps { text-align: left; background: var(--card); border-radius: 16px; padding: 14px 16px 14px 36px; margin: 8px 0 0; display: grid; gap: 10px; }
+.share-ico { display: inline-block; border: 1.5px solid currentColor; border-radius: 5px; padding: 0 5px; font-size: 13px; color: var(--blue); }
+.error { color: var(--red); min-height: 1.4em; font-size: 15px; }
+
+/* 머리·탭 */
+.top { display: flex; align-items: center; justify-content: space-between; padding: 18px 2px 12px; }
+.round { width: 42px; height: 42px; border-radius: 50%; border: 0; background: var(--card); font-size: 22px; line-height: 1; cursor: pointer; }
+.spin { display: inline-block; animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.seg { display: grid; grid-template-columns: repeat(3, 1fr); background: var(--gray-bg); border-radius: 12px; padding: 3px; position: sticky; top: env(safe-area-inset-top); z-index: 2; }
+.seg button { border: 0; background: none; border-radius: 9px; padding: 9px 4px; font-size: 15px; font-weight: 600; color: var(--muted); }
+.seg button.on { background: var(--card); color: var(--text); box-shadow: 0 1px 3px rgb(0 0 0 / .12); }
+
+/* 목록 */
+.list { display: grid; gap: 12px; margin-top: 14px; }
+.empty { text-align: center; color: var(--muted); padding: 60px 0; }
+.empty .big { font-size: 44px; color: var(--green); }
+.card { background: var(--card); border-radius: 18px; padding: 16px; display: grid; gap: 10px; border: 1px solid transparent; }
+.card.sent { border-color: color-mix(in srgb, var(--green) 45%, transparent); }
+.card-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.chip { font-size: 13px; font-weight: 600; padding: 4px 9px; border-radius: 99px; white-space: nowrap; }
+.chip.green { background: var(--green-bg); color: var(--green); }
+.chip.gray { background: var(--gray-bg); color: var(--muted); }
+.amount { font-size: 30px; font-weight: 700; letter-spacing: -.02em; }
+.payer { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: var(--gray-bg); border: 0; border-radius: 12px; padding: 11px 12px; cursor: pointer; }
+.payer b { font-size: 19px; flex: 1; }
+.payer .copy { font-size: 14px; color: var(--blue); font-weight: 600; }
+.plan { font-size: 15px; }
+.card-btns { display: grid; grid-template-columns: 1fr 2fr; gap: 8px; }
+.row-card { background: var(--card); border-radius: 14px; padding: 12px 14px; display: flex; justify-content: space-between; gap: 10px; }
+.row-card .right { text-align: right; display: grid; gap: 4px; justify-items: end; }
+
+/* 설정 */
+.group { background: var(--card); border-radius: 16px; padding: 14px; display: grid; gap: 10px; }
+.dev { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.f { display: grid; gap: 4px; font-size: 14px; color: var(--muted); }
+.f .field { color: var(--text); }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+
+/* 확인 창·알림 글 */
+dialog.sheet { border: 0; border-radius: 20px; padding: 20px; width: min(92vw, 420px); background: var(--card); color: var(--text); display: grid; gap: 12px; }
+dialog.sheet::backdrop { background: rgb(0 0 0 / .4); }
+dialog.sheet h2 { margin: 0; font-size: 19px; color: var(--text); }
+.sheet-btns { display: grid; grid-template-columns: 1fr 1.6fr; gap: 8px; margin-top: 4px; }
+#toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom)); transform: translateX(-50%); background: rgb(30 30 32 / .94); color: #fff; padding: 11px 16px; border-radius: 14px; font-size: 15px; max-width: 90vw; text-align: center; z-index: 10; }
+#toast.bad { background: var(--red); }
