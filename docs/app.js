@@ -13,7 +13,9 @@ const KIND_NAME = { post: '게시물', board: '박제판', first: '최초 박제
 // 화면 틀(세로 ÷ 가로): 모든 글 9:16. 사진이 틀과 다르면 자르지 않고 남는 곳을 같은 사진으로 흐리게 채운다.
 const FRAME = 16 / 9;
 // 탭: 게시물 = 일반 게시물(post, 2026-11-05) + 최초 박제판(먼치킨 최초 박제판이 저절로 올라온다) · 박제판 = 올린 박제판 사진 · 달력 = 박제판을 달·날로 골라 보기
-const tabOf = (kind) => (kind === 'first' || kind === 'post' ? 'all' : 'board');
+// 피드 = 일반 게시물(인스타그램 피드처럼 내려 보기, 2026-11-05). 처음 들어오면 늘 게시물 탭(주소에 t=feed 를 남기지 않는다).
+const tabOf = (kind) => (kind === 'first' ? 'all' : kind === 'post' ? 'feed' : 'board');
+const tabParam = (t) => (t === 'all' || t === 'feed' ? null : t);
 const byDate = (list) => [...list].sort((a, b) => b.at - a.at);   // 날짜가 새것 먼저(같으면 서버 차례)
 const LEGACY = 'hanijun';   // 한이준 앨범(처음 앨범)
 const ALBUM_RE = /^[a-z][a-z0-9-]{1,30}$/;
@@ -67,8 +69,14 @@ const ICONS = {
   comment: '<path d="M20.5 11.6c0 4.4-3.8 7.9-8.5 7.9-1.3 0-2.6-.3-3.7-.8L3.5 20l1.3-3.9c-.9-1.3-1.3-2.8-1.3-4.5 0-4.4 3.8-7.9 8.5-7.9s8.5 3.5 8.5 7.9z"/>',
   flag: '<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>',
   block: '<circle cx="12" cy="12" r="8.5"/><path d="M6 6l12 12"/>',
-  check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>'
+  check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+  mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M8.5 21h7"/>',
+  headphones: '<path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3.5" y="14" width="4.5" height="6.5" rx="1.5"/><rect x="16" y="14" width="4.5" height="6.5" rx="1.5"/>',
+  bell: '<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15zM10 20.5a2 2 0 0 0 4 0"/>'
 };
+// 댓글 단 사람 표시(이름 앞): 이 앨범 DJ · 다른 DJ · 청취자
+const ROLE_ICON = { owner: ['mic', 'DJ', 'role-owner'], dj: ['mic', 'DJ', 'role-dj'], fan: ['headphones', '청취자', 'role-fan'] };
+const SOCIAL = '../bakje-social/';
 function icon(name, cls = '') {
   const el = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   el.setAttribute('viewBox', '0 0 24 24');
@@ -238,6 +246,71 @@ const ownerCall = async (action, payload) => (acctOwner() && ls.get('bj_owner') 
 function syncOwner() {
   const on = ls.get('bj_owner') === '1' || acctOwner();
   if (on !== S.owner) { S.owner = on; render(); }
+  if (on && !S.notes && !S.notesBusy) loadNotes();
+}
+
+// ---------- DJ 알림(누가 하트·댓글·답글을 남겼는지 — 서버 bakje-social, 주인만) ----------
+const notesKey = () => 'bj_notes_seen_' + ALBUM;
+async function notesCall() {
+  if (acctOwner() && ls.get('bj_owner') !== '1') return call(SOCIAL + 'notes', { method: 'POST', body: { album: ALBUM }, session: true });
+  return call(SOCIAL + 'notes', { method: 'POST', body: await signed('notes', { album: ALBUM }) });
+}
+async function loadNotes() {
+  S.notesBusy = true;
+  try { S.notes = (await notesCall()).notes || []; } catch { /* 다음에 다시 */ }
+  S.notesBusy = false;
+  paintBell();
+}
+const unreadNotes = () => { const seen = Number(ls.get(notesKey()) || 0); return (S.notes || []).filter((n) => n.at > seen).length; };
+function bellButton() {
+  if (!S.owner) return null;
+  const n = unreadNotes();
+  return h('button', { class: 'icon-btn bell', id: 'bell', type: 'button', 'aria-label': n ? `알림 ${n}개 새로 왔어요` : '알림', title: '알림', onclick: openNotes },
+    icon('bell'), n ? h('i', { class: 'bell-dot', text: n > 99 ? '99+' : String(n) }) : null);
+}
+function paintBell() { const b = $('#bell'); if (b) b.replaceWith(bellButton()); }
+// 하트는 글마다 묶어서("밤톨님, 달무리님 외 3명"), 댓글·답글은 하나씩
+function noteRows(notes) {
+  const rows = [], hearts = new Map();
+  for (const n of notes) {
+    if (n.kind !== 'heart') { rows.push({ at: n.at, post: n.post, list: [n], kind: n.kind }); continue; }
+    if (!hearts.has(n.post)) { const g = { at: n.at, post: n.post, list: [], kind: 'heart' }; hearts.set(n.post, g); rows.push(g); }
+    hearts.get(n.post).list.push(n);
+  }
+  return rows.sort((a, b) => b.at - a.at);
+}
+function noteText(r) {
+  if (r.kind === 'heart') {
+    const names = [...new Set(r.list.filter((n) => n.nick).map((n) => n.nick))].slice(0, 2);
+    const rest = r.list.length - r.list.filter((n) => n.nick && names.includes(n.nick)).length;
+    if (!names.length) return [h('b', { text: `손님 ${num(r.list.length)}명` }), '이 하트를 눌렀어요.'];
+    return [h('b', { text: names.join('님, ') + '님' }), rest > 0 ? ` 외 ${num(rest)}명` : '', '이 하트를 눌렀어요.'];
+  }
+  const n = r.list[0];
+  return [h('b', { text: (n.nick || '회원') + '님' }), r.kind === 'reply' ? '이 답글을 남겼어요: ' : '이 댓글을 남겼어요: ', h('span', { class: 'note-quote', text: n.text })];
+}
+function openNotes() {
+  const seen = Number(ls.get(notesKey()) || 0);
+  const box = h('div', { class: 'sheet-body notes-body' });
+  const paint = () => {
+    const rows = noteRows(S.notes || []);
+    if (!S.notes) { box.replaceChildren(h('p', { class: 'muted', text: '불러오는 중…' })); return; }
+    if (!rows.length) { box.replaceChildren(h('p', { class: 'muted notes-empty', text: '아직 알림이 없어요. 누가 하트를 누르거나 댓글을 달면 여기에 보여요.' })); return; }
+    box.replaceChildren(h('ul', { class: 'notes' }, rows.map((r) => {
+      const p = findPost(r.post), ph = p?.photos?.[0];
+      return h('li', null, h('button', { class: 'note' + (r.at > seen ? ' new' : ''), type: 'button', onclick: () => { d.dismiss(); if (p) openViewer(r.post); else toast('지운 글이에요.'); } },
+        h('span', { class: 'note-ic ' + r.kind }, icon(r.kind === 'heart' ? 'heart' : 'comment')),
+        h('span', { class: 'note-text' }, h('span', null, ...noteText(r)), h('time', { class: 'muted', text: ago(r.at) })),
+        ph ? h('img', { class: 'note-thumb', src: photoUrl(ph.t), alt: '', loading: 'lazy' }) : null));
+    })), h('p', { class: 'muted small notes-foot', text: '최근 60일 알림이에요. 로그인하지 않은 사람의 하트는 "손님"으로 보여요.' }));
+  };
+  const d = sheet(h('div', null,
+    h('div', { class: 'sheet-head' }, h('h2', { text: '알림' }), h('button', { class: 'icon-btn', type: 'button', 'aria-label': '닫기', onclick: () => d.dismiss() }, icon('close'))),
+    box), { cls: 'small', label: '알림' });
+  paint();
+  const mark = () => { const top = Math.max(0, ...(S.notes || []).map((n) => n.at)); if (top) ls.set(notesKey(), String(top)); paintBell(); };
+  mark();
+  loadNotes().then(() => { paint(); mark(); });
 }
 async function fetchFeed(fresh) {
   try {
@@ -409,6 +482,8 @@ async function toggleHeart(id, force) {
   try {
     const r = await call('heart', { method: 'POST', body: { post: id, vid: S.vid, on } });
     if (typeof r.hearts === 'number') p.hearts = r.hearts;
+    // DJ 알림(누가 하트를 눌렀는지) — 주인 본인은 빼고, 실패해도 하트는 그대로
+    if (!S.owner && !r.limited) call(SOCIAL + 'heart-note', { method: 'POST', body: { post: id, vid: S.vid, on }, session: true }).catch(() => {});
   } catch (e) {
     p.hearts = before;
     on ? S.hearted.delete(id) : S.hearted.add(id);
@@ -546,8 +621,63 @@ function postCard(post, { preview = false } = {}) {
   if (photoRatio(p0)) card.style.setProperty('--pratio', photoRatio(p0));   // 넘기면 carousel 이 그 사진 비율로 바꾼다
   return card;
 }
+// ---------- 피드(일반 게시물 — 인스타그램 피드처럼 위에서 아래로) ----------
+//  사진은 자르지 않는다: 칸은 첫 사진 비율(세로÷가로 0.5~1.6), 더 길면 남는 곳을 흐리게. 내리면 8개씩 더 붙인다.
+const FEED_STEP = 8;
+function feedView(list) {
+  S.feedShown = Math.max(S.feedShown || FEED_STEP, FEED_STEP);
+  const col = h('div', { class: 'feed' });
+  const more = h('div', { class: 'feed-more', 'aria-hidden': 'true' });
+  const add = () => {
+    const from = col.querySelectorAll('.fpost').length, to = Math.min(list.length, S.feedShown);
+    for (let i = from; i < to; i++) col.insertBefore(feedCard(list[i], i), more);
+    more.hidden = to >= list.length;
+  };
+  col.append(more);
+  add();
+  if (list.length > S.feedShown && 'IntersectionObserver' in window) {
+    const io = new IntersectionObserver((es) => {
+      if (!es.some((e) => e.isIntersecting)) return;
+      S.feedShown += FEED_STEP;
+      add();
+      if (S.feedShown >= list.length) io.disconnect();
+    }, { rootMargin: '900px 0px' });
+    io.observe(more);
+  }
+  return col;
+}
+function feedCard(post, i) {
+  const p0 = post.photos?.[0];
+  const ratio = p0?.w > 0 && p0?.h > 0 ? Math.min(1.6, Math.max(0.5, p0.h / p0.w)) : 1;
+  const media = post.photos?.length ? h('div', { class: 'f-media' }, carousel(post), donorMark(post)) : null;
+  if (media) {
+    media.style.setProperty('--fratio', String(ratio));
+    if (i > 1) media.querySelectorAll('img').forEach((im) => { im.loading = 'lazy'; });
+  }
+  const open = (focus) => { openViewer(post.id); if (focus) setTimeout(() => focusComposer(post.id), 350); };
+  const cap = post.caption ? h('p', { class: 'f-cap' }, h('b', { text: profileName() + ' ' }), h('span', { text: post.caption })) : null;
+  const capWrap = cap ? h('div', { class: 'f-cap-wrap' }, cap) : null;
+  if (capWrap) requestAnimationFrame(() => {
+    if (cap.scrollHeight > cap.clientHeight + 2) capWrap.append(h('button', { class: 'f-more', type: 'button', text: '더 보기', onclick: (e) => { cap.classList.add('open'); e.currentTarget.remove(); } }));
+  });
+  const cc = Number(post.cc) || 0;
+  return h('article', { class: 'fpost', dataset: { post: post.id } },
+    h('header', { class: 'f-head' },
+      avatarEl('sm', true),
+      h('div', { class: 'f-who' }, h('strong', { text: profileName() }), h('time', { class: 'muted', datetime: new Date(post.at).toISOString(), text: ago(post.at) })),
+      S.owner ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': '글 메뉴', onclick: () => postMenu(post) }, icon('more')) : null),
+    media,
+    h('div', { class: 'f-actions' },
+      heartButton(post),
+      S.members ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': '댓글 달기', onclick: () => open(true) }, icon('comment')) : null,
+      h('button', { class: 'icon-btn', type: 'button', 'aria-label': '링크 공유', onclick: () => sharePost(post) }, icon('share'))),
+    h('p', { class: 'f-likes' }, '하트 ', h('b', { dataset: { heartsOf: post.id }, text: num(post.hearts) }), '개'),
+    capWrap,
+    S.members && cc ? h('button', { class: 'f-comments', type: 'button', text: `댓글 ${num(cc)}개 모두 보기`, onclick: () => open(false) }) : null,
+    S.members && !cc ? h('button', { class: 'f-comments', type: 'button', text: '댓글 달기…', onclick: () => open(true) }) : null);
+}
 // 사진 왼쪽 위 후원자 닉네임(워터마크처럼)
-const donorMark = (post, cls = 'donor-mark') => (post.donor ? h('span', { class: cls, text: post.donor }) : null);
+const donorMark =(post, cls = 'donor-mark') => (post.donor ? h('span', { class: cls, text: post.donor }) : null);
 function heartButton(post) {
   const on = S.hearted.has(post.id);
   return h('button', {
@@ -786,7 +916,7 @@ function render() {
   const app = $('#app');
   if (param('owner') !== null && !S.owner) { app.replaceChildren(registerView()); return; }
   const all = posts();
-  const counts = { all: all.filter((p) => tabOf(p.kind) === 'all').length, board: all.filter((p) => tabOf(p.kind) === 'board').length };
+  const counts = { all: all.filter((p) => tabOf(p.kind) !== 'board').length, board: all.filter((p) => tabOf(p.kind) === 'board').length };
   const hearts = all.reduce((n, p) => n + (p.hearts || 0), 0);
   const prof = S.feed?.profile || {};
   document.title = profileName();
@@ -794,6 +924,7 @@ function render() {
     h('div', { class: 'topbar-in' },
       h('a', { class: 'brand', href: './', text: siteName() }),
       h('div', { class: 'row' },
+        bellButton(),
         S.owner ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': '새 게시물', title: '새 게시물', onclick: () => openComposer() }, icon('plus-square')) : null,
         S.owner ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': '설정', title: '설정', onclick: () => openSettings() }, icon('gear')) : null,
         h('button', { class: 'icon-btn', type: 'button', 'aria-label': '이 앨범 링크 공유', title: '링크 공유', onclick: () => sharePost(null) }, icon('share')),
@@ -816,13 +947,13 @@ function render() {
   const pinned = all.filter((p) => p.pinned);
   const highlights = pinned.length ? h('div', { class: 'hl', 'aria-label': '고정한 글' }, pinned.map(highlight)) : null;
   const tabs = h('nav', { class: 'tabs', role: 'tablist', 'aria-label': '종류' },
-    [['all', '게시물', 'grid'], ['board', '박제판', 'photo'], ['cal', '달력', 'calendar']].map(([k, label, ic]) => h('button', {
+    [['all', '게시물', 'grid'], ['feed', '피드', 'feed'], ['board', '박제판', 'photo'], ['cal', '달력', 'calendar']].map(([k, label, ic]) => h('button', {
       type: 'button', role: 'tab', 'aria-selected': String(S.tab === k), class: S.tab === k ? 'on' : '',
       onclick: () => {
         if (S.tab === k) return;
         S.tab = k;
         if (k === 'cal') S.cal = { ym: null, day: null };
-        history.replaceState(history.state, '', urlWith({ t: k === 'all' ? null : k, m: null, d: null }));
+        history.replaceState(history.state, '', urlWith({ t: tabParam(k), m: null, d: null }));
         render();
       }
     }, icon(ic), h('span', { text: label }))));
@@ -831,10 +962,11 @@ function render() {
   if (!S.feed) body = h('div', { class: 'empty-state' }, h('p', { text: '불러오는 중…' }));
   else if (S.tab === 'cal') body = calView();
   else if (!list.length) body = h('div', { class: 'empty-state' },
-    h('span', { class: 'empty-icon' }, icon(S.tab === 'all' ? 'trophy' : 'photo')),
-    h('h2', { text: S.tab === 'all' ? '아직 게시물이 없어요' : '아직 박제판이 없어요' }),
+    h('span', { class: 'empty-icon' }, icon(S.tab === 'all' ? 'trophy' : S.tab === 'feed' ? 'feed' : 'photo')),
+    h('h2', { text: S.tab === 'all' ? '아직 게시물이 없어요' : S.tab === 'feed' ? '아직 피드가 없어요' : '아직 박제판이 없어요' }),
     S.tab === 'all' ? h('p', { class: 'muted', text: '먼치킨 최초 박제판에 이름이 적히면 저절로 올라와요.' }) : null,
-    S.owner && S.tab === 'board' ? h('button', { class: 'link-btn', type: 'button', onclick: () => openComposer(), text: '첫 박제판 올리기' }) : null);
+    S.owner && S.tab !== 'all' ? h('button', { class: 'link-btn', type: 'button', onclick: () => openComposer(), text: S.tab === 'feed' ? '첫 피드 올리기' : '첫 박제판 올리기' }) : null);
+  else if (S.tab === 'feed') body = feedView(list);
   else body = h('div', { class: 'grid' }, list.map((p) => tile(p)));
   const footer = h('footer', { class: 'foot' },
     h('p', null, siteName(), !S.owner ? [' · ', h('a', { href: '?owner', text: '주인 기기 등록' })] : null),
@@ -921,7 +1053,7 @@ function refreshAfterChange(id) {
 function openComposer(post = null) {
   const editing = !!post;
   // 새 글: 지금 보는 탭에 맞춰(게시물 탭 → 일반 게시물, 박제판·달력 탭 → 박제판)
-  let kind = KIND_NAME[post?.kind] ? post.kind : (S.tab === 'all' ? 'post' : 'board');
+  let kind = KIND_NAME[post?.kind] ? post.kind : (S.tab === 'board' || S.tab === 'cal' ? 'board' : 'post');
   const photos = (post?.photos || []).map((p) => ({ kind: 'old', ...p, preview: photoUrl(p.t) }));
   const L = post?.letter || {};
   let paper = L.paper || 'cream';
@@ -982,7 +1114,7 @@ function openComposer(post = null) {
 
   // 종류 = 올라갈 탭(2026-11-05 사용자 "탭은 게시물·박제판인데 올릴 땐 박제판·최초 박제판이라 이상해 · 어느 걸 누른 건지 모르겠어"):
   //  일반 게시물·최초 박제판 → 게시물 탭, 박제판 → 박제판·달력 탭. 고른 것은 파란 칸 + 체크. 예전 박제 편지 글을 고칠 때만 편지가 보인다.
-  const KINDS = [['post', '일반 게시물', 'grid', '게시물 탭'], ['board', '박제판', 'photo', '박제판 탭'], ['first', '최초 박제판', 'trophy', '게시물 탭'],
+  const KINDS = [['post', '일반 게시물', 'feed', '피드 탭'], ['board', '박제판', 'photo', '박제판 탭'], ['first', '최초 박제판', 'trophy', '게시물 탭'],
     ...(post?.kind === 'letter' ? [['letter', '박제 편지', 'letter', '박제판 탭']] : [])];
   function paintKind() {
     kindSeg.replaceChildren(...KINDS.map(([k, label, ic, where]) => h('button', {
@@ -1082,7 +1214,7 @@ function openComposer(post = null) {
       d.dismiss();
       // 올린 글이 보이는 탭으로(달력을 보고 있으면 방금 올린 박제판의 달로)
       if (S.tab === 'cal' && tabOf(kind) === 'board') { if (day.value) S.cal = { ym: day.value.slice(0, 7), day: null }; history.replaceState(history.state, '', urlWith({ m: S.cal.ym, d: null })); }
-      else if (!editing && S.tab !== tabOf(kind)) { S.tab = tabOf(kind); history.replaceState(history.state, '', urlWith({ t: S.tab === 'all' ? null : S.tab, m: null, d: null })); }
+      else if (!editing && S.tab !== tabOf(kind)) { S.tab = tabOf(kind); history.replaceState(history.state, '', urlWith({ t: tabParam(S.tab), m: null, d: null })); }
       refreshAfterChange(id);
       toast(editing ? '고쳤어요' : '올렸어요');
     } catch (err) {
@@ -1512,7 +1644,7 @@ async function paintPlan(box, pick = { plan: 'munchkin', months: 1 }) {
         await billCall('order', { plan: pick.plan, months: pick.months, album }); toast('신청했어요. 계좌로 이체해 주세요'); again();
       }) })));
   }
-  parts.push(h('p', { class: 'notice' }, h('b', { text: '안내 · ' }), `계좌로 이체한 뒤 "입금했어요"를 눌러 주세요. ${WAIT_NOTE}`));
+  parts.push(h('p', { class: 'notice', text: `계좌로 이체한 뒤 "입금했어요"를 눌러 주세요. ${WAIT_NOTE}` }));
   const done = info.orders.filter((o) => o.state !== 'pending').slice(0, 6);
   if (done.length) parts.push(h('section', { class: 'plan-done' }, h('p', { class: 'plan-order-title', text: '지난 신청' }),
     done.map((o) => h('div', { class: 'plan-done-row' },
@@ -2030,7 +2162,7 @@ async function loadComments(id) {
   cmSeq.set(id, seq);
   let next;
   try {
-    const r = await call('comments', { query: { post: id }, session: true });
+    const r = await call(SOCIAL + 'comments', { query: { post: id }, session: true });
     next = {
       list: Array.isArray(r.comments) ? r.comments.filter((c) => c && typeof c.id === 'string') : [],
       off: r.off === true,
@@ -2068,19 +2200,56 @@ function commentsContent(id, st) {
   if (!st) out.push(h('p', { class: 'cm-empty', text: '댓글을 불러오는 중…' }));
   else if (st.err) out.push(h('p', { class: 'cm-empty' }, st.err + ' ', h('button', { class: 'link-btn', type: 'button', text: '다시 불러오기', onclick: () => { CM.delete(id); paintComments(id); loadComments(id); } })));
   else if (!n) out.push(h('p', { class: 'cm-empty', text: st.off ? '아직 댓글이 없어요.' : '아직 댓글이 없어요. 첫 댓글을 남겨 보세요.' }));
-  else out.push(h('ul', { class: 'cm-list' }, st.list.map((c) => commentItem(id, c))));
+  else {
+    // 답글(한 단계)은 그 댓글 아래에. 지워진 댓글에 남은 답글은 "지워진 댓글" 아래에.
+    const ids = new Set(st.list.map((c) => c.id)), kids = new Map(), tops = [];
+    for (const c of st.list) {
+      if (!c.p) { tops.push(c); continue; }
+      if (!kids.has(c.p)) kids.set(c.p, []);
+      kids.get(c.p).push(c);
+    }
+    for (const [pid, list] of kids) if (!ids.has(pid)) tops.push({ id: pid, gone: true, at: list[0].at });
+    tops.sort((a, b) => (Number(a.at) || 0) - (Number(b.at) || 0));
+    out.push(h('ul', { class: 'cm-list' }, tops.map((c) => commentItem(id, c, kids.get(c.id) || []))));
+  }
   return out;
 }
-function commentItem(postId, c) {
+const replyTo = new Map();   // 글 → {id: 답글을 달 댓글, nick}
+function roleMark(c) {
+  const r = ROLE_ICON[c.r];
+  return r ? h('span', { class: 'cm-role ' + r[2], title: r[1], role: 'img', 'aria-label': r[1] }, icon(r[0])) : null;
+}
+function commentItem(postId, c, replies = [], top = null) {
   const at = Number(c.at) || Date.now();
-  return h('li', { class: 'cm-item' + (c.mine ? ' mine' : ''), dataset: { cid: c.id } },
-    h('div', { class: 'cm-main' },
-      h('p', { class: 'cm-head' },
-        h('b', { class: 'cm-nick', text: c.nick || '(알 수 없음)' }),
-        c.mine ? h('span', { class: 'cm-tag', text: '내 댓글' }) : null,
-        h('time', { class: 'cm-time', datetime: new Date(at).toISOString(), title: fullTime(at), text: ago(at) })),
-      h('p', { class: 'cm-text', text: c.text || '' })),
-    h('button', { class: 'icon-btn cm-more', type: 'button', 'aria-label': `${c.nick || ''} 댓글 메뉴`, onclick: () => commentMenu(postId, c) }, icon('more')));
+  const kids = replies.length ? h('ul', { class: 'cm-replies' }, replies.map((r) => commentItem(postId, r, [], c))) : null;
+  if (c.gone) return h('li', { class: 'cm-item cm-gone', dataset: { cid: c.id } }, h('div', { class: 'cm-main' }, h('p', { class: 'cm-text muted', text: '지워진 댓글이에요.' }), kids));
+  return h('li', { class: 'cm-item' + (c.mine ? ' mine' : '') + (top ? ' cm-reply' : ''), dataset: { cid: c.id } },
+    h('div', { class: 'cm-row' },
+      h('div', { class: 'cm-main' },
+        h('p', { class: 'cm-head' },
+          roleMark(c),
+          h('b', { class: 'cm-nick', text: c.nick || '(알 수 없음)' }),
+          c.r === 'owner' ? h('span', { class: 'cm-tag cm-tag-dj', text: 'DJ' }) : null,
+          c.mine ? h('span', { class: 'cm-tag', text: '내 댓글' }) : null,
+          h('time', { class: 'cm-time', datetime: new Date(at).toISOString(), title: fullTime(at), text: ago(at) })),
+        h('p', { class: 'cm-text', text: c.text || '' }),
+        h('button', { class: 'cm-reply-btn', type: 'button', text: '답글 달기', onclick: () => startReply(postId, top || c, c) })),
+      h('button', { class: 'icon-btn cm-more', type: 'button', 'aria-label': `${c.nick || ''} 댓글 메뉴`, onclick: () => commentMenu(postId, c) }, icon('more'))),
+    kids);
+}
+// 답글 달기: 쓰기 칸 위에 "○○님에게 답글"을 보이고, 답글에 다는 답글이면 @닉네임을 먼저 넣는다
+function startReply(postId, top, target) {
+  const why = composerState(CM.get(postId));
+  if (why !== 'can') { focusComposer(postId); return; }
+  replyTo.set(postId, { id: top.id, nick: target.nick || '' });
+  if (target !== top && target.nick) {
+    const cur = drafts.get(postId) || '';
+    if (!cur.startsWith('@' + target.nick)) drafts.set(postId, `@${target.nick} ${cur}`);
+  }
+  const comp = viewer?.querySelector(`[data-compose="${postId}"]`);
+  if (comp) comp.dataset.state = '';
+  paintComments(postId);
+  focusComposer(postId);
 }
 function composerState(st) {
   if (!st) return 'loading';
@@ -2115,7 +2284,17 @@ function commentForm(id) {
     count.textContent = n > 250 ? `${n}/300` : '';
   };
   ta.addEventListener('input', () => { drafts.set(id, ta.value); sync(); grow(); });
-  const form = h('form', { class: 'cm-form', onsubmit: (e) => { e.preventDefault(); postComment(id, ta, sync, grow); } }, ta, count, send);
+  const rt = replyTo.get(id);
+  if (rt) ta.placeholder = `${rt.nick || ''}님에게 답글 달기…`;
+  const form = h('form', { class: 'cm-form' + (rt ? ' replying' : ''), onsubmit: (e) => { e.preventDefault(); postComment(id, ta, sync, grow); } },
+    rt ? h('p', { class: 'cm-replying' }, h('span', { text: `${rt.nick || ''}님에게 답글` }),
+      h('button', { class: 'link-btn', type: 'button', text: '그만두기', onclick: () => {
+        replyTo.delete(id);
+        const comp = viewer?.querySelector(`[data-compose="${id}"]`);
+        if (comp) comp.dataset.state = '';
+        paintComments(id);
+      } })) : null,
+    ta, count, send);
   // PC: Ctrl(⌘)+Enter 로 바로 게시(Enter 는 줄바꿈 — 5줄까지)
   ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); form.requestSubmit(); } });
   sync();
@@ -2128,15 +2307,21 @@ async function postComment(id, ta, sync, grow) {
   ta.readOnly = true;
   sync();
   try {
-    const r = await commentCall('add', { album: ALBUM, post: id, text });
+    const parent = replyTo.get(id)?.id || null;
+    let r;
+    try { r = await call(SOCIAL + 'comment', { method: 'POST', body: { action: 'add', album: ALBUM, post: id, text, parent }, session: true }); }
+    catch (e) { if (e.status === 401) dropSession(); throw e; }
     drafts.delete(id);
+    replyTo.delete(id);
     ta.value = '';
     grow();
     const st = CM.get(id);
     if (st?.list && r.comment && !st.list.some((c) => c.id === r.comment.id)) st.list.push({ ...r.comment, mine: true });
     bumpCc(id, 1);
+    const comp = viewer?.querySelector(`[data-compose="${id}"]`);
+    if (comp && parent) comp.dataset.state = '';
     paintComments(id);
-    viewer?.querySelector(`[data-comments="${id}"] .cm-list > li:last-child`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    viewer?.querySelector(`[data-cid="${r.comment?.id}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   } catch (e) {
     toast(e.message, true);
     if (e.status === 403) loadComments(id);   // 차단·댓글 끔 등 — 쓰기 칸을 새로(쓰던 글은 drafts 에 남는다)

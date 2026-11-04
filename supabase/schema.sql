@@ -335,3 +335,41 @@ alter table bj_orders add constraint bj_orders_plan_check check (plan in ('munch
 alter table bj_orders drop constraint if exists bj_orders_months_check;
 alter table bj_orders add constraint bj_orders_months_check check (months between 0 and 12);
 alter table bj_orders add column if not exists until_to bigint;
+
+-- 2026-11-05 bakje_ops_push: 운영자 앱(입금 확인, 사이트 /ops/ 홈 화면 앱) 푸시 알림 받는 기기. VAPID 열쇠는 bj_settings "vapid"(bakje-billing 이 처음 쓸 때 만든다)
+create table if not exists bj_push_subs (
+  id text primary key,
+  member text not null references bj_members(id) on delete cascade,
+  endpoint text not null unique,
+  p256dh text not null,
+  auth text not null,
+  label text not null default '',
+  created bigint not null,
+  ok bigint
+);
+create index if not exists bj_push_subs_member on bj_push_subs(member);
+alter table bj_push_subs enable row level security;
+revoke all on bj_push_subs from anon, authenticated;
+grant all on bj_push_subs to service_role;
+
+-- 2026-11-05 bakje_replies_notes: 답글(한 단계) · DJ 알림(하트·댓글·답글) — 함수 bakje-social
+alter table bj_comments add column if not exists parent text references bj_comments(id) on delete set null;
+create index if not exists bj_comments_parent on bj_comments(parent);
+create table if not exists bj_notes (
+  id bigserial primary key,
+  album text not null references bj_albums(id) on delete cascade,
+  kind text not null check (kind in ('heart', 'comment', 'reply')),
+  post text not null references bj_posts(id) on delete cascade,
+  member text references bj_members(id) on delete set null,
+  voter text,
+  nick text not null default '',
+  text text not null default '',
+  comment text,
+  created bigint not null
+);
+create index if not exists bj_notes_album on bj_notes(album, created desc);
+create index if not exists bj_notes_heart on bj_notes(post, voter) where kind = 'heart';
+alter table bj_notes enable row level security;
+revoke all on bj_notes from anon, authenticated;
+grant all on bj_notes to service_role;
+grant usage, select on sequence bj_notes_id_seq to service_role;
