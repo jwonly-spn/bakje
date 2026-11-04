@@ -1053,6 +1053,71 @@ function openComposer(post = null) {
   d.addEventListener('cancel', async (e) => { e.preventDefault(); if (!busy && (await maybeLeave())) d.dismiss(); });
 }
 
+// ---------- 프로필 사진 1:1 자르기(정사각형이 아닌 사진을 골랐을 때) ----------
+// 끌어서 옮기기 · 손가락 두 개/휠/막대로 확대. 고른 영역을 512×512 JPEG 로 돌려준다(그만두면 null).
+function cropSquare(img) {
+  return new Promise((resolve) => {
+    const W = img.naturalWidth, H = img.naturalHeight;
+    const S = Math.max(200, Math.min(320, window.innerWidth - 72));
+    const base = S / Math.min(W, H);
+    let z = 1, ox = 0, oy = 0, result = null;
+    const pic = h('img', { class: 'crop-img', src: img.src, alt: '', draggable: 'false' });
+    const stage = h('div', { class: 'crop-stage' }, pic, h('div', { class: 'crop-ring' }));
+    stage.style.width = stage.style.height = S + 'px';             // CSP: style 속성은 막혀 있어 CSSOM 으로
+    const range = h('input', { class: 'crop-zoom', type: 'range', min: '100', max: '400', value: '100', 'aria-label': '확대' });
+    const clamp = () => {
+      const sc = base * z, dw = W * sc, dh = H * sc;
+      ox = Math.min(0, Math.max(S - dw, ox)); oy = Math.min(0, Math.max(S - dh, oy));
+      pic.style.width = dw + 'px'; pic.style.height = dh + 'px';
+      pic.style.transform = `translate(${ox}px, ${oy}px)`;
+    };
+    // (cx, cy) 자리를 그대로 두고 확대
+    const zoomAt = (nz, cx = S / 2, cy = S / 2) => {
+      nz = Math.min(4, Math.max(1, nz));
+      const sc = base * z, ns = base * nz;
+      ox = cx - (cx - ox) / sc * ns; oy = cy - (cy - oy) / sc * ns;
+      z = nz; range.value = String(Math.round(z * 100)); clamp();
+    };
+    // 처음: 가운데(세로로 긴 사진은 얼굴이 위쪽에 있는 일이 많아 위에서 1/4 쯤)
+    ox = (S - W * base) / 2; oy = H > W ? -(H * base - S) / 4 : (S - H * base) / 2; clamp();
+    range.addEventListener('input', () => zoomAt(Number(range.value) / 100));
+    const pts = new Map();
+    let last = null;
+    const local = (e) => { const r = stage.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+    const pinch = () => { const [a, b] = [...pts.values()]; return { d: Math.hypot(a.x - b.x, a.y - b.y), x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; };
+    stage.addEventListener('pointerdown', (e) => { stage.setPointerCapture(e.pointerId); pts.set(e.pointerId, local(e)); last = pts.size === 2 ? pinch() : null; });
+    stage.addEventListener('pointermove', (e) => {
+      if (!pts.has(e.pointerId)) return;
+      const p = local(e), prev = pts.get(e.pointerId);
+      pts.set(e.pointerId, p);
+      if (pts.size === 1) { ox += p.x - prev.x; oy += p.y - prev.y; clamp(); }
+      else if (pts.size === 2) { const now = pinch(); if (last && last.d > 0) { ox += now.x - last.x; oy += now.y - last.y; zoomAt(z * now.d / last.d, now.x, now.y); } last = now; }
+    });
+    const up = (e) => { pts.delete(e.pointerId); last = pts.size === 2 ? pinch() : null; };
+    stage.addEventListener('pointerup', up); stage.addEventListener('pointercancel', up);
+    stage.addEventListener('wheel', (e) => { e.preventDefault(); const p = local(e); zoomAt(z * (e.deltaY < 0 ? 1.1 : 1 / 1.1), p.x, p.y); }, { passive: false });
+    const ok = h('button', { class: 'btn primary', type: 'button', text: '이 영역으로 쓰기' });
+    ok.addEventListener('click', () => {
+      const sc = base * z, side = S / sc;
+      const c = document.createElement('canvas');
+      c.width = c.height = 512;
+      const x = c.getContext('2d');
+      x.fillStyle = '#fff'; x.fillRect(0, 0, 512, 512);
+      x.imageSmoothingQuality = 'high';
+      x.drawImage(img, -ox / sc, -oy / sc, side, side, 0, 0, 512, 512);
+      ok.disabled = true;
+      c.toBlob((b) => { c.width = c.height = 0; result = b; d.dismiss(); }, 'image/jpeg', 0.88);
+    });
+    const d = sheet(h('div', { class: 'crop' },
+      h('div', { class: 'sheet-head' }, h('h2', { text: '프로필 사진 영역 고르기' }), h('button', { class: 'icon-btn', type: 'button', 'aria-label': '닫기', onclick: () => d.dismiss() }, icon('close'))),
+      h('div', { class: 'sheet-body stack' },
+        h('p', { class: 'muted small', text: '사진을 끌어서 옮기고, 아래 막대(휴대폰은 두 손가락)로 크기를 맞춰 주세요.' }),
+        stage, range,
+        h('div', { class: 'row end' }, h('button', { class: 'btn', type: 'button', text: '그만두기', onclick: () => d.dismiss() }), ok))
+    ), { label: '프로필 사진 영역 고르기', sticky: true, onClose: () => resolve(result) });
+  });
+}
+
 // ---------- 설정(주인) ----------
 function openSettings() {
   const prof = S.feed?.profile || {};
@@ -1067,7 +1132,14 @@ function openSettings() {
     if (!f) return;
     try {
       const { img, url } = await readImage(f);
-      try { avatarBlob = (await shrink(img, 512, 0.88)).blob; } finally { URL.revokeObjectURL(url); }
+      let blob = null;
+      try {
+        // 정사각형(2% 안)이면 그대로, 아니면 1:1 영역을 고르게 한다
+        const W = img.naturalWidth, H = img.naturalHeight;
+        blob = Math.abs(W - H) <= Math.max(W, H) * 0.02 ? (await shrink(img, 512, 0.88)).blob : await cropSquare(img);
+      } finally { URL.revokeObjectURL(url); }
+      if (!blob) return;
+      avatarBlob = blob;
       if (avatarPreview) URL.revokeObjectURL(avatarPreview);
       avatarPreview = URL.createObjectURL(avatarBlob);
       paintAvatar();
