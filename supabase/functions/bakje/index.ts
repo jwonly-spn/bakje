@@ -14,7 +14,7 @@
 //  운영자(POST admin, 머리말 x-junlive-admin = 사용 승인 관리자 키)가 앨범을 만들고 주소·등록 코드·봇 기기를 정한다.
 //  예전 판 사이트·봇(앨범을 안 보냄)은 한이준 앨범(LEGACY)으로 본다.
 // 회원·본인인증·댓글(v7, 2026-11-04): 한 계정을 모든 앨범에서. 로그인 = 아이디·비밀번호 또는 카카오(GET kakao-start → kakao → #bjlogin=<표>).
-//  본인인증은 가입 때 한 번(포트원 V2 · 다날) — 같은 사람 값(DI)의 소금 해시만 남기고 이름·전화번호·생년월일은 버린다(만 14세 이상인지만 본다).
+//  본인인증은 가입 때 한 번(포트원 V2 · 다날/KG이니시스 통합인증) — 같은 사람 값(CI, 없으면 DI)의 소금 해시만 남기고 이름·전화번호·생년월일은 버린다(만 14세 이상인지만 본다).
 //  댓글은 본인인증 + 닉네임 있는 회원만. 앨범 주인은 지우기·차단·댓글 받기 끄기, 운영자는 쫓아내기(그 사람은 새 계정도 인증이 안 된다).
 //  회원 세션은 머리말 x-bj-session(원문은 저장하지 않고 sha256 만). 서버 비밀 값: KAKAO_REST_KEY·KAKAO_CLIENT_SECRET·PORTONE_API_SECRET·PORTONE_STORE_ID·PORTONE_CHANNEL_KEY.
 // 주의: MCP 로 올릴 때 백슬래시-u 글자 표기가 풀려 버리므로 이 파일에는 그런 표기를 쓰지 않는다.
@@ -565,7 +565,9 @@ async function portoneResult(id: string) {
   if (v.storeId && v.storeId !== env('PORTONE_STORE_ID')) throw fail(400, '본인인증 정보가 맞지 않아요.');
   if (v.status !== 'VERIFIED') throw fail(400, '본인인증을 마치지 않았어요. 다시 해 주세요.');
   const c = v.verifiedCustomer || {};
-  if (typeof c.di !== 'string' || c.di.length < 10) throw fail(503, '본인인증 결과를 받지 못했어요. 운영자에게 알려 주세요.');
+  // 같은 사람 값: CI 먼저(인증 회사를 바꿔도 같은 값 — KG이니시스 통합인증은 CI 만 준다), 없으면 DI
+  const who = typeof c.ci === 'string' && c.ci.length >= 10 ? 'ci:' + c.ci : typeof c.di === 'string' && c.di.length >= 10 ? 'di:' + c.di : '';
+  if (!who) throw fail(503, '본인인증 결과를 받지 못했어요. 운영자에게 알려 주세요.');
   // 만 나이(한국 날짜): 생년월일은 여기서만 보고 저장하지 않는다
   const birth = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(c.birthDate || ''));
   if (!birth) throw fail(503, '본인인증 결과를 받지 못했어요. 운영자에게 알려 주세요.');
@@ -573,7 +575,7 @@ async function portoneResult(id: string) {
   let age = Number(today.slice(0, 4)) - Number(birth[1]);
   if (today.slice(5) < `${birth[2]}-${birth[3]}`) age--;
   if (age < MIN_AGE) throw fail(403, '만 14세 이상만 가입할 수 있어요.');
-  return { person: await salted('person', c.di, 48) };
+  return { person: await salted('person', who, 48) };
 }
 async function verifyRow(id: unknown, purpose: string, member: string | null) {
   if (typeof id !== 'string' || !VID.test(id)) throw fail(400, '본인인증 번호가 올바르지 않아요.');
