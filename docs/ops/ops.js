@@ -35,6 +35,8 @@ const when = (ms) => {
   return `${d.getMonth() + 1}월 ${d.getDate()}일 ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
 };
 const period = (o) => (o.months ? (o.months === 12 ? '1년' : o.months + '개월') : `${day(o.until_to)}까지`);
+// 새 추억앨범 신청(앨범이 없는 DJ 가 먼치킨.com/album 에서): 입금을 확인하면 앨범·주소가 바로 만들어진다
+const newAlbumLine = (o) => (o.newAlbum ? `📚 새 추억앨범 · ${o.newAlbum.label}.먼치킨.com · ${o.newAlbum.name}` : '');
 let toastTimer = 0;
 function toast(text, bad = false) {
   const t = document.getElementById('toast');
@@ -157,19 +159,22 @@ function orderCard(o) {
     h('button', { class: 'payer', type: 'button', onclick: () => copy(o.payer, '입금자명') },
       h('span', { class: 'muted small', text: '입금자명' }), h('b', { text: o.payer }), h('span', { class: 'copy', text: '복사' })),
     h('p', { class: 'plan', text: `${PLAN[o.plan] || o.plan} · ${period(o)}${o.album ? ' · 앨범 ' + o.album : ''}` }),
+    o.newAlbum ? h('p', { class: 'plan new-album', text: newAlbumLine(o) }) : null,
     h('div', { class: 'card-btns' },
       h('button', { class: 'btn', type: 'button', text: '거절', onclick: () => reject(o) }),
       h('button', { class: 'btn primary', type: 'button', text: '입금 확인', onclick: () => confirmPaid(o) })));
 }
 
 async function confirmPaid(o) {
-  const yes = await ask({ title: '입금이 들어왔나요?', ok: '들어왔어요 · 기간 늘리기', cancel: '아직',
-    lines: [`토스뱅크에서 입금자명 "${o.payer}", ${won(o.amount)}이 들어왔는지 확인해 주세요.`, `${o.nick || 'DJ'} · ${PLAN[o.plan] || o.plan} ${period(o)}`] });
+  const yes = await ask({ title: '입금이 들어왔나요?', ok: o.newAlbum ? '들어왔어요 · 앨범 만들기' : '들어왔어요 · 기간 늘리기', cancel: '아직',
+    lines: [`토스뱅크에서 입금자명 "${o.payer}", ${won(o.amount)}이 들어왔는지 확인해 주세요.`, `${o.nick || 'DJ'} · ${PLAN[o.plan] || o.plan} ${period(o)}`,
+      ...(o.newAlbum ? [newAlbumLine(o), '입금을 확인하면 앨범과 주소가 바로 만들어져요.'] : [])] });
   if (!yes) return;
   try {
     const j = await bill('ops-confirm', { id: o.id });
     const u = j.until || {};
     const parts = [u.munchkin ? `먼치킨 ${day(u.munchkin)}까지` : '', u.album ? `추억앨범 ${day(u.album)}까지` : ''].filter(Boolean);
+    if (j.order?.newAlbum) parts.unshift(`앨범을 만들었어요 · ${j.order.newAlbum.label}.먼치킨.com`);
     toast(`확인했어요 · ${parts.join(' · ') || '기간을 늘렸어요'}`);
     await load();
   } catch (err) { toast(err.message, true); }
@@ -186,7 +191,8 @@ function doneView() {
   const list = S.data?.recent || [];
   if (!list.length) return h('p', { class: 'empty', text: '아직 처리한 신청이 없어요.' });
   return h('section', { class: 'list' }, list.map((o) => h('article', { class: 'row-card' },
-    h('div', null, h('b', { text: `${won(o.amount)} · ${o.payer}` }), h('p', { class: 'muted small', text: `${o.nick || ''} · ${PLAN[o.plan] || o.plan} ${period(o)}` })),
+    h('div', null, h('b', { text: `${won(o.amount)} · ${o.payer}` }), h('p', { class: 'muted small', text: `${o.nick || ''} · ${PLAN[o.plan] || o.plan} ${period(o)}` }),
+      o.newAlbum ? h('p', { class: 'muted small', text: newAlbumLine(o) }) : null),
     h('div', { class: 'right' }, h('span', { class: 'chip ' + (o.state === 'paid' ? 'green' : 'gray'), text: STATE[o.state] || o.state }), h('p', { class: 'muted small', text: o.done ? when(o.done) : '' })))));
 }
 

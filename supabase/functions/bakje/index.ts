@@ -18,15 +18,20 @@
 //  댓글은 본인인증 + 닉네임 있는 회원만. 앨범 주인은 지우기·차단·댓글 받기 끄기, 운영자는 쫓아내기(그 사람은 새 계정도 인증이 안 된다).
 //  회원 세션은 머리말 x-bj-session(원문은 저장하지 않고 sha256 만). 서버 비밀 값: KAKAO_REST_KEY·KAKAO_CLIENT_SECRET·PORTONE_API_SECRET·PORTONE_STORE_ID·PORTONE_CHANNEL_KEY.
 // 2026-11-05: 일반 게시물(kind post) · 앨범 사이 로그인 이어 주기(서버 쿠키 bj_sso) · DJ 계정(bj_album_owners — 주인 기기 대신 계정으로 앨범 관리) · 앨범 결제 끝나는 날(paid_until).
+// 먼치킨 계정(v9, 2026-11-05 밤): 먼치킨 프로그램(봇·송출)도 같은 회원 계정으로 로그인한다. 가입·신청 중심 주소 = 먼치킨.com/album(xn--s22bu18a0ub.com).
+//  member web-ticket(프로그램 → 브라우저로 로그인된 채 열기) · app-start/app-approve/app-claim(프로그램 카카오 로그인 — 브라우저에서 승인) ·
+//  bot device-link(로그인한 먼치킨 기기를 계정에 잇고, 앨범이 하나면 최초 박제판 저절로 올리기도 잇는다) · album-info 에 paidUntil.
 // 주의: MCP 로 올릴 때 백슬래시-u 글자 표기가 풀려 버리므로 이 파일에는 그런 표기를 쓰지 않는다.
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
 const db = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, { auth: { persistSession: false } });
-const VERSION = 8, BUCKET = 'bakje', PREFIX = 'BAKJE/1', BOT_PREFIX = 'JUN-LIVE-BAKJE/1';
+const VERSION = 9, BUCKET = 'bakje', PREFIX = 'BAKJE/1', BOT_PREFIX = 'JUN-LIVE-BAKJE/1';
 const LEGACY = 'hanijun', ALBUM_RE = /^[a-z][a-z0-9-]{1,30}$/, HOST_RE = /^[a-z0-9.-]{3,253}$/;
+// 가입·신청 중심 주소(먼치킨.com — 앨범이 아니라 bj_hosts 에 없다). 카카오·sso 가 돌아갈 곳, 로그인 표를 받을 곳으로 늘 받는다.
+const CENTER_HOST = 'xn--s22bu18a0ub.com', CENTER = new Set([CENTER_HOST, 'www.' + CENTER_HOST]);
 const READONLY = '이 앨범은 지금 보기만 할 수 있어요. 운영자에게 문의해 주세요.';
 const KINDS = ['post', 'board', 'first', 'letter'];   // post = 일반 게시물(2026-11-05, 사진 비율 자유)
-const BOT_ACTIONS = new Set(['board-begin', 'board-save', 'board-meta', 'album-info']);
+const BOT_ACTIONS = new Set(['board-begin', 'board-save', 'board-meta', 'album-info', 'device-link']);
 const BOARD_REF = /^[a-z0-9][a-z0-9-]{0,47}$/; // 먼치킨 판 번호(+ "-g<몇 번째 글>")
 const BROKEN = '잠시 문제가 생겼어요. 조금 뒤에 다시 해 주세요.';
 const MAX_PHOTOS = 10, MAX_DEVICES = 10;
@@ -434,8 +439,41 @@ async function ownerAct(action: string, p: Record<string, any>, A: string, id: s
 // board-save {board, post, f, w, h, title, filled, total, hash, ends?} → 처음이면 새 글(최초 박제판, 오늘 날짜), 있으면 사진만 바꾼다(글·날짜·고정은 주인이 고친 그대로)
 //  ends(종료 날짜)는 봇이 보낼 때만(0.19.14~) 고친다 — 봇이 정하는 값
 // board-meta {board, title, ends} → 그림은 그대로, 판 이름(extra.title)·종료 날짜만. 글이 없으면 {missing:true}
-// album-info {} (v6, 2026-11-04 — DJ 마다 앨범 시범) → 이 기기에 이어진 앨범 {album, name, state, site} · 없으면 {none:true}(오류 아님).
+// album-info {} (v6, 2026-11-04 — DJ 마다 앨범 시범) → 이 기기에 이어진 앨범 {album, name, state, site, paidUntil} · 없으면 {none:true}(오류 아님).
 //  봇은 이 답으로 화면에 앨범 칸을 보일지 정한다 — 운영자가 이어 주지 않은 먼치킨에는 아무것도 보이지 않는다.
+//  paidUntil(v9) = 앨범 결제 끝나는 날(ms) · 없으면 null(시범 — 검사 안 함)
+// device-link {program:'bot'|'studio'} (v9, 2026-11-05 먼치킨 계정 — 머리말 x-bj-session 도 함께) → 로그인한 먼치킨 프로그램의 기기를 그 계정에 잇는다(bj_member_devices).
+//  봇 프로그램이고, 그 계정이 앨범을 딱 하나 가졌는데 이 기기가 아직 어느 앨범에도 이어지지 않았으면 그 앨범에 잇는다(bj_bots — 최초 박제판 저절로 올리기).
+//  답 {member:{id, nickname}, album: album-info 와 같은 모양 | null}
+// 앨범 정보(봇 화면용) — 대표 주소: www 아닌 것 먼저, 그다음 먼저 넣은 것
+async function albumInfo(id: string, now: number) {
+  const album = await albumRow(id, now).catch(() => null);
+  if (!album) return null;
+  const hosts: any = await q(db.from('bj_hosts').select('host,created').eq('album', album.id));
+  const host = [...hosts].sort((a: any, b: any) => Number(a.host.startsWith('www.')) - Number(b.host.startsWith('www.')) || (a.created || 0) - (b.created || 0))[0]?.host || '';
+  return { album: album.id, name: album.name || '', state: album.state, site: host ? `https://${host}/` : '', paidUntil: album.paid_until ? Number(album.paid_until) : null };
+}
+async function deviceLink(req: Request, body: any, id: string, dev: any, allow: any, now: number) {
+  const me = await needMember(req, now);
+  if (!await hit('bjdl:' + id, 3600, 60)) throw fail(429, '너무 자주 물었어요. 조금 뒤에 다시 물어요.');
+  if (dev?.state !== 'approved') throw fail(403, '사용 승인된 먼치킨이 아니에요.');
+  const p = isObj(body.payload) ? body.payload : {};
+  const program = p.program === undefined ? 'bot' : p.program;
+  if (program !== 'bot' && program !== 'studio') throw fail(400, '프로그램이 올바르지 않아요.');
+  const had: any = await q(db.from('bj_member_devices').select('created').eq('device', id).maybeSingle());
+  await q(db.from('bj_member_devices').upsert({ device: id, member: me.id, program, created: had?.created ?? now, seen: now }));
+  let album: string | null = allow?.album || null;
+  if (program === 'bot' && !allow) {
+    const owns = await ownsOf(me.id);
+    if (owns.length === 1) {
+      const d: any = await q(db.from('junlive_devices').select('nickname,tag').eq('id', id).maybeSingle());
+      const label = [d?.nickname, d?.tag && '@' + d.tag].filter(Boolean).join(' ').slice(0, 40);
+      await q(db.from('bj_bots').upsert({ id, album: owns[0], label, created: now }));
+      album = owns[0];
+    }
+  }
+  return { ok: true, member: { id: me.id, nickname: me.nickname || '' }, album: album ? await albumInfo(album, now) : null };
+}
 async function bot(req: Request, now: number) {
   const body = await readJson(req, 16384);
   const id = await verify(body, now, BOT_PREFIX, BOT_ACTIONS);
@@ -443,14 +481,12 @@ async function bot(req: Request, now: number) {
     q(db.from('junlive_devices').select('state').eq('id', id).maybeSingle()),
     q(db.from('bj_bots').select('id,album').eq('id', id).maybeSingle())
   ]);
+  if (body.action === 'device-link') return await deviceLink(req, body, id, dev, allow, now);
   if (body.action === 'album-info') {
     if (!await hit('bjbi:' + id, 3600, 30)) throw fail(429, '너무 자주 물었어요. 조금 뒤에 다시 물어요.');
     if (dev?.state !== 'approved' || !allow) return { ok: true, none: true };
-    const album = await albumRow(allow.album, now).catch(() => null);
-    if (!album) return { ok: true, none: true };
-    const hosts: any = await q(db.from('bj_hosts').select('host,created').eq('album', album.id));
-    const host = [...hosts].sort((a: any, b: any) => Number(a.host.startsWith('www.')) - Number(b.host.startsWith('www.')) || (a.created || 0) - (b.created || 0))[0]?.host || '';
-    return { ok: true, album: album.id, name: album.name || '', state: album.state, site: host ? `https://${host}/` : '' };
+    const info = await albumInfo(allow.album, now);
+    return info ? { ok: true, ...info } : { ok: true, none: true };
   }
   if (dev?.state !== 'approved' || !allow) throw fail(403, '추억앨범에 올릴 수 있는 먼치킨이 아니에요.');
   const A: string = allow.album;
@@ -498,6 +534,9 @@ async function bot(req: Request, now: number) {
 // ---- 회원(아이디·비밀번호 · 카카오 · 본인인증) ----
 const MID = /^m[a-z2-9]{11}$/, CID = /^c[a-z2-9]{11}$/, LOGIN_RE = /^[a-z0-9_]{4,20}$/, VID = /^bjv-[a-z2-9]{20}$/;
 const PW_ITER = 120000, SESSION_MS = 60 * 86400000, MIN_AGE = 14;
+// 먼치킨 프로그램 카카오 로그인 자리(bj_app_logins): 'app-' + 20자, 10분
+const APP_ID = /^app-[a-z2-9]{20}$/, APP_LOGIN_MS = 10 * 60000;
+const APP_GONE = '로그인 시간이 지났어요. 먼치킨 프로그램에서 다시 해 주세요.';
 const NICK_RE = /^[가-힣A-Za-z0-9_](?:[가-힣A-Za-z0-9_ ]{0,10}[가-힣A-Za-z0-9_])?$/;
 const NICK_RESERVED = ['운영자', '관리자', '먼치킨', '추억앨범', '스푼', 'admin', 'spoon'];
 const env = (k: string) => (Deno.env.get(k) || '').trim();
@@ -632,7 +671,8 @@ async function member(req: Request, now: number) {
       const row = t?.[0];
       if (!row || row.expires < now) throw fail(401, '로그인 시간이 지났어요. 다시 해 주세요.');
       let origin = ''; try { origin = new URL(req.headers.get('origin') || '').host; } catch { /* 없음 */ }
-      if (origin && origin !== row.host) throw fail(403, '로그인을 처음부터 다시 해 주세요.');
+      // 중심 주소(먼치킨.com · www)끼리는 같은 곳으로 본다
+      if (origin && origin !== row.host && !(CENTER.has(origin) && CENTER.has(row.host))) throw fail(403, '로그인을 처음부터 다시 해 주세요.');
       const m: any = await q(db.from('bj_members').select(MEMBER_COLS).eq('id', row.member).maybeSingle());
       if (!m) throw fail(401, '로그인을 처음부터 다시 해 주세요.');
       if (m.state === 'banned') throw fail(403, '이용이 막힌 계정이에요.');
@@ -670,6 +710,34 @@ async function member(req: Request, now: number) {
       const m: any = await q(db.from('bj_members').select(MEMBER_COLS).eq('id', row.member).maybeSingle());
       return { ok: true, session: await newSession(m.id, now), member: memberOut(m) };
     }
+    // ── 먼치킨 프로그램 카카오 로그인(v9) ──
+    // 프로그램이 비밀 값을 만들고 그 sha256(소문자 hex)으로 자리를 연다(app-start, 10분) → 기본 브라우저로 먼치킨.com/album/?app=<자리>
+    //  → 거기서 로그인한 회원이 [로그인]을 누르면 자리에 그 회원을 적는다(app-approve, 세션 필요)
+    //  → 프로그램은 2초마다 비밀 값으로 묻다가(app-claim) 승인됐으면 자리를 지우고 세션을 받아 간다(한 번만).
+    case 'app-start': {
+      if (typeof b.hash !== 'string' || !/^[0-9a-f]{64}$/.test(b.hash)) throw fail(400, '요청 모양이 올바르지 않아요.');
+      if (!await hit('bjas:' + await ip(), 3600, 30)) throw fail(429, '로그인을 너무 자주 시작했어요. 한 시간 뒤에 다시 해 주세요.');
+      await q(db.from('bj_app_logins').delete().lt('expires', now));
+      const id = 'app-' + rid(20), expires = now + APP_LOGIN_MS;
+      await q(db.from('bj_app_logins').insert({ id, secret: b.hash, member: null, created: now, expires }));
+      return { ok: true, id, expires };
+    }
+    case 'app-claim': {
+      if (typeof b.id !== 'string' || !APP_ID.test(b.id) || typeof b.secret !== 'string' || b.secret.length < 16 || b.secret.length > 256) throw fail(400, '요청 모양이 올바르지 않아요.');
+      if (!await hit('bjac:' + await ip(), 3600, 900)) throw fail(429, '너무 자주 물었어요. 조금 뒤에 다시 해 주세요.');
+      const row: any = await q(db.from('bj_app_logins').select('secret,member,expires').eq('id', b.id).maybeSingle());
+      if (!row) throw fail(401, APP_GONE);
+      if (row.secret !== await sha256hex(b.secret)) throw fail(403, '로그인 요청이 맞지 않아요. 먼치킨 프로그램에서 다시 해 주세요.');
+      if (row.expires < now) { await q(db.from('bj_app_logins').delete().eq('id', b.id)); throw fail(401, APP_GONE); }
+      if (!row.member) return { ok: true, waiting: true };
+      // 한 번만: 지운 쪽만 세션을 받는다
+      const took: any = await q(db.from('bj_app_logins').delete().eq('id', b.id).eq('member', row.member).select('member'));
+      if (!took?.length) throw fail(401, APP_GONE);
+      const m: any = await q(db.from('bj_members').select(MEMBER_COLS).eq('id', row.member).maybeSingle());
+      if (!m) throw fail(401, APP_GONE);
+      if (m.state === 'banned') throw fail(403, '이용이 막힌 계정이에요.');
+      return { ok: true, session: await newSession(m.id, now), member: memberOut(m) };
+    }
   }
   // 아래는 로그인한 회원만
   const me = await sessionMember(req, now);
@@ -686,6 +754,24 @@ async function member(req: Request, now: number) {
   }
   if (me.state === 'banned') throw fail(403, '이용이 막힌 계정이에요.');
   switch (b.action) {
+    // 먼치킨 프로그램이 기본 브라우저로 먼치킨.com/album 을 로그인된 채 열 때(#bjlogin=<표>) — 그 주소에서만 · 2분 · 한 번
+    case 'web-ticket': {
+      if (!await hit('bjwt:' + me.id, 3600, 30)) throw fail(429, '너무 자주 열었어요. 조금 뒤에 다시 해 주세요.');
+      return { ok: true, ticket: await loginTicket(me.id, CENTER_HOST, now) };
+    }
+    // 먼치킨 프로그램 카카오 로그인 승인(브라우저 먼치킨.com/album/?app=<자리>에서). 이미 다른 회원이 승인한 자리면 409.
+    //  시간이 지났거나 없는 자리는 410(브라우저 로그인은 그대로 두게 401 을 쓰지 않는다)
+    case 'app-approve': {
+      if (typeof b.id !== 'string' || !APP_ID.test(b.id)) throw fail(400, '로그인 요청이 올바르지 않아요. 먼치킨 프로그램에서 다시 해 주세요.');
+      if (!await hit('bjaa:' + me.id, 3600, 30)) throw fail(429, '너무 자주 했어요. 조금 뒤에 다시 해 주세요.');
+      const row: any = await q(db.from('bj_app_logins').select('member,expires').eq('id', b.id).maybeSingle());
+      if (!row || row.expires < now) throw fail(410, APP_GONE);
+      if (row.member) { if (row.member === me.id) return { ok: true }; throw fail(409, '이미 다른 계정으로 승인한 요청이에요. 먼치킨 프로그램에서 다시 해 주세요.'); }
+      // 승인하자마자 시간이 끝나지 않게 2분은 남긴다(프로그램이 2초마다 받아 간다)
+      const set: any = await q(db.from('bj_app_logins').update({ member: me.id, expires: Math.max(Number(row.expires), now + 2 * 60000) }).eq('id', b.id).is('member', null).select('id'));
+      if (!set?.length) throw fail(409, '이미 다른 계정으로 승인한 요청이에요. 먼치킨 프로그램에서 다시 해 주세요.');
+      return { ok: true };
+    }
     case 'nickname': {
       if (!await hit('bjnk:' + me.id, 3600, 20)) throw fail(429, '닉네임을 너무 자주 바꿨어요. 조금 뒤에 다시 해 주세요.');
       const nick = typeof b.nickname === 'string' ? b.nickname.normalize('NFC').trim().replace(/\s+/g, ' ') : '';
@@ -769,7 +855,8 @@ async function siteOf(h: unknown) {
   let bare = host;
   try { bare = new URL('https://' + host).hostname; } catch { return null; }
   if (bare !== host || !HOST_RE.test(host)) return null;
-  if (!await q(db.from('bj_hosts').select('host').eq('host', host).maybeSingle())) return null;
+  // 앨범 주소(bj_hosts) 또는 가입·신청 중심 주소(먼치킨.com)
+  if (!CENTER.has(host) && !await q(db.from('bj_hosts').select('host').eq('host', host).maybeSingle())) return null;
   return { host, origin: 'https://' + host };
 }
 const pathOf = (r: unknown) => typeof r === 'string' && r.startsWith('/') && !r.startsWith('//') && r.length <= 300 && !/[\s\\]/.test(r) ? r.replace(/#.*$/, '') : '/';
@@ -808,7 +895,8 @@ async function kakaoBack(req: Request, now: number) {
     if (!ur.ok || !uj?.id) { console.error('kakao me', ur.status); return redirect(back + '#bjlogin-error=fail'); }
     const kakao = await salted('kakao', String(uj.id), 40);
     let m: any = await q(db.from('bj_members').select(MEMBER_COLS).eq('kakao', kakao).maybeSingle());
-    if (!m) m = await createMember(now, { kakao });
+    // 먼치킨.com(DJ 가 가입·신청하는 곳)에서 처음 카카오로 가입하면 DJ 계정으로(아이디 가입도 거기서는 role 'dj')
+    if (!m) m = await createMember(now, { kakao, ...(CENTER.has(st.host) ? { role: 'dj' } : {}) });
     if (m.state === 'banned') return redirect(back + '#bjlogin-error=banned');
     // 여기는 서버 주소(맨 위 창)라 서버 쿠키도 같이 심는다 — 다른 앨범 주소에서도 이어서 로그인
     return redirect(back + '#bjlogin=' + await loginTicket(m.id, st.host, now), ssoCookie(await newSession(m.id, now)));
@@ -1114,7 +1202,7 @@ Deno.serve(async (req) => {
   const route = new URL(req.url).pathname.replace(/^.*?\/bakje\/?/, '').replace(/\/+$/, '');
   const now = Date.now();
   try {
-    if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: VERSION, kinds: KINDS, bot: true, donor: true, theme: true, visit: true, ends: true, albums: true, albumInfo: true, members: true, post: true, sso: true, dj: true });
+    if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: VERSION, kinds: KINDS, bot: true, donor: true, theme: true, visit: true, ends: true, albums: true, albumInfo: true, members: true, post: true, sso: true, dj: true, account: true });
     if (req.method === 'GET' && route === 'feed') {
       const ip = await ipHash(req);
       if (!await hit('bjf:' + ip, 60, 20)) throw fail(429, '너무 자주 불러왔어요. 잠깐 뒤에 다시 해 주세요.');

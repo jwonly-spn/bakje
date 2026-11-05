@@ -4,6 +4,9 @@
 //  → "입금했어요"(운영자 앱 푸시 bj_push_subs + 디스코드 웹후크 BILLING_WEBHOOK 이 있으면 그것도)
 //  → 운영자(bj_members.is_admin)가 운영자 앱(사이트 /ops/ 를 아이폰 홈 화면에 추가)에서 확인 → 이용 기간 30일 단위로 연장(bj_entitlements, 추억앨범은 bj_albums.paid_until 도)
 // 회원 세션은 bakje 와 같은 x-bj-session(bj_sessions sha256). 표: supabase/schema.sql "bakje_billing".
+// v4(2026-11-05 밤, 먼치킨 계정): 앨범이 없는 DJ 도 먼치킨.com/album 에서 추억앨범을 신청한다 — 주소 이름(<이름>.먼치킨.com)·앨범 이름을 함께 적고(order newAlbum),
+//  운영자가 입금을 확인하면(ops-confirm) 앨범·주소(bj_hosts + 저장소 h/<주소>.json)가 저절로 생기고 신청한 계정이 바로 주인(bj_album_owners)이 된다.
+//  그 계정에 이어진 먼치킨(bj_member_devices, 봇 프로그램)이 있으면 최초 박제판 저절로 올리기도 잇는다(bj_bots). info 에 가진 앨범 목록(albums), album-name(주소 이름 확인).
 // 주의: MCP 로 올릴 때 백슬래시-u 글자 표기가 풀려 버리므로 이 파일에는 그런 표기를 쓰지 않는다.
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
@@ -45,6 +48,59 @@ const rid = (n: number) => [...crypto.getRandomValues(new Uint8Array(n))].map((x
 const digits4 = () => String(1000 + (crypto.getRandomValues(new Uint16Array(1))[0] % 9000));
 const hit = async (key: string, seconds: number, max: number) => Boolean(await q(db.rpc('fp_hit', { p_key: key, p_seconds: seconds, p_max: max })));
 const line = (v: unknown, max: number) => typeof v === 'string' ? [...v.replace(/[\r\n\t]+/g, ' ')].filter((ch) => ch.charCodeAt(0) >= 32).join('').trim().slice(0, max) : '';
+
+// ── 새 추억앨범 주소 이름(<이름>.먼치킨.com) ──
+// 한글·영어 소문자·숫자 1~15자, - 는 가운데에만. 주소는 퓨니코드 소문자(new URL 이 바꿔 준다).
+const LABEL_RE = /^[가-힣a-z0-9](?:[가-힣a-z0-9-]{0,13}[가-힣a-z0-9])?$/;
+const LABEL_RESERVED = new Set(['www', 'test', 'ops', 'api', 'admin', 'mail', 'help', 'app', 'dev', 'staging', 'album', '먼치킨', '운영자', '관리자', '추억앨범', '키우기', '공식', '스푼', 'spoon']);
+const ALBUM_SUFFIX = '.xn--s22bu18a0ub.com';   // .먼치킨.com
+const HOST_TAKEN_OPS = '주소가 이미 쓰이고 있어요 — 거절하고 다른 주소로 다시 신청하게 해 주세요';
+function labelOf(v: unknown) {
+  const label = typeof v === 'string' ? v.normalize('NFC').trim().toLowerCase() : '';
+  if (!label) return { label, host: '', reason: '주소 이름을 적어 주세요.' };
+  if (!LABEL_RE.test(label)) return { label, host: '', reason: '주소 이름은 한글·영어 소문자·숫자로 1~15자예요. - 는 가운데에만 쓸 수 있어요.' };
+  if (LABEL_RESERVED.has(label)) return { label, host: '', reason: '쓸 수 없는 주소 이름이에요. 다른 이름을 골라 주세요.' };
+  // xn-- 로 시작하는 이름은 한글 주소를 바꾼 글자(퓨니코드)라 그대로 받지 않는다(다른 한글 이름과 같은 주소가 된다)
+  if (label.startsWith('xn--')) return { label, host: '', reason: '이 이름으로는 주소를 만들 수 없어요. 다른 이름을 골라 주세요.' };
+  let host = '';
+  try { host = new URL('https://' + label + '.먼치킨.com').hostname.toLowerCase(); } catch { /* 아래 */ }
+  if (!/^[a-z0-9.-]{3,253}$/.test(host) || !host.endsWith(ALBUM_SUFFIX) || host.slice(0, -ALBUM_SUFFIX.length).includes('.')) return { label, host: '', reason: '이 이름으로는 주소를 만들 수 없어요. 다른 이름을 골라 주세요.' };
+  return { label, host, reason: '' };
+}
+// 주소가 쓰이고 있으면 그 까닭(빈 글 = 쓸 수 있음): 이미 있는 앨범 주소 · 다른 회원이 신청해 확인을 기다리는 주소
+async function hostTaken(host: string, member: string) {
+  if (await q(db.from('bj_hosts').select('host').eq('host', host).maybeSingle())) return '이미 쓰이고 있는 주소예요. 다른 이름을 골라 주세요.';
+  const w: any = await q(db.from('bj_orders').select('member').eq('want_host', host).eq('state', 'pending').neq('member', member).limit(1));
+  if (w.length) return '다른 분이 먼저 신청한 주소예요. 다른 이름을 골라 주세요.';
+  return '';
+}
+// 새 추억앨범 신청 값(order newAlbum {label, name}) — album-name 과 같은 검사 + 앨범 이름은 한 줄 2~40자(비우면 '<닉네임> 추억앨범')
+async function newAlbumOf(v: unknown, me: any) {
+  if (!isObj(v)) throw fail(400, '새 추억앨범의 주소 이름을 정해 주세요.');
+  const n = labelOf(v.label);
+  if (n.reason) throw fail(400, n.reason);
+  const taken = await hostTaken(n.host, me.id);
+  if (taken) throw fail(409, taken);
+  const name = line(v.name, 200) || `${me.nickname || 'DJ'} 추억앨범`;
+  if ([...name].length < 2 || [...name].length > 40) throw fail(400, '앨범 이름은 2~40자로 정해 주세요.');
+  // 새 앨범 신청은 한 번에 하나만(입금 확인 때 앨범이 둘 생기지 않게)
+  const mine: any = await q(db.from('bj_orders').select('id').eq('member', me.id).eq('state', 'pending').not('want_host', 'is', null).limit(1));
+  if (mine.length) throw fail(409, '확인을 기다리는 추억앨범 신청이 있어요. 그 신청을 마치거나 취소한 뒤 다시 해 주세요.');
+  return { host: n.host, label: n.label, name };
+}
+// 대표 주소: www 아닌 것 먼저, 그다음 먼저 넣은 것(bakje album-info 와 같게)
+const mainHost = (hosts: any[]) => [...hosts].sort((a, b) => Number(a.host.startsWith('www.')) - Number(b.host.startsWith('www.')) || (a.created || 0) - (b.created || 0))[0]?.host || '';
+// 가진 앨범: [{id, name, host(퓨니코드), site, paidUntil, state}]
+async function albumsOf(ids: string[]) {
+  if (!ids.length) return [];
+  const [rows, hosts]: any = await Promise.all([
+    q(db.from('bj_albums').select('id,name,state,paid_until').in('id', ids)),
+    q(db.from('bj_hosts').select('host,album,created').in('album', ids))]);
+  return ids.map((id) => rows.find((r: any) => r.id === id)).filter(Boolean).map((a: any) => {
+    const host = mainHost(hosts.filter((h: any) => h.album === a.id));
+    return { id: a.id, name: a.name || '', host, site: host ? `https://${host}/` : '', paidUntil: a.paid_until ? Number(a.paid_until) : null, state: a.state };
+  });
+}
 
 // 로그인한 회원(bakje 와 같은 세션 표)
 async function needMember(req: Request, now: number) {
@@ -104,7 +160,15 @@ async function addonsOf(c: any, member: string, ents: Record<string, number>, no
 const open = (c: any) => Boolean(c.bank && c.number && c.holder);
 const ownsOf = async (member: string) => ((await q(db.from('bj_album_owners').select('album').eq('member', member))) as any[]).map((r) => r.album);
 const entsOf = async (member: string) => Object.fromEntries(((await q(db.from('bj_entitlements').select('product,until').eq('member', member))) as any[]).map((e) => [e.product, Number(e.until)]));
-const orderOut = (o: any) => ({ id: o.id, plan: o.plan, months: o.months, amount: o.amount, payer: o.payer, album: o.album, state: o.state, created: o.created, sent: o.sent ?? null, done: o.done ?? null, nick: o.nick, until_to: o.until_to ?? null });
+// 이용 기간 + 가진 앨범: 추억앨범 기간은 bj_entitlements 와 가진 앨범의 결제 끝나는 날(paid_until) 중 늦은 쪽(운영자가 앨범에 바로 넣은 기간도 보이게)
+async function entsFull(member: string) {
+  const [ents, albums]: any = await Promise.all([entsOf(member), ownsOf(member).then(albumsOf)]);
+  for (const a of albums) if (a.paidUntil && a.paidUntil > (ents.album || 0)) ents.album = a.paidUntil;
+  return { ents, albums };
+}
+// newAlbum: 새 추억앨범 신청이면 {label(주소 이름), name(앨범 이름), host(퓨니코드)} — 확인되면 album 에 새 앨범 번호가 들어간다
+const orderOut = (o: any) => ({ id: o.id, plan: o.plan, months: o.months, amount: o.amount, payer: o.payer, album: o.album, state: o.state, created: o.created, sent: o.sent ?? null, done: o.done ?? null, nick: o.nick, until_to: o.until_to ?? null,
+  newAlbum: o.want_host ? { label: o.want_label || '', name: o.want_name || '', host: o.want_host } : null });
 const periodText = (o: any) => (o.months ? `${o.months === 12 ? '1년' : o.months + '개월'}` : `${new Date(Number(o.until_to) + 9 * 3600000).toISOString().slice(0, 10)}까지`);
 const won = (n: number) => n.toLocaleString('ko-KR') + '원';
 async function notifyOps(text: string, title: string, body: string) {
@@ -181,6 +245,50 @@ async function pushTo(member: string | null, msg: Record<string, unknown>) {
   return sent;
 }
 
+// ── 새 추억앨범 만들기(운영자가 입금을 확인할 때) ──
+// 앨범(bj_albums) → 주소(bj_hosts) → 사이트가 읽는 주소 파일(저장소 h/<주소>.json — bakje writeHost 와 같은 모양) → 주인(신청한 계정, bj_album_owners)
+//  → 그 계정을 DJ 로 → 신청에 새 앨범 번호 → 그 계정의 먼치킨(봇 프로그램 중 사용 승인된 가장 최근 기기)을 최초 박제판 저절로 올리기에 잇는다(bj_bots).
+// 중간에 실패하면 만든 것을 지운다(앨범을 지우면 주소·주인·봇 줄은 함께 지워진다).
+async function makeAlbum(o: any, now: number) {
+  if (!o.member) throw fail(409, '신청한 회원이 탈퇴했어요. 이 신청은 거절해 주세요.');
+  const host = String(o.want_host || '');
+  if (await q(db.from('bj_hosts').select('host').eq('host', host).maybeSingle())) throw fail(409, HOST_TAKEN_OPS);
+  const name = line(o.want_name, 40) || '추억앨범';
+  let id = '';
+  for (let i = 0; i < 5 && !id; i++) {
+    const cand = 'a' + rid(9);   // ALBUM_RE ^[a-z][a-z0-9-]{1,30}$ 에 맞는 번호
+    const { error } = await db.from('bj_albums').insert({ id: cand, name, note: '먼치킨.com 신청 ' + o.id, created: now });
+    if (!error) id = cand;
+    else if (error.code !== '23505') { console.error(error); throw fail(503, BROKEN); }
+  }
+  if (!id) throw fail(503, BROKEN);
+  let wrote = false;
+  try {
+    const h = await db.from('bj_hosts').insert({ host, album: id, created: now });
+    if (h.error) { if (h.error.code === '23505') throw fail(409, HOST_TAKEN_OPS); console.error(h.error); throw fail(503, BROKEN); }
+    const up = await db.storage.from('bakje').upload(`h/${host}.json`, new Blob([JSON.stringify({ album: id, name })], { type: 'application/json' }), { upsert: true, contentType: 'application/json', cacheControl: '60' });
+    if (up.error) { console.error('host', up.error.message); throw fail(503, BROKEN); }
+    wrote = true;
+    await q(db.from('bj_album_owners').upsert({ album: id, member: o.member, created: now }));
+    await q(db.from('bj_members').update({ role: 'dj' }).eq('id', o.member));
+    await q(db.from('bj_orders').update({ album: id }).eq('id', o.id));
+    const devs: any[] = await q(db.from('bj_member_devices').select('device,seen').eq('member', o.member).eq('program', 'bot').order('seen', { ascending: false }).limit(20));
+    if (devs.length) {
+      const ok: any[] = await q(db.from('junlive_devices').select('id,nickname,tag').in('id', devs.map((d) => d.device)).eq('state', 'approved'));
+      const pick = devs.map((d) => ok.find((x) => x.id === d.device)).find(Boolean);
+      if (pick) await q(db.from('bj_bots').upsert({ id: pick.id, album: id, label: [pick.nickname, pick.tag && '@' + pick.tag].filter(Boolean).join(' ').slice(0, 40), created: now }));
+    }
+    return id;
+  } catch (e) {
+    try {
+      if (wrote) { const rm = await db.storage.from('bakje').remove([`h/${host}.json`]); if (rm.error) console.error('주소 파일 지우기', rm.error.message); }
+      const del = await db.from('bj_albums').delete().eq('id', id);
+      if (del.error) console.error('앨범 지우기', del.error);
+    } catch (x) { console.error(x); }
+    throw e;
+  }
+}
+
 async function handle(req: Request, now: number) {
   const raw = await req.text();
   if (raw.length > 4096) throw fail(413, '보낸 내용이 너무 커요.');
@@ -188,12 +296,21 @@ async function handle(req: Request, now: number) {
   if (!isObj(b) || typeof b.action !== 'string') throw fail(400, '요청 모양이 올바르지 않아요.');
   const me = await needMember(req, now);
   switch (b.action) {
-    // 내 이용권 화면: 계좌·가격·지금 이용 기간·내 신청
+    // 내 이용권 화면: 계좌·가격·지금 이용 기간·내 신청 · 가진 앨범(albums, v4)
     case 'info': {
-      const [c, ents, owns, orders]: any = await Promise.all([cfg(), entsOf(me.id), ownsOf(me.id),
+      const [c, full, orders]: any = await Promise.all([cfg(), entsFull(me.id),
         q(db.from('bj_orders').select('*').eq('member', me.id).order('created', { ascending: false }).limit(20))]);
+      const { ents, albums } = full, owns = albums.map((a: any) => a.id);
       const addons = await addonsOf(c, me.id, ents, now);
-      return { ok: true, open: open(c), bank: open(c) ? { bank: c.bank, number: c.number, holder: c.holder } : null, prices: c.prices, year: { munchkin: yearOf(c, 'munchkin'), album: yearOf(c, 'album'), bundle: yearOf(c, 'bundle') }, months: MONTHS, addons, ents, owns, orders: orders.map(orderOut), admin: me.is_admin === true };
+      return { ok: true, open: open(c), bank: open(c) ? { bank: c.bank, number: c.number, holder: c.holder } : null, prices: c.prices, year: { munchkin: yearOf(c, 'munchkin'), album: yearOf(c, 'album'), bundle: yearOf(c, 'bundle') }, months: MONTHS, addons, ents, owns, albums, orders: orders.map(orderOut), admin: me.is_admin === true };
+    }
+    // 새 추억앨범 주소 이름 확인(쓰는 대로 바로) → {label, host, free, reason?}
+    case 'album-name': {
+      if (!await hit('bjan:' + me.id, 3600, 300)) throw fail(429, '너무 자주 확인했어요. 조금 뒤에 다시 해 주세요.');
+      const n = labelOf(b.label);
+      if (n.reason) return { ok: true, label: n.label, host: n.host, free: false, reason: n.reason };
+      const taken = await hostTaken(n.host, me.id);
+      return { ok: true, label: n.label, host: n.host, free: !taken, ...(taken ? { reason: taken } : {}) };
     }
     case 'order': {
       const c = await cfg();
@@ -207,21 +324,25 @@ async function handle(req: Request, now: number) {
       if (!me.verified) throw fail(403, '본인인증을 먼저 해 주세요.');
       let amount = add ? 0 : priceOf(c, plan, months), untilTo: number | null = null;
       if (add) {
-        const quote = (await addonsOf(c, me.id, await entsOf(me.id), now))[plan];
+        const quote = (await addonsOf(c, me.id, (await entsFull(me.id)).ents, now))[plan];
         if (!quote) throw fail(400, `지금은 ${PLANS[plan].name}를 할 수 없어요. 일반 이용권으로 신청해 주세요.`);
         amount = quote.amount; untilTo = quote.until;
       }
-      let album: string | null = null;
+      let album: string | null = null, want: { host: string; label: string; name: string } | null = null;
       if (PLANS[plan].products.includes('album')) {
         const owns = await ownsOf(me.id);
-        album = typeof b.album === 'string' && owns.includes(b.album) ? b.album : owns.length === 1 ? owns[0] : null;
-        if (!album) throw fail(400, '추억앨범 이용권은 앨범을 연결한 DJ 계정만 신청할 수 있어요. 내 정보 › "DJ 계정으로 이 앨범 관리하기"를 먼저 해 주세요.');
+        if (!owns.length) want = await newAlbumOf(b.newAlbum, me);   // 앨범이 아직 없는 DJ — 새 추억앨범 신청(v4)
+        else {
+          album = typeof b.album === 'string' && owns.includes(b.album) ? b.album : owns.length === 1 ? owns[0] : null;
+          if (!album) throw fail(400, '연장할 추억앨범을 골라 주세요.');
+        }
       }
       if (!await hit('bjod:' + me.id, 3600, 10)) throw fail(429, '신청을 너무 자주 했어요. 조금 뒤에 다시 해 주세요.');
       const waiting: any = await q(db.from('bj_orders').select('id').eq('member', me.id).eq('state', 'pending'));
       if (waiting.length >= 3) throw fail(409, '확인을 기다리는 신청이 있어요. 그 신청을 마치거나 취소한 뒤 다시 해 주세요.');
       const payer = ((me.nickname || 'DJ').replace(/\s+/g, '').slice(0, 6)) + digits4();
-      const row = { id: 'o' + rid(11), member: me.id, nick: me.nickname || '', plan, months, amount, payer, album, created: now, until_to: untilTo };
+      const row = { id: 'o' + rid(11), member: me.id, nick: me.nickname || '', plan, months, amount, payer, album, created: now, until_to: untilTo,
+        want_host: want?.host ?? null, want_label: want?.label ?? null, want_name: want?.name ?? null };
       await q(db.from('bj_orders').insert(row));
       return { ok: true, order: orderOut({ ...row, state: 'pending' }), bank: { bank: c.bank, number: c.number, holder: c.holder } };
     }
@@ -230,8 +351,9 @@ async function handle(req: Request, now: number) {
       const r: any = await q(db.from('bj_orders').update({ sent: now }).eq('id', String(b.id || '')).eq('member', me.id).eq('state', 'pending').select('*'));
       const o = r?.[0];
       if (!o) throw fail(404, '신청을 찾을 수 없어요.');
-      await notifyOps(`💸 입금했어요\n${o.nick || '(닉네임 없음)'} · ${PLANS[o.plan].name} ${periodText(o)}\n금액 ${won(o.amount)} · 입금자명 ${o.payer}\n운영자 앱에서 확인해 주세요.`,
-        `💸 ${won(o.amount)} 입금했어요`, `${o.payer} · ${PLANS[o.plan].name} ${periodText(o)}\n토스뱅크에서 들어왔는지 보고 확인해 주세요.`);
+      const fresh = o.want_host ? `\n📚 새 추억앨범 · ${o.want_label}.먼치킨.com` : '';
+      await notifyOps(`💸 입금했어요\n${o.nick || '(닉네임 없음)'} · ${PLANS[o.plan].name} ${periodText(o)}${fresh}\n금액 ${won(o.amount)} · 입금자명 ${o.payer}\n운영자 앱에서 확인해 주세요.`,
+        `💸 ${won(o.amount)} 입금했어요`, `${o.payer} · ${PLANS[o.plan].name} ${periodText(o)}${fresh}\n토스뱅크에서 들어왔는지 보고 확인해 주세요.`);
       return { ok: true, order: orderOut(o) };
     }
     case 'cancel': {
@@ -278,6 +400,15 @@ async function handle(req: Request, now: number) {
       const r: any = await q(db.from('bj_orders').update({ state: 'paid', done: now }).eq('id', String(b.id || '')).eq('state', 'pending').select('*'));
       const o = r?.[0];
       if (!o) throw fail(404, '확인할 신청을 찾을 수 없어요(이미 처리했을 수 있어요).');
+      // 새 추억앨범 신청: 상태를 먼저 paid 로 바꿔 두 번 확인을 막은 뒤 앨범을 만든다 — 만들다 실패하면 다시 기다림으로 되돌린다
+      if (o.want_host && !o.album) {
+        try { o.album = await makeAlbum(o, now); }
+        catch (e) {
+          const { error } = await db.from('bj_orders').update({ state: 'pending', done: null }).eq('id', o.id).eq('state', 'paid');
+          if (error) console.error('되돌리기', error);
+          throw e;
+        }
+      }
       // 일반: 지금(또는 남은 끝)부터 개월 수 × 30일 더함 · 추가(months 0): 맞춘 끝나는 날(until_to)까지
       const add = o.months * MONTH_MS, out: Record<string, number> = {};
       const next = (cur: number) => (o.months ? Math.max(now, cur) + add : Math.max(cur, Number(o.until_to) || now));
@@ -323,7 +454,7 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
   const route = new URL(req.url).pathname.replace(/^.*?\/bakje-billing\/?/, '').replace(/\/+$/, '');
   try {
-    if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: 3, year: true, addon: true, push: true });
+    if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: 4, year: true, addon: true, push: true, newAlbum: true });
     if (req.method === 'POST' && (route === '' || route === 'api')) return json(200, await handle(req, Date.now()));
     return json(404, { ok: false, error: '찾을 수 없어요.' });
   } catch (e) {
