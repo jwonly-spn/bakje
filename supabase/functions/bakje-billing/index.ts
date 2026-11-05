@@ -123,9 +123,15 @@ async function cfg() {
     bank: line(v.bank, 30), number: line(v.number, 40), holder: line(v.holder, 30),
     prices: { munchkin: price(p, 'munchkin'), album: price(p, 'album'), bundle: price(p, 'bundle') } as Record<string, number>,
     // 1년치 한 번에(12개월) 할인 값 — 없으면 월 값 × 12
-    year: { munchkin: price(y, 'munchkin'), album: price(y, 'album'), bundle: price(y, 'bundle') } as Record<string, number>
+    year: { munchkin: price(y, 'munchkin'), album: price(y, 'album'), bundle: price(y, 'bundle') } as Record<string, number>,
+    // 새 추억앨범 신청을 받는가(2026-11-05 사용자 "추억앨범은 아직 다른 DJ 들은 이용할 수 없어 — 베타 테스트 중, 추후 공개 예정") — true 일 때만. 가진 앨범 연장은 늘 된다
+    albumOpen: v.albumOpen === true
   };
 }
+// 먼치킨은 2026년 12월 31일까지 무료(베타) — 그 전에는 먼치킨만·먼치킨 추가 신청을 받지 않는다(돈을 낼 필요가 없으니)
+const MUNCHKIN_PAID_FROM = Date.parse('2027-01-01T00:00:00+09:00');
+const ALBUM_BETA = '추억앨범은 지금 베타 테스트 중이라 아직 신청할 수 없어요. 추후 공개할게요.';
+const MUNCHKIN_FREE = '먼치킨은 2026년 12월 31일까지 무료예요. 지금은 신청하지 않아도 돼요.';
 const yearOf = (c: any, k: string) => c.year[k] || c.prices[k] * 12;
 const priceOf = (c: any, plan: string, months: number) => (months === 12 ? yearOf(c, plan) : c.prices[plan] * months);
 // 추가 값: 더하는 것의 한 달 값 × 남은 날 ÷ 30, 100원 단위 올림. 끝나는 날은 가진 이용권과 같게.
@@ -302,7 +308,9 @@ async function handle(req: Request, now: number) {
         q(db.from('bj_orders').select('*').eq('member', me.id).order('created', { ascending: false }).limit(20))]);
       const { ents, albums } = full, owns = albums.map((a: any) => a.id);
       const addons = await addonsOf(c, me.id, ents, now);
-      return { ok: true, open: open(c), bank: open(c) ? { bank: c.bank, number: c.number, holder: c.holder } : null, prices: c.prices, year: { munchkin: yearOf(c, 'munchkin'), album: yearOf(c, 'album'), bundle: yearOf(c, 'bundle') }, months: MONTHS, addons, ents, owns, albums, orders: orders.map(orderOut), admin: me.is_admin === true };
+      return { ok: true, open: open(c), bank: open(c) ? { bank: c.bank, number: c.number, holder: c.holder } : null, prices: c.prices, year: { munchkin: yearOf(c, 'munchkin'), album: yearOf(c, 'album'), bundle: yearOf(c, 'bundle') }, months: MONTHS, addons, ents, owns, albums, orders: orders.map(orderOut), admin: me.is_admin === true,
+        // albumOpen: 새 추억앨범 신청을 받는지(아니면 베타 — 화면은 안내·미리 보기) · munchkinFrom: 먼치킨 이용권을 받기 시작하는 때(그 전엔 무료)
+        albumOpen: c.albumOpen, munchkinFrom: MUNCHKIN_PAID_FROM };
     }
     // 새 추억앨범 주소 이름 확인(쓰는 대로 바로) → {label, host, free, reason?}
     case 'album-name': {
@@ -319,6 +327,8 @@ async function handle(req: Request, now: number) {
       if (!plan) throw fail(400, '이용권을 골라 주세요.');
       const add = ADDON[plan];
       if (!c.prices[add ? add.add : plan]) throw fail(400, '이 이용권은 아직 준비 중이에요.');
+      // 먼치킨만·먼치킨 추가는 무료 기간(2026-12-31 까지)에는 받지 않는다
+      if ((plan === 'munchkin' || plan === 'add-munchkin') && now < MUNCHKIN_PAID_FROM) throw fail(400, MUNCHKIN_FREE);
       const months = add ? 0 : Number(b.months);
       if (!add && !MONTHS.includes(months)) throw fail(400, '기간을 골라 주세요.');
       if (!me.verified) throw fail(403, '본인인증을 먼저 해 주세요.');
@@ -331,7 +341,10 @@ async function handle(req: Request, now: number) {
       let album: string | null = null, want: { host: string; label: string; name: string } | null = null;
       if (PLANS[plan].products.includes('album')) {
         const owns = await ownsOf(me.id);
-        if (!owns.length) want = await newAlbumOf(b.newAlbum, me);   // 앨범이 아직 없는 DJ — 새 추억앨범 신청(v4)
+        if (!owns.length) {   // 앨범이 아직 없는 DJ — 새 추억앨범 신청(v4). 베타 동안(albumOpen 아님)에는 받지 않는다(운영자가 직접 만든 시범 앨범만)
+          if (!c.albumOpen) throw fail(403, ALBUM_BETA);
+          want = await newAlbumOf(b.newAlbum, me);
+        }
         else {
           album = typeof b.album === 'string' && owns.includes(b.album) ? b.album : owns.length === 1 ? owns[0] : null;
           if (!album) throw fail(400, '연장할 추억앨범을 골라 주세요.');
@@ -442,7 +455,9 @@ async function handle(req: Request, now: number) {
       const price = (o: any, k: string) => { const n = Number(o[k]); return Number.isSafeInteger(n) && n >= 0 && n <= 1000000 ? n : 0; };
       const value = { bank: line(b.bank, 30), number: line(b.number, 40), holder: line(b.holder, 30),
         prices: { munchkin: price(p, 'munchkin'), album: price(p, 'album'), bundle: price(p, 'bundle') },
-        year: { munchkin: price(y, 'munchkin'), album: price(y, 'album'), bundle: price(y, 'bundle') } };
+        year: { munchkin: price(y, 'munchkin'), album: price(y, 'album'), bundle: price(y, 'bundle') },
+        // 새 추억앨범 신청 받기: 보낸 값이 있으면 그것, 없으면 지금 값 그대로(운영자 앱 설정 저장으로 저절로 바뀌지 않게)
+        albumOpen: typeof b.albumOpen === 'boolean' ? b.albumOpen : (await cfg()).albumOpen };
       await q(db.from('bj_settings').upsert({ key: 'billing', value, updated: now }));
       return { ok: true, billing: value };
     }
@@ -454,7 +469,7 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
   const route = new URL(req.url).pathname.replace(/^.*?\/bakje-billing\/?/, '').replace(/\/+$/, '');
   try {
-    if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: 4, year: true, addon: true, push: true, newAlbum: true });
+    if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: 4, year: true, addon: true, push: true, newAlbum: true, albumGate: true });
     if (req.method === 'POST' && (route === '' || route === 'api')) return json(200, await handle(req, Date.now()));
     return json(404, { ok: false, error: '찾을 수 없어요.' });
   } catch (e) {
