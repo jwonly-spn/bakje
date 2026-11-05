@@ -1523,10 +1523,17 @@ function memberChanged() {
   const id = viewer?.dataset.post;
   if (id) { paintComments(id); loadComments(id); }
 }
+// KG이니시스 통합인증은 카카오 인증서로 하면 CI(같은 사람 값)를 주지 않는다(포트원 문서, 2026-11-05 도담 님 사례로 확인).
+//  서버가 "결과를 받지 못했어요. 운영자에게 알려 주세요."(CI 없음)라고 하면 다른 방법을 알려 준다.
+const KAKAO_NO_CI = '카카오 인증서로는 본인인증을 마칠 수 없어요. 토스·PASS·네이버 같은 다른 방법으로 다시 해 주세요.';
 async function memberCall(action, body = {}) {
   const auth = !NO_SESSION.has(action);
   try { return await call('member', { method: 'POST', body: { action, ...body }, session: auth }); }
-  catch (e) { if (auth && e.status === 401) dropSession(); throw e; }
+  catch (e) {
+    if (auth && e.status === 401) dropSession();
+    if ((action === 'verify-done' || action === 'find-done') && e.status === 503 && /운영자에게 알려/.test(e.message || '')) e.message = KAKAO_NO_CI;
+    throw e;
+  }
 }
 async function commentCall(action, body = {}) {
   try { return await call('comment', { method: 'POST', body: { action, ...body }, session: true }); }
