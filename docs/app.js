@@ -947,7 +947,7 @@ function render() {
   const pinned = all.filter((p) => p.pinned);
   const highlights = pinned.length ? h('div', { class: 'hl', 'aria-label': '고정한 글' }, pinned.map(highlight)) : null;
   const tabs = h('nav', { class: 'tabs', role: 'tablist', 'aria-label': '종류' },
-    [['all', '게시물', 'grid'], ['feed', '피드', 'feed'], ['board', '박제판', 'photo'], ['cal', '달력', 'calendar']].map(([k, label, ic]) => h('button', {
+    [['feed', '피드', 'feed'], ['all', '게시물', 'grid'], ['board', '박제판', 'photo'], ['cal', '달력', 'calendar']].map(([k, label, ic]) => h('button', {
       type: 'button', role: 'tab', 'aria-selected': String(S.tab === k), class: S.tab === k ? 'on' : '',
       onclick: () => {
         if (S.tab === k) return;
