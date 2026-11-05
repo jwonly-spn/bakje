@@ -623,10 +623,18 @@ async function portoneResult(id: string) {
   const c = v.verifiedCustomer || {};
   // 같은 사람 값: CI 먼저(인증 회사를 바꿔도 같은 값 — KG이니시스 통합인증은 CI 만 준다), 없으면 DI
   const who = typeof c.ci === 'string' && c.ci.length >= 10 ? 'ci:' + c.ci : typeof c.di === 'string' && c.di.length >= 10 ? 'di:' + c.di : '';
-  if (!who) throw fail(503, '본인인증 결과를 받지 못했어요. 운영자에게 알려 주세요.');
-  // 만 나이(한국 날짜): 생년월일은 여기서만 보고 저장하지 않는다
-  const birth = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(c.birthDate || ''));
-  if (!birth) throw fail(503, '본인인증 결과를 받지 못했어요. 운영자에게 알려 주세요.');
+  // 만 나이(한국 날짜): 생년월일은 여기서만 보고 저장하지 않는다. 인증 수단마다 모양이 달라도 받는다(1990-01-02 · 19900102 · 1990.01.02 · 1990/01/02)
+  const birth = /^(\d{4})[-./]?(\d{2})[-./]?(\d{2})/.exec(String(c.birthDate || c.birthday || ''));
+  if (!who || !birth) {
+    // 2026-11-05 도담 님 가입 실패: 무엇이 빠졌는지만 남긴다(값은 남기지 않는다 — 칸 이름·있고 없음·글자 모양·인증 회사만)
+    const form = (s: unknown) => typeof s !== 'string' ? typeof s : s.replace(/\d/g, '9').replace(/[A-Za-z]/g, 'a').slice(0, 12);
+    console.error('portone-missing', JSON.stringify({ ci: typeof c.ci === 'string' ? c.ci.length : typeof c.ci, di: typeof c.di === 'string' ? c.di.length : typeof c.di,
+      birth: form(c.birthDate ?? c.birthday), keys: Object.keys(c).slice(0, 20), top: Object.keys(v).slice(0, 20), operator: typeof c.operator === 'string' ? c.operator.slice(0, 20) : null,
+      pg: typeof v.pgProvider === 'string' ? v.pgProvider : v.channel?.pgProvider ?? null }));
+    // KG이니시스 통합인증은 카카오 인증서로 하면 CI 를 주지 않는다(포트원 문서) — 같은 사람을 알아볼 값이 없어 받을 수 없다
+    if (!who) throw fail(400, '카카오 인증서로는 본인인증을 마칠 수 없어요. 토스·PASS·네이버 같은 다른 방법으로 다시 해 주세요.');
+    throw fail(503, '본인인증 결과를 받지 못했어요. 운영자에게 알려 주세요.');
+  }
   const today = kstDay(Date.now());
   let age = Number(today.slice(0, 4)) - Number(birth[1]);
   if (today.slice(5) < `${birth[2]}-${birth[3]}`) age--;

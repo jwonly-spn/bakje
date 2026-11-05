@@ -1920,7 +1920,7 @@ const STEPS = {
       body: [
         x.join ? joinSteps(2) : null,
         h('p', { class: 'acct-lead strong', text: VERIFY_TEXT }),
-        h('ul', { class: 'acct-points' }, h('li', { text: '가입할 때 한 번만 하면 돼요.' }), h('li', { text: '한 사람은 계정을 하나만 만들 수 있어요.' })),
+        h('ul', { class: 'acct-points' }, h('li', { text: '가입할 때 한 번만 하면 돼요.' }), h('li', { text: '한 사람은 계정을 하나만 만들 수 있어요.' }), h('li', { text: '카카오 인증서는 쓸 수 없어요. 토스·PASS·네이버 같은 다른 방법으로 해 주세요.' })),
         conflict, st, go,
         x.from === 'me' ? null : h('div', { class: 'acct-links' }, linkBtn('나중에 할게요', () => { if (!S.me?.nickname) showStep('nickname', { join: x.join }); else closeAccount(); }))
       ],
