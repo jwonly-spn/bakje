@@ -216,14 +216,14 @@ async function signed(action, payload) {
 
 // ---------- 서버 ----------
 // session: 회원 로그인 표(x-bj-session)를 함께 보낸다(있을 때만)
-async function call(path, { method = 'GET', body, query = {}, timeout = 25000, session = false } = {}) {
+async function call(path, { method = 'GET', body, query = {}, timeout = 25000, session = false, base = API } = {}) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeout);
   const sess = session && S.session ? { 'x-bj-session': S.session } : {};
   let res;
   try {
     const qs = method === 'GET' ? '?' + new URLSearchParams({ apikey: KEY, ...(ALBUM ? { album: ALBUM } : {}), ...query }) : '';
-    res = await fetch(API + path + qs, {
+    res = await fetch(base + path + qs, {
       method, signal: ctl.signal, cache: 'no-store',
       headers: method === 'GET' ? sess : { apikey: KEY, 'Content-Type': 'application/json', ...sess },
       body: body === undefined ? undefined : JSON.stringify(body)
@@ -1523,17 +1523,14 @@ function memberChanged() {
   const id = viewer?.dataset.post;
   if (id) { paintComments(id); loadComments(id); }
 }
-// KG이니시스 통합인증은 카카오 인증서로 하면 CI(같은 사람 값)를 주지 않는다(포트원 문서, 2026-11-05 도담 님 사례로 확인).
-//  서버가 "결과를 받지 못했어요. 운영자에게 알려 주세요."(CI 없음)라고 하면 다른 방법을 알려 준다.
-const KAKAO_NO_CI = '카카오 인증서로는 본인인증을 마칠 수 없어요. 토스·PASS·네이버 같은 다른 방법으로 다시 해 주세요.';
+// 본인인증 마무리(verify-done·find-done)는 bakje-verify 함수로(2026-11-05 사용자 "카카오도 받기"):
+//  KG이니시스 통합인증은 카카오 인증서면 CI 를 주지 않아, 이름·생년월일·전화번호 값(소금 해시)으로도 같은 사람을 알아본다.
+const VERIFY = SB + '/functions/v1/bakje-verify/';
 async function memberCall(action, body = {}) {
   const auth = !NO_SESSION.has(action);
-  try { return await call('member', { method: 'POST', body: { action, ...body }, session: auth }); }
-  catch (e) {
-    if (auth && e.status === 401) dropSession();
-    if ((action === 'verify-done' || action === 'find-done') && e.status === 503 && /운영자에게 알려/.test(e.message || '')) e.message = KAKAO_NO_CI;
-    throw e;
-  }
+  const base = action === 'verify-done' || action === 'find-done' ? VERIFY : API;
+  try { return await call('member', { method: 'POST', body: { action, ...body }, session: auth, base }); }
+  catch (e) { if (auth && e.status === 401) dropSession(); throw e; }
 }
 async function commentCall(action, body = {}) {
   try { return await call('comment', { method: 'POST', body: { action, ...body }, session: true }); }
@@ -1927,7 +1924,7 @@ const STEPS = {
       body: [
         x.join ? joinSteps(2) : null,
         h('p', { class: 'acct-lead strong', text: VERIFY_TEXT }),
-        h('ul', { class: 'acct-points' }, h('li', { text: '가입할 때 한 번만 하면 돼요.' }), h('li', { text: '한 사람은 계정을 하나만 만들 수 있어요.' }), h('li', { text: '카카오 인증서는 쓸 수 없어요. 토스·PASS·네이버 같은 다른 방법으로 해 주세요.' })),
+        h('ul', { class: 'acct-points' }, h('li', { text: '가입할 때 한 번만 하면 돼요.' }), h('li', { text: '한 사람은 계정을 하나만 만들 수 있어요.' }), ),
         conflict, st, go,
         x.from === 'me' ? null : h('div', { class: 'acct-links' }, linkBtn('나중에 할게요', () => { if (!S.me?.nickname) showStep('nickname', { join: x.join }); else closeAccount(); }))
       ],
