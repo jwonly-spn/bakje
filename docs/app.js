@@ -978,7 +978,7 @@ function render() {
       h('summary', { text: '사업자 정보' }),
       h('p', { text: '제이원스튜디오 · 대표 이지원 · 사업자등록번호 174-93-02335' }),
       h('p', { text: '대구광역시 수성구 동대구로 336 · likegorogoro@naver.com' })));
-  app.replaceChildren(topbar, h('main', { class: 'wrap' }, profile, highlights, tabs, body), footer);
+  app.replaceChildren(topbar, h('main', { class: 'wrap' }, profile, highlights, pickSlot(), tabs, body), footer);
 }
 
 // ---------- 주인 기기 등록 ----------
@@ -2519,6 +2519,172 @@ async function startMembers(pageReady) {
   await handleReturn();
 }
 
+// ---------- 실시간 뽑기판(2026-11-10) ----------
+// 먼치킨 뽑기판이 판이 바뀔 때마다 서버(bakje-pick)에 보내면 서버가 공개 버킷 snap/<앨범>/pick.json 을 새로 쓴다(끝나면 state done, 지우면 파일 없음).
+// LIVE: 프로필 아래·탭 위에 카드 — 화면이 보일 때만 3초마다 다시 받는다. 끝난 판: "지난 뽑기판"(접어 둠, 보고 있던 판이 끝나면 펼친 채로), 1분마다.
+// 파일이 없으면 아무것도 안 보이고 1분마다 새 판이 생겼는지 본다. 새로 열린 칸만 살짝 뒤집힌다(처음 그릴 때·다른 판이면 움직이지 않는다).
+// 칸 수(9~100)에 맞춰 열 수를 정하고, 칸 크기(--cell)는 그려진 너비로 잰다(글자 크기가 칸을 따라간다).
+const PICK = { data: null, raw: '', timer: 0, busy: false, el: null, opened: null, unfold: new Set(), ro: null };
+const PICK_LIVE_MS = 3000, PICK_IDLE_MS = 60000;
+function pickSlot() {
+  if (!PICK.el) PICK.el = h('div', { class: 'pick-slot', hidden: true });
+  return PICK.el;
+}
+// 받은 파일 → 그릴 모양(이상한 값은 버린다 — 서버가 이미 검사하지만 한 번 더)
+function pickOf(j) {
+  if (!j || typeof j !== 'object' || j.v !== 1 || (j.state !== 'live' && j.state !== 'done')) return null;
+  const cells = Number(j.cells);
+  if (!Number.isInteger(cells) || cells < 9 || cells > 100) return null;
+  const str = (v, n) => (typeof v === 'string' ? [...v.trim()].slice(0, n).join('') : '');
+  const int = (v) => (Number.isInteger(v) && v >= 0 ? v : 0);
+  const prizes = (Array.isArray(j.prizes) ? j.prizes : []).slice(0, 30)
+    .map((p) => ({ name: str(p?.name, 20), count: int(p?.count), left: Math.min(int(p?.left), int(p?.count)) }))
+    .filter((p) => p.name && p.count > 0);
+  const opened = new Map();
+  for (const o of Array.isArray(j.opened) ? j.opened : []) {
+    const n = o?.n;
+    if (Number.isInteger(n) && n >= 1 && n <= cells && !opened.has(n)) opened.set(n, { n, prize: str(o.prize, 20) || null, name: str(o.name, 40) });
+  }
+  const t = (v) => (Number.isFinite(v) && v > 0 ? v : 0);
+  return {
+    id: str(j.id, 64), title: str(j.title, 20) || '뽑기판', cells, blank: str(j.blank, 8) || '꽝', state: j.state,
+    startedAt: t(j.startedAt), endedAt: t(j.endedAt), updatedAt: t(j.updatedAt), prizes, opened: [...opened.values()]
+  };
+}
+const pickCols = (n) => Math.max(3, Math.ceil(Math.sqrt(n)));   // 9 → 3 · 30 → 6 · 100 → 10
+function pickDate(t) {
+  if (!t) return '';
+  const sameYear = dayOf(t).slice(0, 4) === dayOf(Date.now()).slice(0, 4);
+  return new Intl.DateTimeFormat('ko-KR', { timeZone: KST, ...(sameYear ? {} : { year: 'numeric' }), month: 'long', day: 'numeric' }).format(new Date(t));
+}
+// 칸 하나: 안 연 칸 = 분홍 바탕 번호 · 연 칸 = 회색 바탕에 상품 이름(굵게) 또는 꽝 글자 + 연 사람(있을 때만, 작게)
+// 칸이 작아 이름이 다 안 들어가면(sizePickGrid 가 잰다) 이름 대신 표(상품 차례 번호 · 꽝은 ✕)를 보이고, 상품 줄에도 같은 표를 붙인다.
+function pickCell(n, o, d, order) {
+  if (!o) return h('li', { class: 'pc', title: `${n}번 칸`, 'aria-label': `${n}번 칸, 아직 안 열렸어요` }, h('span', { class: 'pc-n', text: String(n) }));
+  const win = Boolean(o.prize), label = o.prize || d.blank;
+  const at = win ? d.prizes.findIndex((p) => p.name === o.prize) : -1;
+  const li = h('li', {
+    class: 'pc open ' + (win ? 'win' : 'blank') + (order >= 0 ? ' flip' : ''),
+    title: [`${n}번 칸`, label, o.name].filter(Boolean).join(' · '),
+    'aria-label': `${n}번 칸, ${win ? label + ' 당첨' : label}${o.name ? ', ' + o.name + '님' : ''}`
+  }, h('b', { class: 'pc-p', text: label }), h('b', { class: 'pc-k', 'aria-hidden': 'true', text: win ? (at >= 0 ? String(at + 1) : '★') : '✕' }),
+    o.name ? h('small', { class: 'pc-who', text: o.name }) : null);
+  if (order > 0) li.style.setProperty('--d', Math.min(order, 12) * 70 + 'ms');   // 한꺼번에 여러 칸이 열렸으면 차례로
+  return li;
+}
+function pickParts(d, fresh) {
+  const live = d.state === 'live';
+  const wins = d.prizes.reduce((s, p) => s + p.count, 0), winsLeft = d.prizes.reduce((s, p) => s + p.left, 0);
+  const openedN = d.opened.length, head = wins ? `${num(d.cells)}칸 중 당첨 ${num(wins)}칸` : `${num(d.cells)}칸`;
+  const sum = head + (live ? ` · 남은 칸 ${num(d.cells - openedN)}` : ` · 연 칸 ${num(openedN)}`);
+  const cols = pickCols(d.cells), byN = new Map(d.opened.map((o) => [o.n, o]));
+  const grid = h('ol', { class: 'pick-grid ' + (cols <= 5 ? 'few' : cols <= 7 ? 'mid' : 'dense'), 'aria-label': `${num(d.cells)}칸 뽑기판`, dataset: { cols: String(cols) } });
+  grid.style.setProperty('--cols', String(cols));
+  let order = 0;
+  for (let n = 1; n <= d.cells; n++) grid.append(pickCell(n, byN.get(n), d, fresh.has(n) ? order++ : -1));
+  // 상품 줄: 진행 중이면 "남음 남은/전체"(다 나온 상품은 줄을 긋는다), 끝난 판이면 "나옴 나온/전체"
+  const rows = d.prizes.map((p, i) => h('li', { class: live && !p.left ? 'gone' : null },
+    h('i', { class: 'pp-k', 'aria-hidden': 'true', text: String(i + 1) }), h('b', { text: p.name }),
+    h('span', { text: live ? `남음 ${num(p.left)}/${num(p.count)}` : `나옴 ${num(p.count - p.left)}/${num(p.count)}` })));
+  const info = h('div', { class: 'pick-info' },
+    rows.length || [...d.blank].length > 1 ? h('ul', { class: 'pick-prizes', 'aria-label': live ? '상품(남은 칸 / 전체 칸)' : '상품(나온 칸 / 전체 칸)' }, rows,
+      h('li', { class: 'pp-blank' }, h('i', { class: 'pp-k', 'aria-hidden': 'true', text: '✕' }), h('b', { text: d.blank }))) : null,
+    live && wins && !winsLeft ? h('p', { class: 'pick-note', text: '🏁 당첨 칸이 모두 나왔어요' }) : null);
+  return { sum, grid, info };
+}
+function pickCard(d, fresh) {
+  const { sum, grid, info } = pickParts(d, fresh);
+  const sep = () => h('span', { class: 'pick-sep', 'aria-hidden': 'true', text: '·' });
+  if (d.state === 'live') {
+    return h('section', { class: 'pick live', 'aria-label': '지금 뽑기판' },
+      h('div', { class: 'pick-in' },
+        h('div', { class: 'pick-head' },
+          h('p', { class: 'pick-kicker' }, h('span', { text: '🎁 지금 뽑기판' }), sep(), h('span', { class: 'pick-live', text: 'LIVE' })),
+          h('h2', { class: 'pick-title', text: d.title }),
+          h('p', { class: 'pick-sum', text: sum })),
+        info, grid));
+  }
+  const day = pickDate(d.endedAt || d.updatedAt || d.startedAt);
+  const det = h('details', { class: 'pick done', open: PICK.unfold.has(d.id) },
+    h('summary', { class: 'pick-head' },
+      h('p', { class: 'pick-kicker' }, h('span', { text: '🎁 지난 뽑기판' }), day ? [sep(), h('span', { text: day })] : null),
+      h('h2', { class: 'pick-title', text: d.title }),
+      h('p', { class: 'pick-sum', text: sum }),
+      icon('right', 'pick-chev')),
+    h('div', { class: 'pick-in' }, info, grid));
+  det.addEventListener('toggle', () => { if (det.open) PICK.unfold.add(d.id); else PICK.unfold.delete(d.id); });
+  return det;
+}
+// 칸 크기 재기: 그려진 너비 ÷ 열 수 → --cell(글자 크기가 따라간다), 아주 작으면 닉네임은 숨긴다(칸에 마우스를 올리면 title 로 보인다).
+// 그다음 이름이 칸에 다 안 들어가는 칸은 표로(.key) — 상품 줄의 같은 표가 보이게 카드에 show-key · show-blank-key
+function sizePickGrid(g) {
+  const cols = Number(g.dataset.cols) || 6, gap = parseFloat(getComputedStyle(g).columnGap) || 0;
+  const cell = (g.clientWidth - (cols - 1) * gap) / cols;
+  if (!(cell > 0)) return;
+  g.style.setProperty('--cell', cell.toFixed(1) + 'px');
+  g.classList.toggle('tiny', cell < 46);
+  const open = [...g.querySelectorAll('.pc.open')];
+  for (const c of open) c.classList.remove('key');
+  const cut = open.filter((c) => { const b = c.querySelector('.pc-p'); return b && (b.scrollHeight > b.clientHeight + 1 || b.scrollWidth > b.clientWidth + 1); });
+  for (const c of cut) c.classList.add('key');
+  const card = g.closest('.pick');
+  card?.classList.toggle('show-key', cut.some((c) => c.classList.contains('win')));
+  card?.classList.toggle('show-blank-key', cut.some((c) => c.classList.contains('blank')));
+}
+function paintPick(fresh = new Set()) {
+  const slot = pickSlot(), d = PICK.data;
+  PICK.ro?.disconnect();
+  if (!d) { slot.hidden = true; slot.replaceChildren(); return; }
+  const card = pickCard(d, fresh);
+  slot.replaceChildren(card);
+  slot.hidden = false;
+  const g = card.querySelector('.pick-grid');
+  if (!PICK.ro && typeof ResizeObserver === 'function') PICK.ro = new ResizeObserver((list) => { for (const e of list) sizePickGrid(e.target); });
+  if (PICK.ro) PICK.ro.observe(g); else sizePickGrid(g);
+  document.fonts?.ready?.then(() => { if (g.isConnected) sizePickGrid(g); });   // 글꼴이 늦게 오면 글자 너비가 바뀐다 → 다시 잰다
+}
+function setPick(next) {
+  const prev = PICK.data, fresh = new Set();
+  if (next && prev && prev.id === next.id && PICK.opened) for (const o of next.opened) if (!PICK.opened.has(o.n)) fresh.add(o.n);
+  if (next?.state === 'done' && prev?.state === 'live' && prev.id === next.id) PICK.unfold.add(next.id);   // 보고 있던 판이 끝나면 펼친 채로
+  PICK.data = next;
+  PICK.opened = next ? new Set(next.opened.map((o) => o.n)) : null;
+  paintPick(fresh);
+}
+function schedulePick() {
+  clearTimeout(PICK.timer);
+  PICK.timer = 0;
+  if (document.visibilityState === 'hidden') return;
+  PICK.timer = setTimeout(loadPick, PICK.data?.state === 'live' ? PICK_LIVE_MS : PICK_IDLE_MS);
+}
+async function loadPick() {
+  clearTimeout(PICK.timer);
+  PICK.timer = 0;
+  if (PICK.busy || !ALBUM) return;
+  PICK.busy = true;
+  const ctl = new AbortController(), stop = setTimeout(() => ctl.abort(), 10000);
+  try {
+    // 주소 끝에 시간을 붙여 CDN 이 기억한 예전 파일을 피한다
+    const r = await fetch(PUB + `snap/${ALBUM}/pick.json?t=${Date.now()}`, { cache: 'no-store', signal: ctl.signal });
+    if (r.ok) {
+      const text = await r.text();
+      if (text !== PICK.raw) { const next = pickOf(JSON.parse(text)); PICK.raw = text; setPick(next); }
+    } else if (r.status === 400 || r.status === 404) {   // 파일 없음(저장소는 400 으로 답하기도 한다)
+      if (PICK.raw || PICK.data) { PICK.raw = ''; setPick(null); }
+    }
+    // 그 밖(잠깐 서버 문제)은 지난 판 그대로
+  } catch { /* 인터넷 문제·읽지 못한 파일 — 지난 판 그대로 */ }
+  finally { clearTimeout(stop); PICK.busy = false; schedulePick(); }
+}
+function startPick() {
+  pickSlot();
+  loadPick();
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') loadPick();
+    else { clearTimeout(PICK.timer); PICK.timer = 0; }
+  });
+}
+
 // ---------- 시작 ----------
 // 주인 기기인지(기기 서명으로 묻는다) + DJ 계정인지 → S.owner
 async function checkOwner() {
@@ -2578,6 +2744,7 @@ function noAlbum(message) {
   }
   try { const cached = JSON.parse(ls.get(feedKey()) || 'null'); if (cached?.posts && (cached.album?.id || LEGACY) === ALBUM) S.feed = cached; } catch { /* 없음 */ }
   render();
+  startPick();
   let pageReady;
   startMembers(new Promise((r) => { pageReady = r; }));
   await refresh();

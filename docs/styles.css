@@ -142,6 +142,98 @@ a { color: inherit; }
 .hl-letter { width: 100%; height: 100%; display: grid; place-items: center; color: var(--paper-ink); }
 .hl-label { max-width: 100%; font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* 실시간 뽑기판(먼치킨 뽑기판 → snap/<앨범>/pick.json): 프로필 아래·탭 위 카드.
+   안 연 칸 = 분홍 바탕에 번호 · 연 칸 = 회색 바탕에 상품 이름(굵게) 또는 꽝(회색) + 연 사람 닉네임(작게).
+   칸 크기(--cell)는 app.js 가 그려진 너비로 재서 넣는다 — 글자 크기·모서리가 칸을 따라간다. */
+:root { --pick-cell: #ffe4ec; --pick-cell-line: #ffcadb; --pick-num: #c2185b; --pick-open: #efefef; --pick-blank: #666666; --pick-live: #ff3040; --pick-win: #ffb300; }
+@media (prefers-color-scheme: dark) {
+  :root { --pick-cell: #3d1d2b; --pick-cell-line: #5c2b42; --pick-num: #ff8fb3; --pick-open: #2b2b2b; --pick-blank: #a8a8a8; }
+}
+.pick-slot { margin: 0 0 32px; }
+.pick { border: 1px solid var(--line); border-radius: 16px; background: var(--bg); }
+.pick.live { padding: 20px 22px 22px; box-shadow: 0 6px 24px rgba(255, 48, 64, .07); }
+.pick-in { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.pick-kicker { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 0 0 6px; font-size: 13px; font-weight: 700; }
+.pick-sep { color: var(--ink-2); font-weight: 400; }
+.pick-live { display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px 1px 7px; border-radius: 999px; background: var(--pick-live); color: #fff; font-size: 11px; font-weight: 800; letter-spacing: .06em; line-height: 1.6; }
+.pick-live::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #fff; animation: pick-pulse 1.4s ease-in-out infinite; }
+@keyframes pick-pulse { 50% { opacity: .3; } }
+.pick-title { margin: 0; font-size: 20px; font-weight: 800; line-height: 1.25; letter-spacing: -.01em; }
+.pick-sum { margin: 4px 0 0; color: var(--ink-2); font-size: 14px; font-weight: 600; }
+.pick-prizes { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.pick-prizes li { display: inline-flex; align-items: center; gap: 8px; min-height: 30px; padding: 0 12px; border: 1px solid var(--line-2); border-radius: 999px; background: var(--field); font-size: 13px; }
+.pick-prizes b { font-weight: 700; }
+.pick-prizes span { color: var(--ink-2); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pick-prizes li.gone { opacity: .55; }
+.pick-prizes li.gone b { text-decoration: line-through; }
+.pick-note { margin: 10px 0 0; font-size: 13px; font-weight: 700; }
+.pick-info:empty { display: none; }
+.pick-grid {
+  --gap: 6px; --maxcell: 64px;
+  display: grid; grid-template-columns: repeat(var(--cols, 6), minmax(0, 1fr)); gap: var(--gap);
+  width: 100%; max-width: calc(var(--cols, 6) * var(--maxcell) + (var(--cols, 6) - 1) * var(--gap));
+  margin: 0 auto; padding: 0; list-style: none;
+}
+.pick-grid.few { --maxcell: 92px; }
+.pick-grid.mid { --maxcell: 74px; }
+.pick-grid.dense { --gap: 4px; }
+.pc {
+  position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+  min-width: 0; aspect-ratio: 1 / 1; padding: 2px; overflow: hidden; text-align: center;
+  border-radius: clamp(6px, calc(var(--cell, 48px) * .24), 18px);
+  background: var(--pick-cell); color: var(--pick-num); box-shadow: inset 0 0 0 1px var(--pick-cell-line);
+}
+.pc-n { font-size: clamp(10px, calc(var(--cell, 48px) * .4), 26px); font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+.pc.open { background: var(--pick-open); color: var(--ink); box-shadow: none; }
+.pc-p {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; max-width: 100%;
+  font-size: clamp(9px, calc(var(--cell, 48px) * .26), 16px); font-weight: 800; line-height: 1.15; word-break: keep-all; overflow-wrap: anywhere;
+}
+.pc.blank .pc-p { color: var(--pick-blank); font-weight: 600; }
+.pc-who { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-2); font-size: clamp(9px, calc(var(--cell, 48px) * .17), 12px); font-weight: 500; line-height: 1.2; }
+.pick-grid.tiny .pc-who { display: none; }
+.pick-grid.tiny .pc-p { -webkit-line-clamp: 1; font-size: clamp(8px, calc(var(--cell, 30px) * .32), 12px); }
+/* 이름이 칸에 다 안 들어가면 표: 당첨 = 상품 차례 번호(검은 동그라미) · 꽝 = ✕ — 상품 줄에도 같은 표 */
+.pc-k { display: none; place-items: center; flex: none; min-width: clamp(15px, calc(var(--cell, 48px) * .46), 24px); height: clamp(15px, calc(var(--cell, 48px) * .46), 24px); padding: 0 3px; border-radius: 999px; background: var(--ink); color: var(--bg); font-size: clamp(9px, calc(var(--cell, 48px) * .28), 13px); font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+.pc.blank .pc-k { min-width: 0; padding: 0; background: none; color: var(--pick-blank); font-weight: 600; }
+.pc.key .pc-p { display: none; }
+.pc.key .pc-k { display: grid; }
+.pp-k { display: none; place-items: center; flex: none; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 999px; background: var(--ink); color: var(--bg); font-size: 11px; font-style: normal; font-weight: 800; line-height: 1; }
+.pick.show-key .pick-prizes li:not(.pp-blank) .pp-k { display: inline-grid; }
+.pick-prizes li.pp-blank { display: none; }
+.pick.show-blank-key .pick-prizes li.pp-blank { display: inline-flex; }
+.pp-blank .pp-k { display: inline-grid; min-width: 0; padding: 0; background: none; color: var(--pick-blank); }
+.pp-blank b { color: var(--pick-blank); font-weight: 600; }
+/* 새로 열린 칸: 분홍 칸이 옆으로 뒤집히며 결과가 나온다(당첨이면 노란 테두리가 한 번 빛난다) */
+.pc.flip { animation: pick-flip .7s cubic-bezier(.2, .9, .3, 1.15) both; animation-delay: var(--d, 0ms); }
+.pc.flip.win::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 2px var(--pick-win); opacity: 0; animation: pick-glow 1.6s ease-out both; animation-delay: calc(var(--d, 0ms) + .55s); pointer-events: none; }
+@keyframes pick-flip {
+  0% { transform: perspective(600px) rotateY(0deg); background: var(--pick-cell); color: transparent; box-shadow: inset 0 0 0 1px var(--pick-cell-line); }
+  45% { transform: perspective(600px) rotateY(90deg); background: var(--pick-cell); color: transparent; box-shadow: inset 0 0 0 1px var(--pick-cell-line); }
+  46% { transform: perspective(600px) rotateY(-90deg); background: var(--pick-open); box-shadow: none; }
+  80% { transform: perspective(600px) rotateY(8deg) scale(1.06); }
+  100% { transform: none; }
+}
+@keyframes pick-glow { 0% { opacity: 0; } 15% { opacity: 1; } 100% { opacity: 0; } }
+/* 끝난 판: 접어 두는 카드(머리 줄을 누르면 펼침) */
+.pick.done > summary { position: relative; display: block; padding: 16px 52px 16px 22px; list-style: none; cursor: pointer; }
+.pick.done > summary::-webkit-details-marker { display: none; }
+.pick.done .pick-kicker { color: var(--ink-2); }
+.pick.done .pick-title { font-size: 17px; }
+.pick-chev { position: absolute; top: 50%; right: 18px; width: 20px; height: 20px; margin-top: -10px; color: var(--ink-2); transition: transform .2s; }
+.pick.done[open] .pick-chev { transform: rotate(90deg); }
+.pick.done > .pick-in { padding: 0 22px 22px; }
+@media (min-width: 736px) {
+  .pick-in { grid-template-columns: minmax(200px, 280px) minmax(0, 1fr); grid-template-rows: auto 1fr; grid-template-areas: "head grid" "info grid"; column-gap: 32px; row-gap: 16px; align-items: start; }
+  .pick-in > .pick-head { grid-area: head; }
+  .pick-in > .pick-info { grid-area: info; }
+  .pick-in > .pick-grid { grid-area: grid; justify-self: center; }
+  .pick.done > .pick-in { grid-template-rows: auto; grid-template-areas: "info grid"; }
+  .pick-prizes { flex-direction: column; flex-wrap: nowrap; gap: 0; }
+  .pick-prizes li { min-height: 38px; padding: 0 2px; border: 0; border-bottom: 1px solid var(--line-2); border-radius: 0; background: none; font-size: 14px; }
+  .pick-prizes b { flex: 1 1 auto; min-width: 0; }
+}
+
 /* 탭 */
 .tabs { display: flex; justify-content: center; gap: 48px; border-top: 1px solid var(--line); }
 .tabs button {
@@ -694,6 +786,15 @@ label, .label { font-size: 13px; font-weight: 600; color: var(--ink); margin-top
   .pf-actions { grid-area: actions; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .pf-actions .btn { width: 100%; }
   .hl { gap: 16px; padding: 0 16px 20px; }
+  .pick-slot { margin: 0 12px 18px; }
+  .pick { border-radius: 14px; }
+  .pick.live { padding: 14px 14px 16px; }
+  .pick-in { gap: 12px; }
+  .pick-title { font-size: 18px; }
+  .pick-sum { font-size: 13px; }
+  .pick.done > summary { padding: 13px 44px 13px 14px; }
+  .pick.done > .pick-in { padding: 0 14px 16px; }
+  .pick-chev { right: 14px; }
   .hl-item { width: 64px; gap: 6px; }
   .hl-ring { width: 64px; height: 64px; }
   .tabs { gap: 0; justify-content: space-around; }
