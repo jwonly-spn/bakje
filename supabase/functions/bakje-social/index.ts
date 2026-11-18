@@ -85,11 +85,11 @@ async function postIn(album: string, post: unknown) {
   if (typeof post !== 'string' || !ID.test(post) || !await q(db.from('bj_posts').select('id').eq('id', post).eq('album', album).maybeSingle())) throw fail(404, '글을 찾을 수 없어요.');
   return post;
 }
+// 쓸 수 있나: login·banned·nickname·blocked·off (본인인증은 2026-11-18 뺐다 — 로그인 + 닉네임이면 된다)
 async function canWrite(me: any, album: any) {
   if (album.state !== 'active' || (await getMeta(album.id, 'comments'))?.off === true) return 'off';
   if (!me) return 'login';
   if (me.state === 'banned') return 'banned';
-  if (!me.verified) return 'verify';
   if (!me.nickname) return 'nickname';
   if (await q(db.from('bj_album_blocks').select('member').eq('album', album.id).eq('member', me.id).maybeSingle())) return 'blocked';
   return null;
@@ -139,7 +139,7 @@ async function commentsList(req: Request, now: number) {
     me: { can: why === null, why }
   };
 }
-const WHY: Record<string, string> = { off: '댓글을 받지 않는 앨범이에요.', verify: '본인인증을 하면 댓글을 달 수 있어요.', nickname: '닉네임을 정하면 댓글을 달 수 있어요.', blocked: '이 앨범에서는 댓글을 달 수 없어요.', banned: '이용이 막힌 계정이에요.' };
+const WHY: Record<string, string> = { off: '댓글을 받지 않는 앨범이에요.', nickname: '닉네임을 정하면 댓글을 달 수 있어요.', blocked: '이 앨범에서는 댓글을 달 수 없어요.', banned: '이용이 막힌 계정이에요.' };
 async function commentAdd(req: Request, now: number) {
   const b = await readJson(req, 8192);
   if (!isObj(b) || b.action !== 'add') throw fail(400, '모르는 요청이에요.');

@@ -13,10 +13,13 @@
 //  주인 기기·등록 코드·프로필·방문자 수·먼치킨 봇(bj_bots.album)은 앨범마다. readonly 앨범은 보기만(글쓰기·봇 올리기 막힘).
 //  운영자(POST admin, 머리말 x-junlive-admin = 사용 승인 관리자 키)가 앨범을 만들고 주소·등록 코드·봇 기기를 정한다.
 //  예전 판 사이트·봇(앨범을 안 보냄)은 한이준 앨범(LEGACY)으로 본다.
-// 회원·본인인증·댓글(v7, 2026-11-04): 한 계정을 모든 앨범에서. 로그인 = 아이디·비밀번호 또는 카카오(GET kakao-start → kakao → #bjlogin=<표>).
-//  본인인증은 가입 때 한 번(포트원 V2 · 다날/KG이니시스 통합인증) — 같은 사람 값(CI, 없으면 DI)의 소금 해시만 남기고 이름·전화번호·생년월일은 버린다(만 14세 이상인지만 본다).
-//  댓글은 본인인증 + 닉네임 있는 회원만. 앨범 주인은 지우기·차단·댓글 받기 끄기, 운영자는 쫓아내기(그 사람은 새 계정도 인증이 안 된다).
-//  회원 세션은 머리말 x-bj-session(원문은 저장하지 않고 sha256 만). 서버 비밀 값: KAKAO_REST_KEY·KAKAO_CLIENT_SECRET·PORTONE_API_SECRET·PORTONE_STORE_ID·PORTONE_CHANNEL_KEY.
+// 회원·댓글(v7, 2026-11-04): 한 계정을 모든 앨범에서. 로그인 = 아이디·비밀번호 또는 카카오(GET kakao-start → kakao → #bjlogin=<표>).
+//  댓글은 로그인 + 닉네임 있는 회원만. 앨범 주인은 지우기·차단·댓글 받기 끄기, 운영자는 쫓아내기(이용 막기).
+//  회원 세션은 머리말 x-bj-session(원문은 저장하지 않고 sha256 만). 서버 비밀 값: KAKAO_REST_KEY·KAKAO_CLIENT_SECRET(PORTONE_* 는 이제 안 쓴다).
+// 2026-11-18 본인인증 뺌(사용자 결정 — 포트원 본인인증 실연동을 하지 않는다): 로그인만으로 댓글·신고·앨범 연결·이용권/추억앨범 신청.
+//  만 14세는 가입할 때 화면의 체크(age14: true)로 받는다 — 아이디 가입은 member signup 의 age14, 카카오 첫 가입은 kakao-start 의 a=1.
+//  예전 본인인증 동작(verify-start·verify-done·find-start·find-done)은 남아 있지만 VERIFY_ON = false 라 늘 410(쓰이지 않음).
+//  DB 칸(bj_members.verified·person, bj_verifications, bj_banned_people)은 그대로 둔다(마이그레이션 없음).
 // 2026-11-05: 일반 게시물(kind post) · 앨범 사이 로그인 이어 주기(서버 쿠키 bj_sso) · DJ 계정(bj_album_owners — 주인 기기 대신 계정으로 앨범 관리) · 앨범 결제 끝나는 날(paid_until).
 // 먼치킨 계정(v9, 2026-11-05 밤): 먼치킨 프로그램(봇·송출)도 같은 회원 계정으로 로그인한다. 가입·신청 중심 주소 = 먼치킨.com/album(xn--s22bu18a0ub.com).
 //  member web-ticket(프로그램 → 브라우저로 로그인된 채 열기) · app-start/app-approve/app-claim(프로그램 카카오 로그인 — 브라우저에서 승인) ·
@@ -531,7 +534,7 @@ async function bot(req: Request, now: number) {
   return { ok: true, post: p.post, created: !post, album: A };
 }
 
-// ---- 회원(아이디·비밀번호 · 카카오 · 본인인증) ----
+// ---- 회원(아이디·비밀번호 · 카카오) ----
 const MID = /^m[a-z2-9]{11}$/, CID = /^c[a-z2-9]{11}$/, LOGIN_RE = /^[a-z0-9_]{4,20}$/, VID = /^bjv-[a-z2-9]{20}$/;
 const PW_ITER = 120000, SESSION_MS = 60 * 86400000, MIN_AGE = 14;
 // 먼치킨 프로그램 카카오 로그인 자리(bj_app_logins): 'app-' + 20자, 10분
@@ -608,10 +611,15 @@ async function createMember(now: number, fields: Record<string, unknown>) {
 }
 const maskId = (s: string) => s.length <= 2 ? s[0] + '*' : s.slice(0, 2) + '*'.repeat(Math.min(6, s.length - 2));
 
+// 만 14세 이상이에요(가입 화면의 체크 — 아이디 가입·카카오 첫 가입 둘 다)
+const AGE14 = '만 14세 이상만 가입할 수 있어요. "만 14세 이상이에요"에 체크해 주세요.';
+// 본인인증은 2026-11-18 뺐다. 서버 비밀 값(PORTONE_*)이 남아 있어도 켜지지 않게 코드로 끈다(다시 쓰려면 true 로 + 화면도 함께).
+const VERIFY_ON = false;
+const VERIFY_GONE = '본인인증은 이제 하지 않아요. 로그인만 하면 돼요.';
 // 포트원 V2 본인인증 결과(서버에서 직접 묻는다 — 화면이 보낸 결과는 믿지 않는다)
-const verifyReady = () => Boolean(env('PORTONE_API_SECRET') && env('PORTONE_STORE_ID') && env('PORTONE_CHANNEL_KEY'));
+const verifyReady = () => VERIFY_ON && Boolean(env('PORTONE_API_SECRET') && env('PORTONE_STORE_ID') && env('PORTONE_CHANNEL_KEY'));
 async function portoneResult(id: string) {
-  if (!verifyReady()) throw fail(503, '본인인증 준비 중이에요. 조금 뒤에 다시 해 주세요.');
+  if (!verifyReady()) throw fail(410, VERIFY_GONE);
   let res: Response;
   try { res = await fetch('https://api.portone.io/identity-verifications/' + encodeURIComponent(id), { headers: { Authorization: 'PortOne ' + env('PORTONE_API_SECRET') }, signal: AbortSignal.timeout(15000) }); }
   catch { throw fail(503, '본인인증 결과를 받지 못했어요. 다시 해 주세요.'); }
@@ -657,6 +665,8 @@ async function member(req: Request, now: number) {
     case 'signup': {
       if (!await hit('bjsu:' + await ip(), 3600, 10)) throw fail(429, '가입을 너무 많이 했어요. 한 시간 뒤에 다시 해 주세요.');
       if (b.agree !== true) throw fail(400, '이용약관과 개인정보 수집·이용에 동의해 주세요.');
+      // age14 칸이 아예 없으면 체크 칸이 없는 예전 화면(먼치킨 프로그램 0.20.2 이하의 아이디 가입) — 먼치킨.com/album 으로 안내
+      if (b.age14 !== true) throw fail(400, b.age14 === undefined ? '먼치킨.com/album 에서 가입해 주세요. 가입할 때 만 14세 이상인지 확인해요.' : AGE14);
       const loginId = typeof b.loginId === 'string' ? b.loginId.trim().toLowerCase() : '';
       if (!LOGIN_RE.test(loginId)) throw fail(400, '아이디는 영어 소문자·숫자·_ 로 4~20자예요.');
       const pw = await pwHash(pwOf(b.password));
@@ -687,13 +697,14 @@ async function member(req: Request, now: number) {
       return { ok: true, session: await newSession(m.id, now), member: memberOut(m) };
     }
     case 'find-start': {
+      if (!verifyReady()) throw fail(410, VERIFY_GONE);   // 본인인증을 뺐다(2026-11-18) — 아이디·비밀번호를 잊으면 운영자 문의
       if (!await hit('bjfs:' + await ip(), 3600, 10)) throw fail(429, '너무 자주 했어요. 한 시간 뒤에 다시 해 주세요.');
-      if (!verifyReady()) throw fail(503, '본인인증 준비 중이에요. 조금 뒤에 다시 해 주세요.');
       const id = 'bjv-' + rid(20);
       await q(db.from('bj_verifications').insert({ id, purpose: 'find', member: null, created: now }));
       return { ok: true, id };
     }
     case 'find-done': {
+      if (!verifyReady()) throw fail(410, VERIFY_GONE);
       const row = await verifyRow(b.id, 'find', null);
       const { person } = await portoneResult(row.id);
       await q(db.from('bj_verifications').update({ done: now }).eq('id', row.id));
@@ -805,9 +816,8 @@ async function member(req: Request, now: number) {
       for (const a of new Set(albums.map((x: any) => x.album))) scheduleSnap(a as string);
       return { ok: true };
     }
-    // DJ 계정: 앨범 등록 코드(운영자가 먼치킨 결제를 확인하고 준다)로 이 앨범을 내 계정에 잇는다 — 본인인증한 회원만
+    // DJ 계정: 앨범 등록 코드(운영자가 먼치킨 결제를 확인하고 준다)로 이 앨범을 내 계정에 잇는다 — 로그인한 회원이면 된다(2026-11-18 본인인증 뺌)
     case 'album-claim': {
-      if (!me.verified) throw fail(403, '본인인증을 먼저 해 주세요.');
       const album = await albumRow(b.album === undefined ? LEGACY : b.album, now, true);
       if (await q(db.from('bj_album_owners').select('member').eq('album', album.id).eq('member', me.id).maybeSingle())) return { ok: true, owns: await ownsOf(me.id) };
       if (!await hit('bjc:' + await ip(), 3600, 10)) throw fail(429, '여러 번 틀렸어요. 1시간 뒤에 다시 해 주세요.');
@@ -821,15 +831,17 @@ async function member(req: Request, now: number) {
       await q(db.from('bj_members').update({ role: 'dj' }).eq('id', me.id));
       return { ok: true, owns: await ownsOf(me.id), member: memberOut({ ...me, role: 'dj' }) };
     }
+    // 예전 본인인증(2026-11-18 뺐다 — VERIFY_ON = false 라 늘 410)
     case 'verify-start': {
+      if (!verifyReady()) throw fail(410, VERIFY_GONE);
       if (me.verified) throw fail(409, '이미 본인인증했어요.');
-      if (!verifyReady()) throw fail(503, '본인인증 준비 중이에요. 조금 뒤에 다시 해 주세요.');
       if (!await hit('bjvs:' + me.id, 3600, 10)) throw fail(429, '본인인증을 너무 자주 했어요. 한 시간 뒤에 다시 해 주세요.');
       const id = 'bjv-' + rid(20);
       await q(db.from('bj_verifications').insert({ id, purpose: 'join', member: me.id, created: now }));
       return { ok: true, id };
     }
     case 'verify-done': {
+      if (!verifyReady()) throw fail(410, VERIFY_GONE);
       if (me.verified) return { ok: true, member: memberOut(me) };
       const row = await verifyRow(b.id, 'join', me.id);
       const { person } = await portoneResult(row.id);
@@ -853,7 +865,9 @@ class Json409 { constructor(public body: unknown) {} }
 const json409 = (body: unknown) => { throw new Json409(body); };
 
 // ---- 카카오 로그인 ----
-// GET kakao-start?h=<사이트 호스트>&r=<돌아갈 경로> → 카카오 → GET kakao → 사이트 #bjlogin=<표>(2분·한 번)
+// GET kakao-start?h=<사이트 호스트>&r=<돌아갈 경로>[&a=1] → 카카오 → GET kakao → 사이트 #bjlogin=<표>(2분·한 번)
+//  a=1 = 화면에서 "만 14세 이상이에요"에 체크함(2026-11-18). 처음 카카오로 가입할 때만 본다 — 없으면 계정을 만들지 않고 #bjlogin-error=age14.
+//  표에 칸을 더하지 않으려고 이 값은 state 맨 앞 한 글자(y/n)로 싣는다. state 는 sha256 으로만 저장하니 돌아올 때 바꿔 끼울 수 없다.
 const kakaoReady = () => Boolean(env('KAKAO_REST_KEY'));
 const DEV_HOST = /^(localhost|127\.0\.0\.1)(:\d{2,5})?$/;
 async function siteOf(h: unknown) {
@@ -877,7 +891,7 @@ async function kakaoStart(req: Request, now: number) {
   if (!kakaoReady()) return redirect(back + '#bjlogin-error=setup');
   if (!await hit('bjks:' + await ipHash(req), 600, 30)) return redirect(back + '#bjlogin-error=fail');
   await q(db.from('bj_oauth_states').delete().lt('expires', now));
-  const state = newToken();
+  const state = (u.searchParams.get('a') === '1' ? 'y' : 'n') + newToken();
   await q(db.from('bj_oauth_states').insert({ state: await sha256hex(state), host: site.host, path: pathOf(u.searchParams.get('r')), expires: now + 10 * 60000 }));
   const k = new URL('https://kauth.kakao.com/oauth/authorize');
   k.searchParams.set('response_type', 'code'); k.searchParams.set('client_id', env('KAKAO_REST_KEY'));
@@ -886,7 +900,9 @@ async function kakaoStart(req: Request, now: number) {
 }
 async function kakaoBack(req: Request, now: number) {
   const u = new URL(req.url), state = u.searchParams.get('state') || '';
-  if (!/^[-_A-Za-z0-9]{43}$/.test(state)) return htmlPage('로그인을 처음부터 다시 해 주세요.');
+  // 44자 = y/n + 표(2026-11-18부터), 43자 = 그 전에 시작한 로그인(만 14세 체크 없음으로 본다)
+  if (!/^[yn]?[-_A-Za-z0-9]{43}$/.test(state)) return htmlPage('로그인을 처음부터 다시 해 주세요.');
+  const age14 = state.length === 44 && state[0] === 'y';
   const rows: any = await q(db.from('bj_oauth_states').delete().eq('state', await sha256hex(state)).select('host,path,expires'));
   const st = rows?.[0];
   if (!st || st.expires < now) return htmlPage('로그인 시간이 지났어요. 앨범 화면에서 다시 해 주세요.');
@@ -903,6 +919,8 @@ async function kakaoBack(req: Request, now: number) {
     if (!ur.ok || !uj?.id) { console.error('kakao me', ur.status); return redirect(back + '#bjlogin-error=fail'); }
     const kakao = await salted('kakao', String(uj.id), 40);
     let m: any = await q(db.from('bj_members').select(MEMBER_COLS).eq('kakao', kakao).maybeSingle());
+    // 처음 카카오로 가입: 화면에서 "만 14세 이상이에요"에 체크하고 왔을 때만 계정을 만든다(아니면 체크하고 다시 오게)
+    if (!m && !age14) return redirect(back + '#bjlogin-error=age14');
     // 먼치킨.com(DJ 가 가입·신청하는 곳)에서 처음 카카오로 가입하면 DJ 계정으로(아이디 가입도 거기서는 role 'dj')
     if (!m) m = await createMember(now, { kakao, ...(CENTER.has(st.host) ? { role: 'dj' } : {}) });
     if (m.state === 'banned') return redirect(back + '#bjlogin-error=banned');
@@ -962,12 +980,11 @@ async function ssoCheck(req: Request, now: number) {
 
 // ---- 댓글 ----
 async function commentsOff(album: any) { return album.state !== 'active' || (await getMeta(album.id, 'comments'))?.off === true; }
-// 쓸 수 있나: login·banned·verify·nickname·blocked·off
+// 쓸 수 있나: login·banned·nickname·blocked·off (본인인증은 2026-11-18 뺐다 — 로그인 + 닉네임이면 된다)
 async function canWrite(me: any, album: any) {
   if (await commentsOff(album)) return 'off';
   if (!me) return 'login';
   if (me.state === 'banned') return 'banned';
-  if (!me.verified) return 'verify';
   if (!me.nickname) return 'nickname';
   if (await q(db.from('bj_album_blocks').select('member').eq('album', album.id).eq('member', me.id).maybeSingle())) return 'blocked';
   return null;
@@ -1000,7 +1017,7 @@ async function comment(req: Request, now: number) {
       const album = await albumRow(b.album === undefined ? LEGACY : b.album, now);
       const post = await postIn(album.id, b.post);
       const why = await canWrite(me, album);
-      if (why) throw fail(403, ({ off: '댓글을 받지 않는 앨범이에요.', verify: '본인인증을 하면 댓글을 달 수 있어요.', nickname: '닉네임을 정하면 댓글을 달 수 있어요.', blocked: '이 앨범에서는 댓글을 달 수 없어요.', banned: '이용이 막힌 계정이에요.' } as Record<string, string>)[why] || '댓글을 달 수 없어요.');
+      if (why) throw fail(403, ({ off: '댓글을 받지 않는 앨범이에요.', nickname: '닉네임을 정하면 댓글을 달 수 있어요.', blocked: '이 앨범에서는 댓글을 달 수 없어요.', banned: '이용이 막힌 계정이에요.' } as Record<string, string>)[why] || '댓글을 달 수 없어요.');
       const raw = text(b.text, 300, '댓글');
       const body = raw.split('\n').reduce((acc: string[], line) => { if (acc.length < 5) acc.push(line); else acc[4] += ' ' + line; return acc; }, []).join('\n').replace(/\n{3,}/g, '\n\n').trim();
       if (!body) throw fail(400, '댓글을 써 주세요.');
@@ -1020,7 +1037,6 @@ async function comment(req: Request, now: number) {
     }
     case 'report': {
       if (typeof b.id !== 'string' || !CID.test(b.id)) throw fail(400, '댓글을 다시 골라 주세요.');
-      if (!me.verified) throw fail(403, '본인인증을 하면 신고할 수 있어요.');
       if (!await hit('bjrp:' + me.id, 3600, 30)) throw fail(429, '신고를 너무 많이 했어요. 조금 뒤에 다시 해 주세요.');
       const c: any = await q(db.from('bj_comments').select('id,member').eq('id', b.id).eq('state', 'visible').maybeSingle());
       if (!c) throw fail(404, '댓글을 찾을 수 없어요.');
@@ -1194,7 +1210,7 @@ async function admin(req: Request, now: number) {
         return { ok: true };
       }
       await q(db.from('bj_members').update({ state: 'banned' }).eq('id', m.id));
-      if (m.person) await q(db.from('bj_banned_people').upsert({ person: m.person, at: now, note: text(b.note, 200, '메모') }));
+      // 2026-11-18 본인인증을 빼서 "같은 사람 값"(person)은 더 남기지 않는다(bj_banned_people 은 본인인증 때만 보던 표 — 풀 때 지우기만 한다)
       await q(db.from('bj_sessions').delete().eq('member', m.id));
       // 그 회원 댓글을 모두 숨긴다
       const hidden: any = await q(db.from('bj_comments').update({ state: 'deleted', text: '', deleted_by: 'admin' }).eq('member', m.id).eq('state', 'visible').select('album'));
@@ -1210,7 +1226,7 @@ Deno.serve(async (req) => {
   const route = new URL(req.url).pathname.replace(/^.*?\/bakje\/?/, '').replace(/\/+$/, '');
   const now = Date.now();
   try {
-    if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: VERSION, kinds: KINDS, bot: true, donor: true, theme: true, visit: true, ends: true, albums: true, albumInfo: true, members: true, post: true, sso: true, dj: true, account: true });
+    if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: VERSION, kinds: KINDS, bot: true, donor: true, theme: true, visit: true, ends: true, albums: true, albumInfo: true, members: true, post: true, sso: true, dj: true, account: true, age14: true });
     if (req.method === 'GET' && route === 'feed') {
       const ip = await ipHash(req);
       if (!await hit('bjf:' + ip, 60, 20)) throw fail(429, '너무 자주 불러왔어요. 잠깐 뒤에 다시 해 주세요.');
@@ -1218,7 +1234,8 @@ Deno.serve(async (req) => {
       return json(200, { ok: true, snap: await buildSnap(album.id, now) });
     }
     if (req.method === 'GET' && route === 'host') return json(200, await hostLookup(req, now));
-    if (req.method === 'GET' && route === 'members-config') return json(200, { ok: true, members: { password: true, kakao: kakaoReady(), verify: verifyReady() ? { storeId: env('PORTONE_STORE_ID'), channelKey: env('PORTONE_CHANNEL_KEY') } : null } });
+    // verify 는 늘 null(2026-11-18 본인인증 뺌 — 비밀 값이 남아 있어도). age14: 가입할 때 만 14세 체크를 받는다는 표시
+    if (req.method === 'GET' && route === 'members-config') return json(200, { ok: true, members: { password: true, kakao: kakaoReady(), verify: null, age14: true } });
     if (req.method === 'GET' && route === 'kakao-start') return await kakaoStart(req, now);
     if (req.method === 'GET' && route === 'kakao') return await kakaoBack(req, now);
     if (req.method === 'GET' && route === 'sso-set') return await ssoSet(req, now);

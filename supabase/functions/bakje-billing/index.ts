@@ -331,7 +331,7 @@ async function handle(req: Request, now: number) {
       if ((plan === 'munchkin' || plan === 'add-munchkin') && now < MUNCHKIN_PAID_FROM) throw fail(400, MUNCHKIN_FREE);
       const months = add ? 0 : Number(b.months);
       if (!add && !MONTHS.includes(months)) throw fail(400, '기간을 골라 주세요.');
-      if (!me.verified) throw fail(403, '본인인증을 먼저 해 주세요.');
+      // 본인인증은 2026-11-18 뺐다 — 로그인한 회원이면 신청할 수 있다
       let amount = add ? 0 : priceOf(c, plan, months), untilTo: number | null = null;
       if (add) {
         const quote = (await addonsOf(c, me.id, (await entsFull(me.id)).ents, now))[plan];

@@ -90,7 +90,7 @@ const ls = {
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* 저장 못 해도 됨 */ } },
   del(k) { try { localStorage.removeItem(k); } catch { /* 없음 */ } }
 };
-// 이 탭에서만 기억(휴대폰 본인인증 창에 갔다 돌아올 때 무엇을 하던 중이었는지)
+// 이 탭에서만 기억(가입 종류·앨범 사이 로그인을 이미 해 봤는지 등)
 const ss = {
   get(k) { try { return sessionStorage.getItem(k); } catch { return null; } },
   set(k, v) { try { sessionStorage.setItem(k, v); } catch { /* 저장 못 해도 됨 */ } },
@@ -123,28 +123,14 @@ function vid() {
 }
 function readSet(k) { try { return new Set(JSON.parse(ls.get(k) || '[]')); } catch { return new Set(); } }
 
-// ---------- 카카오 로그인·휴대폰 본인인증에서 돌아온 자리 ----------
-// 주소에 붙어 온 값(#bjlogin=… · ?bjverify=1&identityVerificationId=…)을 맨 먼저 떼어 두고 주소를 원래대로 돌린다
-//  (앨범·탭·글 번호를 읽기 전에 — 본인인증을 시작할 때 있던 주소로 되돌린다).
+// ---------- 카카오 로그인에서 돌아온 자리 ----------
+// 주소에 붙어 온 값(#bjlogin=… · #bjlogin-error=… · #bjsso=…)을 맨 먼저 떼어 두고 주소를 원래대로 돌린다(앨범·탭·글 번호를 읽기 전에).
 const RETURN = (() => {
   try {
     const m = /^#(bjlogin|bjlogin-error|bjsso)=([-_A-Za-z0-9]{1,64})$/.exec(location.hash);
-    if (m) {
-      history.replaceState(history.state, '', location.pathname + location.search);
-      return m[1] === 'bjlogin' ? { kind: 'ticket', ticket: m[2] } : m[1] === 'bjsso' ? { kind: 'sso', code: m[2] } : { kind: 'login-error', code: m[2] };
-    }
-    const q = new URLSearchParams(location.search);
-    if (q.get('bjverify') !== '1') return null;
-    let saved = null;
-    try { saved = JSON.parse(ss.get('bj_verify') || 'null'); } catch { /* 없음 */ }
-    ss.del('bj_verify');
-    const back = typeof saved?.back === 'string' && /^(\?.*)?$/.test(saved.back) && !saved.back.includes('bjverify') ? saved.back : '';
-    history.replaceState(null, '', location.pathname + back);
-    const id = q.get('identityVerificationId') || '';
-    return {
-      kind: 'verify', mode: saved?.mode === 'find' || saved?.mode === 'join' ? saved.mode : '', savedId: typeof saved?.id === 'string' ? saved.id : '',
-      id: /^[-_A-Za-z0-9]{4,80}$/.test(id) ? id : '', code: q.get('code') || '', message: (q.get('message') || '').slice(0, 200)
-    };
+    if (!m) return null;
+    history.replaceState(history.state, '', location.pathname + location.search);
+    return m[1] === 'bjlogin' ? { kind: 'ticket', ticket: m[2] } : m[1] === 'bjsso' ? { kind: 'sso', code: m[2] } : { kind: 'login-error', code: m[2] };
   } catch { return null; }
 })();
 
@@ -1421,33 +1407,30 @@ function openSettings() {
     )), { cls: 'settings-sheet', label: '설정' });
 }
 
-// ---------- 회원(로그인·가입·본인인증) ----------
+// ---------- 회원(로그인·가입) ----------
 // 한 계정을 모든 앨범에서 쓰지만, 로그인은 주소(앨범 사이트)마다 따로다 — 로그인 표는 이 주소의 localStorage(bj_session).
 // 서버가 예전 판이라 members-config 가 없으면 회원·댓글 화면은 모두 숨긴다(S.members = null).
-// 본인인증은 포트원 V2 브라우저 SDK(누를 때만 불러온다). PC 는 결과가 바로 오고, 휴대폰은 ?bjverify=1 로 돌아온다(RETURN).
-const PORTONE_SDK = 'https://cdn.portone.io/v2/browser-sdk.js';
-const NO_SESSION = new Set(['signup', 'login', 'ticket', 'find-start', 'find-done', 'reset']);
+// 2026-11-18 휴대폰 본인인증을 뺐다(사용자 결정): 로그인(아이디·비밀번호 또는 카카오)만으로 댓글·신고·신청. 만 14세는 가입할 때 체크로 받는다.
+const NO_SESSION = new Set(['signup', 'login', 'ticket']);
 const LOGIN_ID_RE = /^[a-z0-9_]{4,20}$/;
-const VERIFY_TEXT = '악플을 막으려고 휴대폰 본인인증을 한 번 해요. 이름·전화번호·생년월일은 저장하지 않아요. 만 14세 이상만 가입할 수 있어요.';
+const AGE14_NEED = '"만 14세 이상이에요"에 체크해 주세요.';
 const KAKAO_ERRORS = {
   cancel: '카카오 로그인을 그만뒀어요.',
   fail: '카카오 로그인을 하지 못했어요. 다시 해 주세요.',
   banned: '이용이 막힌 계정이에요.',
   setup: '카카오 로그인 준비 중이에요.',
-  'sso-none': '다른 추억앨범에서 로그인한 기록이 없어요. 여기서 로그인해 주세요.'
+  'sso-none': '다른 추억앨범에서 로그인한 기록이 없어요. 여기서 로그인해 주세요.',
+  // 처음 카카오로 가입하는데 만 14세 체크 없이 왔을 때(서버 kakao — 계정은 만들지 않았다)
+  age14: '처음 가입하는 카카오 계정이에요. "만 14세 이상이에요"에 체크한 뒤 카카오 단추를 다시 눌러 주세요.'
 };
-// 시험용: 주소에 ?members=1 이 있으면(이 탭에서는 계속) 본인인증이 아직 준비되지 않았어도 회원·댓글 화면을 보인다
-if (param('members') === '1') ss.set('bj_members_test', '1');
-const membersTest = () => ss.get('bj_members_test') === '1';
-// 'ok' · 'old'(예전 서버 — 회원 기능 없음) · 'hidden'(본인인증이 아직 준비 안 됨 — 회원·댓글을 모두 숨김) · 'net'(인터넷 문제)
+// 'ok' · 'old'(예전 서버 — 회원 기능 없음) · 'hidden'(로그인 방법이 하나도 없음 — 회원·댓글을 모두 숨김) · 'net'(인터넷 문제)
 async function loadMembersConfig() {
   try {
     const m = (await call('members-config')).members;
     if (!m || typeof m !== 'object') return 'old';
-    const v = m.verify;
-    const verify = v && typeof v.storeId === 'string' && v.storeId && typeof v.channelKey === 'string' && v.channelKey ? { storeId: v.storeId, channelKey: v.channelKey } : null;
-    if (!verify && !membersTest()) return 'hidden';
-    S.members = { password: m.password !== false, kakao: m.kakao === true, verify };
+    const password = m.password !== false, kakao = m.kakao === true;
+    if (!password && !kakao) return 'hidden';
+    S.members = { password, kakao };
     return 'ok';
   } catch (e) { return e.status === 0 ? 'net' : 'old'; }
 }
@@ -1512,7 +1495,7 @@ async function ssoRemember() {
 function ssoContinue() {
   location.href = API + 'sso?' + new URLSearchParams({ h: location.host, r: location.pathname + location.search });
 }
-// 로그인·로그아웃·닉네임·본인인증이 바뀌면: 맨 위 줄 + 열린 글의 댓글(내 댓글·쓰기 칸)
+// 로그인·로그아웃·닉네임이 바뀌면: 맨 위 줄 + 열린 글의 댓글(내 댓글·쓰기 칸)
 function memberChanged() {
   syncOwner();
   paintMember();
@@ -1523,13 +1506,9 @@ function memberChanged() {
   const id = viewer?.dataset.post;
   if (id) { paintComments(id); loadComments(id); }
 }
-// 본인인증 마무리(verify-done·find-done)는 bakje-verify 함수로(2026-11-05 사용자 "카카오도 받기"):
-//  KG이니시스 통합인증은 카카오 인증서면 CI 를 주지 않아, 이름·생년월일·전화번호 값(소금 해시)으로도 같은 사람을 알아본다.
-const VERIFY = SB + '/functions/v1/bakje-verify/';
 async function memberCall(action, body = {}) {
   const auth = !NO_SESSION.has(action);
-  const base = action === 'verify-done' || action === 'find-done' ? VERIFY : API;
-  try { return await call('member', { method: 'POST', body: { action, ...body }, session: auth, base }); }
+  try { return await call('member', { method: 'POST', body: { action, ...body }, session: auth }); }
   catch (e) { if (auth && e.status === 401) dropSession(); throw e; }
 }
 async function commentCall(action, body = {}) {
@@ -1546,7 +1525,7 @@ async function loadMe() {
 function memberButton() {
   if (!S.members) return null;
   if (!S.me) return h('button', { class: 'btn small primary login-btn', type: 'button', text: '로그인', onclick: () => openAccount('login') });
-  const todo = !S.me.verified || !S.me.nickname;
+  const todo = !S.me.nickname;
   return h('button', { class: 'me-btn', type: 'button', title: '내 정보', 'aria-label': `내 정보${S.me.nickname ? ' · ' + S.me.nickname : ''}${todo ? ' · 할 일이 남았어요' : ''}`, onclick: () => openAccount('me') },
     icon('user'), h('span', { class: 'me-name', text: S.me.nickname || '내 정보' }), todo ? h('i', { class: 'me-dot', 'aria-hidden': 'true' }) : null);
 }
@@ -1620,7 +1599,7 @@ async function paintPlan(box, pick = { plan: 'munchkin', months: 1 }) {
         h('p', { class: 'plan-amount', text: wonText(q.amount) }),
         needAlbum ? h('p', { class: 'field-hint', text: '추억앨범은 앨범을 연결한 DJ 계정만 신청할 수 있어요. 내 정보 › "DJ 계정으로 이 앨범 관리하기"를 먼저 해 주세요.' }) : null,
         st,
-        h('button', { class: 'btn primary block', type: 'button', text: '신청하기', disabled: needAlbum || !S.me.verified, onclick: (e) => busy(e.currentTarget, st, async () => {
+        h('button', { class: 'btn primary block', type: 'button', text: '신청하기', disabled: needAlbum, onclick: (e) => busy(e.currentTarget, st, async () => {
           await billCall('order', { plan: key, album }); toast('신청했어요. 계좌로 이체해 주세요'); again();
         }) })));
     }
@@ -1641,10 +1620,9 @@ async function paintPlan(box, pick = { plan: 'munchkin', months: 1 }) {
       h('p', { class: 'plan-amount', text: wonText(amount) }),
       pick.months === 12 && full > amount ? h('p', { class: 'small ok', text: `한 달씩보다 ${wonText(full - amount)} 아껴요 (한 달 ${wonText(Math.round(amount / 12))}꼴)` }) : null,
       !album ? h('p', { class: 'field-hint', text: '추억앨범 이용권은 앨범을 연결한 DJ 계정만 신청할 수 있어요.' }) : null,
-      !S.me.verified ? h('p', { class: 'field-hint', text: '본인인증을 먼저 해 주세요.' }) : null,
       h('p', { class: 'small muted', text: '쓰고 있는 기간이 남아 있으면 그 끝에 이어서 늘어나요. 한 달 = 30일.' }),
       st,
-      h('button', { class: 'btn primary block', type: 'button', text: '신청하기', disabled: !usable(pick.plan) || !S.me.verified, onclick: (e) => busy(e.currentTarget, st, async () => {
+      h('button', { class: 'btn primary block', type: 'button', text: '신청하기', disabled: !usable(pick.plan), onclick: (e) => busy(e.currentTarget, st, async () => {
         await billCall('order', { plan: pick.plan, months: pick.months, album }); toast('신청했어요. 계좌로 이체해 주세요'); again();
       }) })));
   }
@@ -1657,7 +1635,7 @@ async function paintPlan(box, pick = { plan: 'munchkin', months: 1 }) {
   box.replaceChildren(...parts);
 }
 
-// ---------- 회원 창(로그인·가입·본인인증·닉네임·찾기·내 정보) — 한 창 안에서 단계만 바꾼다 ----------
+// ---------- 회원 창(로그인·가입·닉네임·찾기·내 정보) — 한 창 안에서 단계만 바꾼다 ----------
 let acct = null;   // {d, box, step}
 function openAccount(step, data = {}) {
   if (!S.members) return null;
@@ -1703,9 +1681,9 @@ function checkNewPassword(pw, pw2) {
   if (pw.value !== pw2.value) { pw2.focus(); return '비밀번호 두 칸이 서로 달라요.'; }
   return '';
 }
-// 가입 단계 표시(1 가입 → 2 본인인증 → 3 닉네임)
+// 가입 단계 표시(1 가입 → 2 닉네임)
 function joinSteps(at) {
-  return h('ol', { class: 'join-steps', 'aria-label': `가입 ${at}단계 (모두 3단계)` }, ['가입', '본인인증', '닉네임'].map((t, i) =>
+  return h('ol', { class: 'join-steps', 'aria-label': `가입 ${at}단계 (모두 2단계)` }, ['가입', '닉네임'].map((t, i) =>
     h('li', { class: i + 1 === at ? 'on' : i + 1 < at ? 'done' : '' }, h('b', null, i + 1 < at ? icon('check') : String(i + 1)), h('span', { text: t }))));
 }
 // 카카오 로그인 단추(카카오 디자인 안내: 노란 #FEE500 · 검은 말풍선 · 글자 85% 검정 · 모서리 12px)
@@ -1717,17 +1695,24 @@ function kakaoSymbol() {
   el.innerHTML = '<path fill="#000" d="M9 1.6C4.58 1.6 1 4.4 1 7.86c0 2.21 1.47 4.16 3.69 5.27l-.94 3.45c-.08.3.26.55.52.38l4.12-2.72c.2.02.4.02.61.02 4.42 0 8-2.8 8-6.4S13.42 1.6 9 1.6z"/>';
   return el;
 }
-function kakaoButton() {
-  return h('button', { class: 'kakao-btn', type: 'button', onclick: () => kakaoLogin() }, kakaoSymbol(), h('span', { text: '카카오 로그인' }));
+function kakaoButton(onclick = () => kakaoLogin()) {
+  return h('button', { class: 'kakao-btn', type: 'button', onclick }, kakaoSymbol(), h('span', { text: '카카오 로그인' }));
 }
-// 카카오에서 돌아오면 같은 주소 #bjlogin=<표> (RETURN → handleReturn)
-function kakaoLogin() {
-  location.href = API + 'kakao-start?' + new URLSearchParams({ apikey: KEY, h: location.host, r: location.pathname + location.search });
+// 카카오에서 돌아오면 같은 주소 #bjlogin=<표> (RETURN → handleReturn).
+//  age14: 가입 화면에서 "만 14세 이상이에요"에 체크함(a=1) — 서버는 처음 카카오로 가입할 때만 본다(없으면 #bjlogin-error=age14)
+function kakaoLogin(age14 = false) {
+  location.href = API + 'kakao-start?' + new URLSearchParams({ apikey: KEY, h: location.host, r: location.pathname + location.search, ...(age14 ? { a: '1' } : {}) });
+}
+// 가입할 때 "만 14세 이상이에요" 체크 칸(아이디 가입·카카오 첫 가입 둘 다 — 서버도 다시 본다)
+function ageBox(id) {
+  const box = h('input', { type: 'checkbox', id });
+  const wrap = h('div', { class: 'agree' }, h('div', { class: 'agree-row' },
+    h('label', { class: 'check', for: id }, box, h('span', null, h('em', { text: '(필수)' }), ' 만 14세 이상이에요'))));
+  return { box, wrap };
 }
 function afterLogin(message) {
   toast(message);
-  if (S.me && !S.me.verified) openAccount('verify', { join: true });
-  else if (S.me && !S.me.nickname) openAccount('nickname', { join: true });
+  if (S.me && !S.me.nickname) openAccount('nickname', { join: true });
   else { closeAccount(); afterJoin(); }
 }
 // 가입·로그인을 다 마친 뒤: DJ 로 가입했으면 앨범 연결로, 아니면 서버에 로그인 맡겨 두기
@@ -1735,51 +1720,6 @@ function afterJoin() {
   if (ss.get('bj_join_role') === 'dj' && !acctOwner()) { openAccount('claim', { join: true }); return; }
   ss.del('bj_join_role');
   ssoRemember();
-}
-
-// 포트원 본인인증 SDK — 처음 쓸 때만 불러온다(본인인증 단계를 열면 미리 받아 둔다)
-let portoneLoading = null;
-function loadPortOne() {
-  if (window.PortOne?.requestIdentityVerification) return Promise.resolve(window.PortOne);
-  if (portoneLoading) return portoneLoading;
-  portoneLoading = new Promise((resolve, reject) => {
-    const s = h('script', {
-      src: PORTONE_SDK, async: true,
-      onload: () => (window.PortOne?.requestIdentityVerification ? resolve(window.PortOne) : reject(Error('본인인증 창을 열지 못했어요. 다시 해 주세요.'))),
-      onerror: () => { portoneLoading = null; s.remove(); reject(Error('본인인증 창을 불러오지 못했어요. 인터넷 연결을 확인해 주세요.')); }
-    });
-    document.head.append(s);
-  });
-  return portoneLoading;
-}
-// mode: 'join'(내 계정 본인인증) · 'find'(아이디·비밀번호 찾기). PC 는 끝난 본인인증 번호를 돌려주고,
-//  휴대폰은 본인인증 창으로 넘어갔다가 ?bjverify=1 로 돌아온다(이 함수는 끝나지 않는다).
-async function portoneVerify(mode) {
-  const cfg = S.members?.verify;
-  if (!cfg) throw Error('본인인증 준비 중이에요. 조금 뒤에 다시 해 주세요.');
-  const sdk = loadPortOne();
-  sdk.catch(() => {});
-  const { id } = await memberCall(mode === 'find' ? 'find-start' : 'verify-start');
-  const PortOne = await sdk;
-  ss.set('bj_verify', JSON.stringify({ mode, id, back: location.search, at: Date.now() }));
-  let res;
-  try {
-    res = await PortOne.requestIdentityVerification({
-      storeId: cfg.storeId, identityVerificationId: id, channelKey: cfg.channelKey,
-      redirectUrl: location.origin + location.pathname + '?bjverify=1',
-      // 다날: 만 14세 미만은 인증 창에서부터 막고(서버도 다시 확인한다), 인증 창에 서비스 이름을 보인다.
-      // KG이니시스 통합인증(포트원 시험 채널은 이것만 있음): 고객 정보를 미리 채우지 않음(flgFixedUser 는 꼭 넣어야 함).
-      // 채널의 결제대행사 것만 쓰이고 나머지는 무시된다.
-      bypass: { danal: { AGELIMIT: 14, CPTITLE: '먼치킨 추억앨범' }, inicisUnified: { flgFixedUser: 'N' } }
-    });
-  } catch (e) {
-    ss.del('bj_verify');
-    throw Error(e?.message || '본인인증 창을 열지 못했어요. 다시 해 주세요.');
-  }
-  ss.del('bj_verify');
-  if (!res) throw Error('본인인증 결과를 받지 못했어요. 다시 해 주세요.');
-  if (res.code != null) throw Error(res.message || '본인인증을 마치지 못했어요. 다시 해 주세요.');
-  return id;
 }
 
 const STEPS = {
@@ -1811,8 +1751,17 @@ const STEPS = {
     };
   },
 
-  signup() {
+  signup(x) {
     if (S.me) return STEPS.me();
+    // 만 14세 체크는 맨 위 한 칸 — 카카오 가입과 아이디 가입 둘 다 이것을 본다
+    const age = ageBox('s-age14');
+    const kst = statusEl();
+    if (x.kakaoAge) say(kst, KAKAO_ERRORS.age14, true);
+    age.box.addEventListener('change', () => { if (age.box.checked) say(kst, ''); });
+    const kakaoJoin = () => {
+      if (!age.box.checked) { say(kst, AGE14_NEED, true); age.box.focus(); return; }
+      kakaoLogin(true);
+    };
     const id = h('input', { class: 'input', id: 's-id', name: 'username', autocomplete: 'username', autocapitalize: 'none', spellcheck: 'false', maxlength: '20' });
     id.addEventListener('input', (e) => { if (e.isComposing) return; const v = id.value.toLowerCase().replace(/[^a-z0-9_]/g, ''); if (v !== id.value) id.value = v; });
     const pw = pwInput('s-pw', 'new-password'), pw2 = pwInput('s-pw2', 'new-password');
@@ -1846,13 +1795,14 @@ const STEPS = {
       if (!LOGIN_ID_RE.test(loginId)) { say(st, '아이디는 영어 소문자·숫자·_ 로 4~20자예요.', true); id.focus(); return; }
       const bad = checkNewPassword(pw, pw2);
       if (bad) { say(st, bad, true); return; }
+      if (!age.box.checked) { say(st, AGE14_NEED, true); age.box.focus(); return; }
       if (!terms.checked || !privacy.checked) { say(st, '이용약관과 개인정보 수집·이용에 동의해 주세요.', true); return; }
       busy(go, st, async () => {
-        const r = await memberCall('signup', { loginId, password: pw.value, agree: true, role });
+        const r = await memberCall('signup', { loginId, password: pw.value, agree: true, age14: true, role });
         if (role === 'dj') ss.set('bj_join_role', 'dj'); else ss.del('bj_join_role');
         setSession(r.session, r.member);
         toast('가입했어요');
-        showStep('verify', { join: true });
+        showStep('nickname', { join: true });
       });
     } },
       roleSeg, roleHint,
@@ -1863,75 +1813,15 @@ const STEPS = {
         h('label', { class: 'check agree-all', for: 'agree-all' }, all, h('span', { text: '모두 동의해요' })),
         agreeRow(terms, 'agree-terms', '이용약관에 동의해요', 'terms.html'),
         agreeRow(privacy, 'agree-privacy', '개인정보 수집·이용에 동의해요', 'privacy.html')),
-      h('p', { class: 'field-hint', text: '만 14세 이상만 가입할 수 있어요.' }),
       st, go);
     return {
-      title: '회원가입', back: 'login', focus: id,
+      title: '회원가입', back: 'login', focus: x.kakaoAge ? age.box : id,
       body: [
         joinSteps(1),
-        S.members.kakao ? [kakaoButton(), h('p', { class: 'or' }, h('span', { text: '또는 아이디로 가입' }))] : null,
+        age.wrap,
+        S.members.kakao ? [kakaoButton(kakaoJoin), kst, h('p', { class: 'or' }, h('span', { text: '또는 아이디로 가입' }))] : kst,
         form
       ]
-    };
-  },
-
-  verify(x) {
-    if (!S.me) return STEPS.login({});
-    if (S.me.verified) return {
-      title: '본인인증', back: x.from === 'me' ? 'me' : null,
-      body: [h('p', { class: 'acct-lead' }, '이미 본인인증했어요.'), h('button', { class: 'btn primary block', type: 'button', text: '확인', onclick: () => (x.from === 'me' ? showStep('me') : closeAccount()) })]
-    };
-    const cfg = S.members.verify;
-    const st = statusEl();
-    const go = h('button', { class: 'btn primary block', type: 'button', text: '휴대폰 본인인증하기', disabled: !cfg });
-    const conflict = h('div', { class: 'notice', hidden: true });
-    const next = () => {
-      if (x.from === 'me') { showStep('me'); return; }
-      if (!S.me?.nickname) showStep('nickname', { join: x.join });
-      else { closeAccount(); toast('이제 댓글을 달 수 있어요'); }
-    };
-    const finish = async (id) => {
-      say(st, '본인인증 결과를 확인하는 중…');
-      try {
-        const r = await memberCall('verify-done', { id });
-        saveMe(r.member);
-        memberChanged();
-        toast('본인인증을 마쳤어요');
-        next();
-      } catch (e) {
-        // 같은 사람이 이미 다른 계정으로 인증했다 → 그 계정을 알려 준다(아이디는 일부만)
-        if (e.status === 409 && e.data?.hint) {
-          const hint = e.data.hint;
-          say(st, '');
-          go.hidden = true;
-          conflict.hidden = false;
-          conflict.replaceChildren(...[
-            h('strong', { text: e.data.error || '이미 본인인증한 계정이 있어요. 그 계정으로 로그인해 주세요.' }),
-            hint.loginId ? h('p', null, '그 계정의 아이디: ', h('b', { text: hint.loginId })) : null,
-            hint.kakao ? h('p', { text: '그 계정은 카카오로 가입했어요.' }) : null,
-            h('button', { class: 'btn small primary', type: 'button', text: '로그아웃하고 그 계정으로 로그인', onclick: async () => { await logoutAll(); showStep('login', {}); } })
-          ].filter(Boolean));
-          return;
-        }
-        throw e;
-      }
-    };
-    go.addEventListener('click', () => busy(go, st, async () => { await finish(await portoneVerify('join')); }));
-    if (!cfg) say(st, '본인인증 준비 중이에요. 조금 뒤에 다시 해 주세요.');
-    else if (x.error) say(st, x.error, true);
-    return {
-      title: '본인인증', back: x.from === 'me' ? 'me' : null,
-      body: [
-        x.join ? joinSteps(2) : null,
-        h('p', { class: 'acct-lead strong', text: VERIFY_TEXT }),
-        h('ul', { class: 'acct-points' }, h('li', { text: '가입할 때 한 번만 하면 돼요.' }), h('li', { text: '한 사람은 계정을 하나만 만들 수 있어요.' }), ),
-        conflict, st, go,
-        x.from === 'me' ? null : h('div', { class: 'acct-links' }, linkBtn('나중에 할게요', () => { if (!S.me?.nickname) showStep('nickname', { join: x.join }); else closeAccount(); }))
-      ],
-      after: () => {
-        if (cfg) loadPortOne().catch(() => {});
-        if (x.pendingId) busy(go, st, () => finish(x.pendingId));
-      }
     };
   },
 
@@ -1954,83 +1844,36 @@ const STEPS = {
           toast(had ? '닉네임을 바꿨어요' : '닉네임을 정했어요');
         }
         if (x.from === 'me') showStep('me');
-        else { closeAccount(); if (S.me?.verified) toast('이제 댓글을 달 수 있어요'); afterJoin(); }
+        else { closeAccount(); toast('이제 댓글을 달 수 있어요'); afterJoin(); }
       });
     } }, field('m-nick', '닉네임', nk, '한글·영문·숫자·_ 로 2~12자예요. 가운데 빈칸도 쓸 수 있어요.'), st, go);
     return {
       title: had ? '닉네임 바꾸기' : '닉네임 정하기', back: x.from === 'me' ? 'me' : null, focus: nk,
       body: [
-        x.join ? joinSteps(3) : null,
+        x.join ? joinSteps(2) : null,
         h('p', { class: 'acct-lead', text: '댓글에는 닉네임만 보여요.' }),
-        form,
-        !S.me.verified && x.from !== 'me' ? h('p', { class: 'field-hint center' }, '본인인증을 마치면 댓글을 달 수 있어요. ', linkBtn('본인인증하기', () => showStep('verify', { join: x.join }))) : null
+        form
       ]
     };
   },
 
-  find(x) {
-    const cfg = S.members.verify;
-    const st = statusEl();
-    const go = h('button', { class: 'btn primary block', type: 'button', text: '휴대폰 본인인증하기', disabled: !cfg });
-    const done = async (id) => {
-      say(st, '본인인증 결과를 확인하는 중…');
-      const r = await memberCall('find-done', { id });
-      showStep('found', { account: r.account || {}, reset: typeof r.reset === 'string' ? r.reset : null });
-    };
-    go.addEventListener('click', () => busy(go, st, async () => { await done(await portoneVerify('find')); }));
-    if (!cfg) say(st, '본인인증 준비 중이에요. 조금 뒤에 다시 해 주세요.');
-    else if (x.error) say(st, x.error, true);
+  // 아이디·비밀번호 찾기: 본인인증을 뺐으니(2026-11-18) 운영자에게 알려 주세요(카카오로 가입했다면 카카오 로그인)
+  find() {
     return {
       title: '아이디·비밀번호 찾기', back: S.me ? null : 'login',
       body: [
-        h('p', { class: 'acct-lead', text: '가입할 때 한 휴대폰 본인인증을 다시 하면 아이디를 알려 드리고, 비밀번호를 새로 정할 수 있어요.' }),
-        st, go,
+        h('p', { class: 'acct-lead' }, '아이디나 비밀번호를 잊었다면 운영자(', h('a', { href: 'mailto:likegorogoro@naver.com', text: 'likegorogoro@naver.com' }), ')에게 알려 주세요. 닉네임과 생각나는 아이디를 함께 적어 주세요.'),
+        S.members.kakao ? [h('p', { class: 'field-hint', text: '카카오로 가입했다면 카카오 로그인을 눌러 주세요.' }), kakaoButton()] : null,
         h('div', { class: 'acct-links' }, linkBtn('회원가입', () => showStep('signup')))
-      ],
-      after: () => {
-        if (cfg) loadPortOne().catch(() => {});
-        if (x.pendingId) busy(go, st, () => done(x.pendingId));
-      }
+      ]
     };
-  },
-
-  found(x) {
-    const a = x.account || {};
-    const parts = [];
-    if (a.loginId) {
-      parts.push(h('div', { class: 'found-id' }, h('span', { text: '내 아이디' }), h('strong', { text: a.loginId })));
-      if (x.reset && !S.me) {
-        const pw = pwInput('r-pw', 'new-password'), pw2 = pwInput('r-pw2', 'new-password');
-        const st = statusEl();
-        const go = h('button', { class: 'btn primary block', type: 'submit', text: '새 비밀번호로 로그인' });
-        parts.push(h('form', { class: 'stack', onsubmit: (e) => {
-          e.preventDefault();
-          const bad = checkNewPassword(pw, pw2);
-          if (bad) { say(st, bad, true); return; }
-          busy(go, st, async () => {
-            const r = await memberCall('reset', { reset: x.reset, password: pw.value });
-            setSession(r.session, r.member);
-            afterLogin('비밀번호를 바꾸고 로그인했어요');
-          });
-        } },
-          h('p', { class: 'acct-lead', text: '비밀번호를 새로 정하면 바로 로그인돼요. 10분 안에 해 주세요.' }),
-          // 비밀번호 관리 프로그램이 아이디를 함께 기억하게
-          h('input', { type: 'text', class: 'hidden', autocomplete: 'username', value: a.loginId, tabindex: '-1', 'aria-hidden': 'true' }),
-          field('r-pw', '새 비밀번호', pw, '8자 이상'), field('r-pw2', '새 비밀번호 확인', pw2), st, go));
-        parts.push(h('div', { class: 'acct-links' }, linkBtn('지금 비밀번호로 로그인할게요', () => showStep('login', { loginId: a.loginId }))));
-      } else parts.push(h('button', { class: 'btn primary block', type: 'button', text: '로그인하러 가기', onclick: () => showStep('login', { loginId: a.loginId }) }));
-    }
-    if (a.kakao) parts.push(h('p', { class: 'acct-lead', text: '카카오로 가입한 계정이에요. 카카오 로그인을 눌러 주세요.' }), S.members.kakao ? kakaoButton() : null);
-    if (!a.loginId && !a.kakao) parts.push(h('p', { class: 'acct-lead', text: '계정을 찾지 못했어요.' }));
-    return { title: '계정 찾기', back: 'login', body: parts };
   },
 
   me() {
     if (!S.me) return STEPS.login({});
     const m = S.me;
     const row = (k, ...v) => h('div', { class: 'kv-row' }, h('dt', { text: k }), h('dd', null, ...v));
-    const todo = !m.verified ? h('button', { class: 'btn primary block', type: 'button', text: '본인인증하기', onclick: () => showStep('verify', { from: 'me' }) })
-      : !m.nickname ? h('button', { class: 'btn primary block', type: 'button', text: '닉네임 정하기', onclick: () => showStep('nickname', { from: 'me' }) }) : null;
+    const todo = !m.nickname ? h('button', { class: 'btn primary block', type: 'button', text: '닉네임 정하기', onclick: () => showStep('nickname', { from: 'me' }) }) : null;
     const item = (label, fn, cls = '') => h('button', { type: 'button', class: cls, onclick: fn }, label);
     return {
       title: '내 정보',
@@ -2039,9 +1882,8 @@ const STEPS = {
         h('dl', { class: 'kv' },
           row('닉네임', m.nickname ? h('b', { text: m.nickname }) : h('span', { class: 'muted', text: '아직 안 정했어요' })),
           row('로그인', m.loginId ? `아이디 ${m.loginId}` : m.kakao ? '카카오' : '—'),
-          row('계정', acctOwner() ? h('b', { text: 'DJ · 이 앨범 관리 중' }) : m.role === 'dj' ? 'DJ' : '청취자'),
-          row('본인인증', m.verified ? h('span', { class: 'ok' }, icon('check'), '했어요') : h('span', { class: 'bad', text: '아직 안 했어요' }))),
-        !m.verified ? h('p', { class: 'field-hint', text: '본인인증과 닉네임이 있어야 댓글을 달 수 있어요.' }) : null,
+          row('계정', acctOwner() ? h('b', { text: 'DJ · 이 앨범 관리 중' }) : m.role === 'dj' ? 'DJ' : '청취자')),
+        !m.nickname ? h('p', { class: 'field-hint', text: '닉네임을 정하면 댓글을 달 수 있어요.' }) : null,
         todo,
         h('div', { class: 'menu acct-menu' },
           m.nickname ? item('닉네임 바꾸기', () => showStep('nickname', { from: 'me' })) : null,
@@ -2073,7 +1915,6 @@ const STEPS = {
     const done = () => { ss.del('bj_join_role'); closeAccount(); ssoRemember(); };
     const form = h('form', { class: 'stack', onsubmit: (e) => {
       e.preventDefault();
-      if (!S.me.verified) { showStep('verify', { from: 'me' }); return; }
       if (code.value.replace(/[^A-Za-z0-9]/g, '').length !== 8) { say(st, '등록 코드 8자리를 넣어 주세요.', true); code.focus(); return; }
       busy(go, st, async () => {
         const r = await memberCall('album-claim', { album: ALBUM, code: code.value });
@@ -2088,7 +1929,7 @@ const STEPS = {
       title: 'DJ 앨범 연결', back: x.from === 'me' ? 'me' : undefined, focus: code,
       body: [
         h('p', { class: 'acct-lead', text: `${siteName()}을(를) 이 계정으로 관리해요. 연결하면 어느 기기에서든 로그인만 하면 글을 올리고 고칠 수 있어요.` }),
-        h('p', { class: 'field-hint', text: '앨범 등록 코드는 먼치킨 이용권을 결제하면 운영자가 드려요. 본인인증을 한 계정만 연결할 수 있어요.' }),
+        h('p', { class: 'field-hint', text: '앨범 등록 코드는 먼치킨 이용권을 결제하면 운영자가 드려요.' }),
         form,
         x.join ? h('div', { class: 'acct-links' }, linkBtn('나중에 할게요', done)) : null
       ]
@@ -2261,7 +2102,7 @@ function composerState(st) {
   if (st.me?.can) return 'can';
   return st.me?.why || (st.off ? 'off' : 'login');
 }
-// 맨 아래 쓰기 칸 — 쓸 수 없으면 왜 그런지와 할 일(로그인·본인인증·닉네임)
+// 맨 아래 쓰기 칸 — 쓸 수 없으면 왜 그런지와 할 일(로그인·닉네임)
 function composerContent(id, st) {
   const state = composerState(st);
   if (state === 'loading' || state === 'error') return [];
@@ -2269,7 +2110,6 @@ function composerContent(id, st) {
   const cta = (label, fn, ic) => h('button', { class: 'cm-cta', type: 'button', onclick: fn }, icon(ic), h('span', { text: label }));
   const note = (text, btn) => h('p', { class: 'cm-why' }, h('span', { text }), btn || null);
   if (state === 'login') return [cta('로그인하고 댓글 달기', () => openAccount('login'), 'user')];
-  if (state === 'verify') return [cta('본인인증하고 댓글 달기', () => openAccount('verify', {}), 'check')];
   if (state === 'nickname') return [note('닉네임을 정하면 댓글을 달 수 있어요', h('button', { class: 'btn small primary', type: 'button', text: '닉네임 정하기', onclick: () => openAccount('nickname', {}) }))];
   if (state === 'blocked') return [note('이 앨범에서는 댓글을 달 수 없어요')];
   if (state === 'off') return [note('댓글을 받지 않는 앨범이에요')];
@@ -2334,14 +2174,13 @@ async function postComment(id, ta, sync, grow) {
     sync();
   }
 }
-// 하트 줄의 말풍선: 쓸 수 있으면 쓰기 칸으로, 아니면 할 일(로그인·본인인증·닉네임) 창으로
+// 하트 줄의 말풍선: 쓸 수 있으면 쓰기 칸으로, 아니면 할 일(로그인·닉네임) 창으로
 function focusComposer(id) {
   const comp = viewer?.querySelector(`[data-compose="${id}"]`);
   const ta = comp?.querySelector('textarea');
   if (ta) { comp.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); ta.focus({ preventScroll: true }); return; }
   const why = composerState(CM.get(id));
   if (why === 'login' || (why === 'loading' && !S.me)) openAccount('login');
-  else if (why === 'verify') openAccount('verify', {});
   else if (why === 'nickname') openAccount('nickname', {});
   else comp?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
@@ -2407,7 +2246,7 @@ function ownerCommentSettings(closeSettings) {
   const paintOn = (v) => {
     on.checked = v;
     on.disabled = false;
-    onNote.textContent = v ? '본인인증한 회원이 글마다 댓글을 달 수 있어요.' : '새 댓글을 받지 않아요. 이미 달린 댓글은 그대로 보여요.';
+    onNote.textContent = v ? '로그인한 회원이 글마다 댓글을 달 수 있어요.' : '새 댓글을 받지 않아요. 이미 달린 댓글은 그대로 보여요.';
   };
   on.addEventListener('change', async () => {
     const want = on.checked;
@@ -2472,13 +2311,15 @@ function ownerCommentSettings(closeSettings) {
   ];
 }
 
-// 카카오·휴대폰 본인인증에서 돌아왔을 때 마무리(RETURN — 맨 위에서 주소를 이미 정리했다)
+// 카카오에서 돌아왔을 때 마무리(RETURN — 맨 위에서 주소를 이미 정리했다)
 async function handleReturn() {
   const R = RETURN;
   if (!R) return;
   if (R.kind === 'sso') { if (R.code === 'ok') ls.set('bj_sso_at', String(Date.now())); return; }
   if (R.kind === 'login-error') {
     if (R.code === 'sso-none') { toast(KAKAO_ERRORS['sso-none']); openAccount('login'); return; }
+    // 처음 카카오로 가입하는데 만 14세 체크가 없었다 → 가입 화면(맨 위 체크 칸)에서 다시
+    if (R.code === 'age14') { if (!S.me) openAccount('signup', { kakaoAge: true }); return; }
     toast(KAKAO_ERRORS[R.code] || KAKAO_ERRORS.fail, R.code !== 'cancel'); return;
   }
   if (R.kind === 'ticket') {
@@ -2489,14 +2330,7 @@ async function handleReturn() {
       await loadMe();
       afterLogin('로그인했어요');
     } catch (e) { toast(e.message, true); }
-    return;
   }
-  const mode = R.mode || (S.session ? 'join' : 'find');
-  if (R.savedId && R.id && R.savedId !== R.id) { toast('본인인증을 처음부터 다시 해 주세요.', true); return; }
-  if (mode === 'join' && !S.me) { toast('로그인이 풀렸어요. 다시 로그인한 뒤 본인인증을 해 주세요.', true); openAccount('login'); return; }
-  if (R.code) { openAccount(mode === 'find' ? 'find' : 'verify', { error: R.message || '본인인증을 마치지 못했어요. 다시 해 주세요.' }); return; }
-  if (!R.id) { toast('본인인증 결과를 받지 못했어요. 다시 해 주세요.', true); return; }
-  openAccount(mode === 'find' ? 'find' : 'verify', { pendingId: R.id });
 }
 async function startMembers(pageReady) {
   let r = await loadMembersConfig();
