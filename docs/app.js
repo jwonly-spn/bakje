@@ -977,7 +977,7 @@ function render() {
     h('details', { class: 'foot-biz' },
       h('summary', { text: '사업자 정보' }),
       h('p', { text: '뉴비랩 (NEWVIE Lab) · 대표 이지원 · 사업자등록번호 748-15-02934' }),
-      h('p', { text: '대구광역시 수성구 동대구로 336 · likegorogoro@naver.com' })));
+      h('p', { text: '대구광역시 수성구 동대구로 336 · 전화번호 010-6894-0925 · likegorogoro@naver.com' })));
   app.replaceChildren(topbar, h('main', { class: 'wrap' }, profile, highlights, pickSlot(), tabs, body), footer);
 }
 
