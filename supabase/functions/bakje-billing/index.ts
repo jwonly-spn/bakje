@@ -7,6 +7,12 @@
 // v4(2026-11-05 밤, 먼치킨 계정): 앨범이 없는 DJ 도 먼치킨.com/album 에서 추억앨범을 신청한다 — 주소 이름(<이름>.먼치킨.com)·앨범 이름을 함께 적고(order newAlbum),
 //  운영자가 입금을 확인하면(ops-confirm) 앨범·주소(bj_hosts + 저장소 h/<주소>.json)가 저절로 생기고 신청한 계정이 바로 주인(bj_album_owners)이 된다.
 //  그 계정에 이어진 먼치킨(bj_member_devices, 봇 프로그램)이 있으면 최초 박제판 저절로 올리기도 잇는다(bj_bots). info 에 가진 앨범 목록(albums), album-name(주소 이름 확인).
+// v5(2026-11-07, 사용자 "2027년 1월 1일부터 이용권을 사지 않은 DJ 의 먼치킨은 바로 막기"):
+//  ① munchkin-pass: 로그인한 먼치킨(봇 프로그램)이 켤 때·방송마다 자기 계정의 먼치킨 이용권을 묻는다(회원 세션 — info 와 같은 길) → {active, until, kind, from, now, free, waiting, sent}
+//     kind = 'munchkin'(먼치킨만) | 'bundle'(먼치킨 + 추억앨범·먼치킨 추가) | null. 청취자 정보는 오가지 않는다(계정의 이용권만).
+//  ② 먼치킨 이용권 신청은 2026-12-01 부터 받는다(12월 띠의 [이용권 신청] — 1월 1일 전에 미리 낼 수 있게). 무료 기간에 확인된 먼치킨 기간은 2027-01-01 부터 센다
+//     (12월에 낸 1개월 = 1월 1일 ~ 1월 31일 — 무료인 12월 날을 돈 내고 쓴 것으로 치지 않는다). 먼치킨 추가(add-munchkin) 값도 1월 1일부터의 날만 센다.
+//  ③ info 의 munchkinFrom = 먼치킨 이용권 신청을 받기 시작하는 때(12월 1일), munchkinPaidFrom = 이용권이 있어야 쓰는 때(1월 1일).
 // 주의: MCP 로 올릴 때 백슬래시-u 글자 표기가 풀려 버리므로 이 파일에는 그런 표기를 쓰지 않는다.
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
@@ -128,10 +134,14 @@ async function cfg() {
     albumOpen: v.albumOpen === true
   };
 }
-// 먼치킨은 2026년 12월 31일까지 무료(베타) — 그 전에는 먼치킨만·먼치킨 추가 신청을 받지 않는다(돈을 낼 필요가 없으니)
+// 먼치킨은 2026년 12월 31일까지 무료(베타) — 2027년 1월 1일부터 이용권이 있어야 봇이 방송에 들어간다(앱 desktop/munchkin-pass.cjs 의 PAID_FROM 과 같은 때).
+// 신청은 12월 1일부터 받는다(그 전에는 먼치킨만·먼치킨 추가 신청을 받지 않는다 — 돈을 낼 필요가 없으니). 12월에 확인돼도 쓰는 기간은 1월 1일부터 센다.
 const MUNCHKIN_PAID_FROM = Date.parse('2027-01-01T00:00:00+09:00');
+const MUNCHKIN_ORDER_FROM = Date.parse('2026-12-01T00:00:00+09:00');
+// 먼치킨 이용 기간이 생기는 신청(먼치킨만·먼치킨 + 추억앨범·먼치킨 추가)
+const MUNCHKIN_PLANS = ['munchkin', 'bundle', 'add-munchkin'];
 const ALBUM_BETA = '추억앨범은 지금 베타 테스트 중이라 아직 신청할 수 없어요. 추후 공개할게요.';
-const MUNCHKIN_FREE = '먼치킨은 2026년 12월 31일까지 무료예요. 지금은 신청하지 않아도 돼요.';
+const MUNCHKIN_FREE = '먼치킨은 2026년 12월 31일까지 무료예요. 이용권은 12월 1일부터 신청할 수 있어요.';
 const yearOf = (c: any, k: string) => c.year[k] || c.prices[k] * 12;
 const priceOf = (c: any, plan: string, months: number) => (months === 12 ? yearOf(c, plan) : c.prices[plan] * months);
 // 추가 값: 더하는 것의 한 달 값 × 남은 날 ÷ 30, 100원 단위 올림. 끝나는 날은 가진 이용권과 같게.
@@ -141,7 +151,9 @@ function addonQuote(c: any, plan: string, ents: Record<string, number>, now: num
   const end = ents[a.have] || 0;
   if (end <= now + DAY) return null;                       // 가진 이용권이 없거나 하루도 안 남음
   if ((ents[a.add] || 0) >= end) return null;              // 이미 그날까지 있음
-  const from = Math.max(now, ents[a.add] || 0);
+  // 먼치킨은 무료 기간(12월 31일까지) 날을 세지 않는다
+  const from = Math.max(now, ents[a.add] || 0, a.add === 'munchkin' ? MUNCHKIN_PAID_FROM : 0);
+  if (from >= end) return null;
   const days = Math.ceil((end - from) / DAY);
   const perMonth = yearly ? yearOf(c, a.add) / 12 : c.prices[a.add];
   if (!(perMonth > 0)) return null;
@@ -310,7 +322,19 @@ async function handle(req: Request, now: number) {
       const addons = await addonsOf(c, me.id, ents, now);
       return { ok: true, open: open(c), bank: open(c) ? { bank: c.bank, number: c.number, holder: c.holder } : null, prices: c.prices, year: { munchkin: yearOf(c, 'munchkin'), album: yearOf(c, 'album'), bundle: yearOf(c, 'bundle') }, months: MONTHS, addons, ents, owns, albums, orders: orders.map(orderOut), admin: me.is_admin === true,
         // albumOpen: 새 추억앨범 신청을 받는지(아니면 베타 — 화면은 안내·미리 보기) · munchkinFrom: 먼치킨 이용권을 받기 시작하는 때(그 전엔 무료)
-        albumOpen: c.albumOpen, munchkinFrom: MUNCHKIN_PAID_FROM };
+        // munchkinPaidFrom: 이용권이 있어야 먼치킨을 쓰는 때(그 전엔 무료 — v5)
+        albumOpen: c.albumOpen, munchkinFrom: MUNCHKIN_ORDER_FROM, munchkinPaidFrom: MUNCHKIN_PAID_FROM };
+    }
+    // 먼치킨 이용권(v5): 로그인한 먼치킨 프로그램이 켤 때·방송마다 묻는다. 본인인증·신청 여부와 관계없이 답한다(가볍게 — 표 두 개만 본다).
+    //  active = 지금 이용권 기간 안 · until = 끝나는 때(ms, 없으면 null) · kind = 마지막으로 확인된 먼치킨 신청이 먼치킨만이면 'munchkin', 추억앨범과 함께면 'bundle'
+    //  waiting = 확인을 기다리는 먼치킨 신청 수 · sent = 그중 "입금했어요"를 누른 것이 있는가 · free = 아직 무료 기간 · now = 서버 시각(PC 시계가 틀렸을 때 앱이 맞춘다)
+    case 'munchkin-pass': {
+      const [ents, paid, waiting]: any = await Promise.all([entsOf(me.id),
+        q(db.from('bj_orders').select('plan').eq('member', me.id).eq('state', 'paid').in('plan', MUNCHKIN_PLANS).order('done', { ascending: false }).limit(1)),
+        q(db.from('bj_orders').select('sent').eq('member', me.id).eq('state', 'pending').in('plan', MUNCHKIN_PLANS).limit(5))]);
+      const until = Number(ents.munchkin) || 0, plan = paid?.[0]?.plan;
+      return { ok: true, active: until > now, until: until || null, kind: until ? (plan && plan !== 'munchkin' ? 'bundle' : 'munchkin') : null,
+        from: MUNCHKIN_PAID_FROM, now, free: now < MUNCHKIN_PAID_FROM, waiting: waiting.length, sent: waiting.some((o: any) => Boolean(o.sent)) };
     }
     // 새 추억앨범 주소 이름 확인(쓰는 대로 바로) → {label, host, free, reason?}
     case 'album-name': {
@@ -327,8 +351,8 @@ async function handle(req: Request, now: number) {
       if (!plan) throw fail(400, '이용권을 골라 주세요.');
       const add = ADDON[plan];
       if (!c.prices[add ? add.add : plan]) throw fail(400, '이 이용권은 아직 준비 중이에요.');
-      // 먼치킨만·먼치킨 추가는 무료 기간(2026-12-31 까지)에는 받지 않는다
-      if ((plan === 'munchkin' || plan === 'add-munchkin') && now < MUNCHKIN_PAID_FROM) throw fail(400, MUNCHKIN_FREE);
+      // 먼치킨만·먼치킨 추가는 12월 1일부터 받는다(그 전에는 무료라 낼 필요가 없다 — v5)
+      if ((plan === 'munchkin' || plan === 'add-munchkin') && now < MUNCHKIN_ORDER_FROM) throw fail(400, MUNCHKIN_FREE);
       const months = add ? 0 : Number(b.months);
       if (!add && !MONTHS.includes(months)) throw fail(400, '기간을 골라 주세요.');
       // 본인인증은 2026-11-18 뺐다 — 로그인한 회원이면 신청할 수 있다
@@ -423,12 +447,13 @@ async function handle(req: Request, now: number) {
         }
       }
       // 일반: 지금(또는 남은 끝)부터 개월 수 × 30일 더함 · 추가(months 0): 맞춘 끝나는 날(until_to)까지
+      //  먼치킨은 무료 기간(12월 31일까지)에 확인돼도 1월 1일부터 센다(v5) — 추억앨범·앨범 결제 끝나는 날은 그대로 지금부터
       const add = o.months * MONTH_MS, out: Record<string, number> = {};
-      const next = (cur: number) => (o.months ? Math.max(now, cur) + add : Math.max(cur, Number(o.until_to) || now));
+      const next = (cur: number, floor = 0) => (o.months ? Math.max(now, cur, floor) + add : Math.max(cur, Number(o.until_to) || now));
       if (o.member) {
         const ents = await entsOf(o.member);
         for (const p of PLANS[o.plan].products) {
-          const until = next(ents[p] || 0);
+          const until = next(ents[p] || 0, p === 'munchkin' ? MUNCHKIN_PAID_FROM : 0);
           await q(db.from('bj_entitlements').upsert({ member: o.member, product: p, until }));
           out[p] = until;
         }
@@ -469,7 +494,7 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
   const route = new URL(req.url).pathname.replace(/^.*?\/bakje-billing\/?/, '').replace(/\/+$/, '');
   try {
-    if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: 4, year: true, addon: true, push: true, newAlbum: true, albumGate: true });
+    if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: 5, year: true, addon: true, push: true, newAlbum: true, albumGate: true, munchkinPass: true });
     if (req.method === 'POST' && (route === '' || route === 'api')) return json(200, await handle(req, Date.now()));
     return json(404, { ok: false, error: '찾을 수 없어요.' });
   } catch (e) {
