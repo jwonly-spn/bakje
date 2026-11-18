@@ -976,7 +976,7 @@ function render() {
     // 운영자 사업자 정보 — 평소엔 접어 두고 누르면 펼침(전자상거래법 표시 사항, 모든 앨범 같은 운영자)
     h('details', { class: 'foot-biz' },
       h('summary', { text: '사업자 정보' }),
-      h('p', { text: '제이원스튜디오 · 대표 이지원 · 사업자등록번호 174-93-02335' }),
+      h('p', { text: '뉴비랩 (NEWVIE Lab) · 대표 이지원 · 사업자등록번호 748-15-02934' }),
       h('p', { text: '대구광역시 수성구 동대구로 336 · likegorogoro@naver.com' })));
   app.replaceChildren(topbar, h('main', { class: 'wrap' }, profile, highlights, pickSlot(), tabs, body), footer);
 }
