@@ -50,7 +50,10 @@ button, input, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
 a { color: inherit; }
 [hidden], .hidden { display: none !important; }
-.boot { padding: 40vh 16px 0; text-align: center; color: var(--ink-2); }
+.boot { padding: 34vh 16px 0; text-align: center; color: var(--ink-2); }
+.boot h1 { margin: 0 0 6px; font-size: 20px; color: var(--ink); }
+.boot p { margin: 0 0 14px; }
+.boot-note { margin: 0; padding: 0 16px; text-align: center; color: var(--ink-2); }
 .muted { color: var(--ink-2); }
 .small { font-size: 12px; }
 .bad { color: var(--danger) !important; }
