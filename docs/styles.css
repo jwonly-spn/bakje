@@ -895,3 +895,180 @@ label, .label { font-size: 13px; font-weight: 600; color: var(--ink); margin-top
 }
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
+
+/* 추억앨범 방향 A "지금 그대로, 곱게" (11/20)
+   styles.css(지금 사이트 그대로) 뒤에 읽혀요. 뼈대·부품·배치는 하나도 바꾸지 않고 아래 네 가지만 고쳐요.
+   1) 색 토큰(순검정 글 → 먹색, 단추 파랑·빨강·요일 색을 대비 4.5:1 이상으로)
+   2) 작은 글자(12px 아래 없음 · 휴대폰 본문 15px — 지금 14px, 처음 A 는 16px 이었는데 11/20 사용자 "조금 작게".
+      딸린 글은 지금 사이트 크기 그대로이고, 12px 아래였던 것만 12px 로)
+   3) 누르는 곳(휴대폰 44px — 모양은 그대로 두고 누르는 넓이만 키운 곳은 ::after)
+   4) 사진 위 글자(댓글 수·고정 표시)가 어떤 그림 위에서도 읽히게
+   입힐 때는 이 파일을 styles.css 맨 끝에 붙이면 돼요(app.js · index.html 은 그대로). */
+
+/* ───────── 1) 색 ───────── */
+:root {
+  --surface-2: #efeff1;
+  --surface-3: #dbdbde;
+  --ink: #141416;
+  --ink-2: #66666b;
+  --line: #dbdbde;
+  --line-2: #ededef;
+  --blue: #0b72dd;          /* 흰 글 4.7:1 (지금 #0095f6 은 3.2:1) */
+  --blue-hover: #0a63c4;
+  --blue-ink: #0a63c4;      /* 파란 글·링크 (흰 바탕 5.9:1) */
+  --danger: #d2243b;        /* 빨간 글 5.2:1 (지금 #ed4956 은 3.8:1) */
+  --live: #dc1f36;          /* 흰 글이 올라가는 빨강(LIVE · 알림 숫자) */
+  --sun: #d0304a;
+  --sat: #2f6fcc;
+  --gold-ink: #8a5a00;
+  --ok: #12793f;
+  --pick-live: var(--live);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0c0c0e;
+    --field: #161618;
+    --elev: #232326;
+    --surface-2: #333336;
+    --surface-3: #48484c;
+    --ink: #f5f5f5;
+    --ink-2: #ababb0;
+    --line: #38383d;
+    --line-2: #28282c;
+    --blue-ink: #6cb8ff;
+    --danger: #ff7a88;
+    --sun: #ff8090;
+    --sat: #82b4ff;
+    --gold-ink: #e8b85a;
+    --ok: #55d391;
+  }
+}
+/* 파란 "글"은 --blue-ink (파란 "칸"은 --blue 그대로) */
+.link-btn, .pf-link, .cm-send, .cm-cta, .copy-chip, .agree-row em, .thumb.add:hover { color: var(--blue-ink); }
+.cm-cta:hover, .thumb.add:hover { border-color: var(--blue-ink); }
+.link-btn:hover { color: var(--ink); }
+.kind-first { color: var(--gold-ink); }
+.kv .ok, .plan-box .ok { color: var(--ok); }
+.cal-w.sun, .cal-d.sun .dn { color: var(--sun); }
+.cal-w.sat, .cal-d.sat .dn { color: var(--sat); }
+.cal-m small { color: var(--sun); }
+.bell-dot { background: var(--live); }
+.note-ic.heart { color: var(--heart); }
+.p-dday { color: #984800; }
+.p-ends.is-soon .p-dday { color: #b3261e; }
+.tag.warn { background: color-mix(in srgb, var(--danger) 11%, transparent); color: #b31b30; }
+@media (prefers-color-scheme: dark) { .tag.warn { color: var(--danger); } }
+.bad-notice { background: color-mix(in srgb, var(--danger) 9%, transparent); }
+.btn.danger-fill, .toast.bad { background: var(--danger); }
+@media (prefers-color-scheme: dark) {
+  .btn.danger-fill, .toast.bad { background: #d2243b; }
+  .btn.danger-fill:hover { background: #d2243b; }
+}
+.crop-zoom { accent-color: var(--blue); }
+
+/* 최초 박제판 이름표: 모양·금빛 막대 그대로. 밝은 그림에서도 흰 글이 읽히게 바탕만 조금 더 어둡게 */
+.first-tile .t-bg { filter: blur(24px) brightness(.42) saturate(1.3); }
+.ft-count { color: rgba(255, 255, 255, .88); }
+.ft-ends { color: rgba(255, 255, 255, .9); }
+.ft-ends.is-over { color: rgba(255, 255, 255, .72); }
+.ft-ends.is-over b { background: rgba(255, 255, 255, .16); color: rgba(255, 255, 255, .86); }
+.ft-ends.is-soon b { background: linear-gradient(90deg, #f0913f, #e84a4a); text-shadow: 0 1px 1px rgba(0, 0, 0, .25); }
+
+/* ───────── 4) 사진 위 표시(댓글 수 · 고정 · 여러 장): 자리 그대로 ─────────
+   최초 박제판 칸은 판 그림 제목과 겹쳐서 어두운 알약 안에, 박제판 칸은 후원자 닉네임을 가리지 않게 그림자만 진하게 */
+.badges { filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, .85)) drop-shadow(0 0 5px rgba(0, 0, 0, .55)); }
+.first-tile ~ .badges { align-items: center; padding: 3px 8px; border-radius: 999px; background: rgba(0, 0, 0, .52); filter: none; }
+.first-tile ~ .badges:empty { display: none; }
+.first-tile ~ .badges .ic { width: 16px; height: 16px; }
+.first-tile ~ .badges .cc .ic { width: 14px; height: 14px; }
+.letter-tile ~ .badges { filter: none; opacity: .8; }
+.dc { background: rgba(0, 0, 0, .68); }
+
+/* 달력: 사진이 든 날의 흰 숫자가 밝은 사진 위에서도 읽히게 위쪽만 살짝 어둡게 */
+.cal-d.photo .d-face::after { content: ""; position: absolute; inset: 0 0 auto 0; height: 48%; background: linear-gradient(rgba(0, 0, 0, .46), transparent); }
+.cal-d.photo .dn { font-weight: 700; }
+
+/* 로그인 창 "다른 추억앨범에서 로그인했다면…" 단추: 좁은 화면에서 글이 잘리지 않게 두 줄까지 */
+.sso-btn { text-wrap: balance; white-space: normal; text-align: left; line-height: 1.35; padding-top: 9px; padding-bottom: 9px; justify-content: flex-start; }
+.sso-btn .ic { flex: none; }
+
+/* ───────── 2) 작은 글자: 12px 아래 없음 ───────── */
+.cal-m small, .dc, .cm-tag, .cm-count, .p-label, .p-dday, .tag, .pp-k, .pick-live, .thumb .no,
+.seg.wide .kind-opt .kind-where, .foot-biz { font-size: 12px; }
+.bell-dot { min-width: 18px; height: 18px; font-size: 11px; line-height: 18px; }
+.pick-live { letter-spacing: .04em; }
+.foot-biz { opacity: 1; }
+.cal-m { gap: 1px; }
+.btn.small { min-height: 32px; }
+
+/* ───────── 휴대폰 ───────── */
+@media (max-width: 735px) {
+  /* 본문 15px (지금 14 · 처음 A 16). 딸린 글(14 · 13 · 12px)은 지금 사이트 값 그대로라 여기에 적지 않아요 */
+  body { font-size: 15px; }
+  .pf-bio, .f-cap, .cm-text, .menu button { font-size: 15px; }
+  .notice, .pf-link, .seg.wide button { font-size: 14px; }
+  /* 지금 10~11px 인 것만 12px 로 */
+  .tabs button span, .cal-d .dn, .cal-m small, .dc, .letter-tile .body { font-size: 12px; }
+  .cal-d.today .dn { white-space: nowrap; }   /* 360 폭에서 오늘(까만 알약)의 두 자리 날짜가 12px 에서 두 줄로 꺾이지 않게 */
+
+  /* 최초 박제판 이름표(휴대폰): 글을 10 → 12px 로 키우면 한 줄에 안 들어가서
+     "8 / 9칸 ··· D-11" 한 줄 + "11월 30일 종료" 한 줄로(막대·알약 모양 · 제목 14px 는 그대로) */
+  .ft-info { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-auto-rows: max-content; align-content: center; gap: 4px; padding: 5px 9px 6px; line-height: 1.2; }
+  .ft-label, .ft-title, .ft-bar { grid-column: 1 / -1; }
+  .ft-label { font-size: 12px; }
+  .ft-label .ic { width: 13px; height: 13px; }
+  .ft-count { font-size: 12px; align-self: center; }
+  .ft-ends { display: contents; font-size: 12px; }
+  .ft-ends b { grid-column: 2; justify-self: end; align-self: center; padding: 1px 7px; font-size: 12px; }
+
+  /* 3) 누르는 곳 44px */
+  .topbar .icon-btn, .icon-btn, button.heart { width: 44px; height: 44px; }
+  .topbar .row { gap: 0; }
+  .topbar-in { padding: 0 6px 0 16px; }
+  .input { min-height: 44px; }
+  .cm-input, .cm-cta { min-height: 44px; }
+  .cm-input { padding: 11px 14px; border-radius: 22px; }
+  .cm-cta { border-radius: 22px; }
+  .cm-send { height: 44px; min-width: 44px; }
+  .cal-m { min-height: 44px; }
+  .seg.wide button, .plan-seg button { min-height: 44px; }
+  .sheet .btn:not(.small), .card .btn { min-height: 44px; }
+  .check { min-height: 44px; }
+  .pv-head .seg button { min-height: 36px; }
+  .thumb-tools button { height: 40px; }
+  .foot-biz summary { padding: 14px 10px; }
+  .foot a { display: inline-block; padding: 14px 1px; }
+  .foot p { line-height: 1.3; }
+  .foot { padding-top: 36px; }
+  .foot-links { margin-top: 0 !important; }
+  .agree-view { padding: 13px 7px; margin-right: -7px; }
+  .acct-links .link-btn { padding: 12px 6px; }
+  /* 모양은 그대로, 누르는 넓이만 */
+  .login-btn, .me-btn, .btn.small, .pf-actions .btn, .cm-more, .cm-reply-btn, .copy-chip, .f-more, .f-comments,
+  .link-btn, .pv-head .seg button, .cal-title { position: relative; }
+  .login-btn::after, .me-btn::after, .btn.small::after, .pf-actions .btn::after, .copy-chip::after, .f-more::after,
+  .f-comments::after, .link-btn::after, .pv-head .seg button::after, .cal-title::after, .cm-reply-btn::after {
+    content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 44px; transform: translateY(-50%);
+  }
+  .login-btn { min-height: 36px; padding: 0 16px; }
+  .me-btn { height: 36px; }
+  .btn.small { min-height: 34px; }
+  .pf-actions .btn { min-height: 36px; }
+  .icon-btn.cm-more { width: 44px; height: 44px; margin: -12px -12px -6px 0; }
+  .copy-chip { padding: 5px 11px; }
+  .cm-reply-btn { margin-top: 4px; }
+  .sheet-head { min-height: 48px; }
+  .brand { display: inline-flex; align-items: center; min-height: 44px; }
+  .me-btn { min-width: 44px; justify-content: center; }
+  .pf-link, .acct-foot a { position: relative; }
+  .pf-link::after, .acct-foot a::after { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 44px; transform: translateY(-50%); }
+  .acct-foot { margin-top: 14px; }
+}
+@media (max-width: 480px) {
+  .topbar .icon-btn { width: 44px; height: 44px; }
+}
+/* 좁은 휴대폰(360)에서 주인 윗줄 단추 다섯 개가 한 줄에 들어가게 */
+@media (max-width: 380px) {
+  .topbar .icon-btn { width: 40px; }
+  .brand { font-size: 26px; }
+}
