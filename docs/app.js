@@ -1772,7 +1772,7 @@ async function paintPlan(box, pick = { plan: 'munchkin', months: 1 }) {
     parts.push(h('section', { class: 'plan-pick' },
       h('p', { class: 'plan-order-title', text: '이용권 신청' }),
       seg([['munchkin', '먼치킨만', usable('munchkin')], ['album', '추억앨범만', usable('album')], ['bundle', '먼치킨 + 추억앨범', usable('bundle')]], pick.plan, (v) => again({ ...pick, plan: v })),
-      seg([[1, '1개월'], [3, '3개월'], [6, '6개월'], [12, '1년']], pick.months, (v) => again({ ...pick, months: v })),
+      seg([[1, '1개월'], [12, '1년']], pick.months, (v) => again({ ...pick, months: v })),
       h('p', { class: 'plan-amount', text: wonText(amount) }),
       pick.months === 12 && full > amount ? h('p', { class: 'small ok', text: `한 달씩보다 ${wonText(full - amount)} 아껴요 (한 달 ${wonText(Math.round(amount / 12))}꼴)` }) : null,
       !album ? h('p', { class: 'field-hint', text: '추억앨범 이용권은 앨범을 연결한 DJ 계정만 신청할 수 있어요.' }) : null,
@@ -2054,7 +2054,7 @@ const STEPS = {
     };
   },
 
-  // 이용권(카드 결제 · 계좌이체): 먼치킨만 · 추억앨범만 · 둘 다 × 1·3·6개월·1년, 쓰는 중에 다른 것 더하기
+  // 이용권(카드 결제 · 계좌이체): 먼치킨만 · 추억앨범만 · 둘 다 × 1개월·1년, 쓰는 중에 다른 것 더하기
   plan() {
     if (!S.me) return STEPS.login({});
     const box = h('div', { class: 'stack plan-box' }, h('p', { class: 'muted', text: '불러오는 중이에요…' }));

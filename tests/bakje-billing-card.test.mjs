@@ -278,7 +278,7 @@ test('로그인 안 한 방문자: prices 로 상품·가격·카드 표시만(�
   const p = ok(await s.call(null, 'prices'));
   assert.deepEqual(p.prices, BILLING.prices);
   assert.deepEqual(p.year, BILLING.year);
-  assert.deepEqual(p.months, [1, 3, 6, 12]);
+  assert.deepEqual(p.months, [1, 12]);
   assert.equal(p.open, true);
   assert.equal(p.albumOpen, true);
   assert.equal(p.munchkinPaidFrom, PAID_FROM);
@@ -311,9 +311,9 @@ test('테스트 모드 카드 신청(test_only): 금액은 서버가 · 같은 �
   assert.equal(again.order.id, o.id);
   assert.equal(again.pay.paymentId, 'mk-' + o.id);
   assert.equal(s.T.bj_orders.length, 1);
-  const three = ok(await s.call('mKg', 'card-start', { plan: 'munchkin', months: 3 }));
+  const three = ok(await s.call('mKg', 'card-start', { plan: 'munchkin', months: 12 }));
   assert.notEqual(three.order.id, o.id);
-  assert.equal(three.pay.totalAmount, 9000);
+  assert.equal(three.pay.totalAmount, 30000);
   const b = ok(await s.call('mKg', 'card-start', { plan: 'bundle', months: 12, newAlbum: { label: '먼치', name: '먼치 추억앨범' } }));
   assert.equal(b.pay.totalAmount, 50000);
   assert.equal(b.pay.orderName, '먼치킨 + 추억앨범 이용권 1년');
@@ -387,7 +387,7 @@ test('① 가진 앨범 연장(먼치킨 + 추억앨범 1년) · 새 추억앨�
   const n = ok(await s.call('mEtc', 'card-start', { plan: 'album', months: 1, newAlbum: { label: '달빛', name: '달빛 추억앨범' } }));
   assert.ok(row(s, n.order.id).want_host.endsWith('.xn--s22bu18a0ub.com'));
   assert.equal(ok(await s.call('mEtc', 'card-start', { plan: 'album', months: 1, newAlbum: { label: '달빛', name: '달빛 추억앨범' } })).order.id, n.order.id);
-  assert.equal((await s.call('mEtc', 'order', { plan: 'album', months: 3, newAlbum: { label: '별빛', name: '별빛 추억앨범' } })).status, 409);
+  assert.equal((await s.call('mEtc', 'order', { plan: 'album', months: 12, newAlbum: { label: '별빛', name: '별빛 추억앨범' } })).status, 409);
   s.net.payments['mk-' + n.order.id] = payment(n.order);
   const done = ok(await s.call('mEtc', 'card-done', { id: n.order.id }));
   assert.equal(done.state, 'paid');
@@ -576,7 +576,7 @@ test('⑦ 남의 신청 번호 · 계좌이체 신청 · 없는 번호로 card-d
   const other = await s.call('mEtc', 'card-done', { id: o.id });
   assert.equal(other.status, 404);
   assert.equal(other.body.ok, false);
-  const bank = ok(await s.call('mDj', 'order', { plan: 'munchkin', months: 3 })).order;
+  const bank = ok(await s.call('mDj', 'order', { plan: 'munchkin', months: 12 })).order;
   assert.equal((await s.call('mDj', 'card-done', { id: bank.id })).status, 404);
   assert.equal((await s.call('mDj', 'card-done', { id: 'onothing00000' })).status, 404);
   assert.equal((await s.call('mDj', 'card-done', {})).status, 404);
@@ -596,7 +596,7 @@ test('⑧ 카드 신청은 sent·ops-confirm 이 거절 · 운영자 기다림 �
   assert.equal(conf.status, 404);
   assert.equal(row(s, o.id).state, 'pending');
   assert.equal(s.T.bj_entitlements.length, 0);
-  const bank = ok(await s.call('mDj', 'order', { plan: 'munchkin', months: 3 })).order;
+  const bank = ok(await s.call('mDj', 'order', { plan: 'munchkin', months: 12 })).order;
   const list = ok(await s.call('mOp', 'ops-orders'));
   assert.deepEqual(list.waiting.map((x) => x.id), [bank.id]);
   assert.equal(list.waiting[0].pay, 'bank');
@@ -652,8 +652,8 @@ test('⑩ cancel: 카드 신청은 먼저 포트원에 물어 PAID 면 취소 �
 
 test('⑪ 지금 계좌이체 흐름 그대로: order · sent · ops-confirm(1/1 전 확인은 1/1 부터)', async () => {
   const s = setup({ now: AFTER_DEC });
-  const r = ok(await s.call('mDj', 'order', { plan: 'munchkin', months: 3, amount: 1 }));
-  assert.equal(r.order.amount, 9000);
+  const r = ok(await s.call('mDj', 'order', { plan: 'munchkin', months: 12, amount: 1 }));
+  assert.equal(r.order.amount, 30000);
   assert.match(r.order.payer, /^밤톨\d{4}$/);
   assert.equal(r.order.pay, 'bank');
   assert.equal(r.order.payAt, null);
@@ -678,10 +678,10 @@ test('⑪ 지금 계좌이체 흐름 그대로: order · sent · ops-confirm(1/1
   assert.equal((await s.call('mDj', 'ops-confirm', { id: r.order.id })).status, 403);
   const conf = ok(await s.call('mOp', 'ops-confirm', { id: r.order.id }));
   assert.equal(conf.order.state, 'paid');
-  assert.equal(conf.until.munchkin, PAID_FROM + 90 * DAY);
-  assert.equal(entOf(s, 'mDj', 'munchkin'), PAID_FROM + 90 * DAY);
+  assert.equal(conf.until.munchkin, PAID_FROM + 360 * DAY);
+  assert.equal(entOf(s, 'mDj', 'munchkin'), PAID_FROM + 360 * DAY);
   assert.equal((await s.call('mOp', 'ops-confirm', { id: r.order.id })).status, 404, '두 번 확인은 안 돼요');
-  assert.equal(entOf(s, 'mDj', 'munchkin'), PAID_FROM + 90 * DAY);
+  assert.equal(entOf(s, 'mDj', 'munchkin'), PAID_FROM + 360 * DAY);
   assert.equal(s.net.calls.length, 0);
 });
 
@@ -692,13 +692,13 @@ test('⑪ 변경 3: 추억앨범 계좌이체도 1/1 전 확인은 1/1 부터(�
   assert.equal(conf.until.album, PAID_FROM + 30 * DAY);
   assert.equal(conf.until.albumPaid, PAID_FROM + 30 * DAY);
   assert.equal(s.T.bj_albums.find((x) => x.id === 'abamtol').paid_until, PAID_FROM + 30 * DAY);
-  const n = ok(await s.call('mEtc', 'order', { plan: 'bundle', months: 3, newAlbum: { label: '달빛', name: '달빛 추억앨범' } })).order;
+  const n = ok(await s.call('mEtc', 'order', { plan: 'bundle', months: 12, newAlbum: { label: '달빛', name: '달빛 추억앨범' } })).order;
   const nc = ok(await s.call('mOp', 'ops-confirm', { id: n.id }));
   assert.ok(nc.order.newAlbum);
-  assert.equal(nc.until.munchkin, PAID_FROM + 90 * DAY);
-  assert.equal(nc.until.album, PAID_FROM + 90 * DAY);
+  assert.equal(nc.until.munchkin, PAID_FROM + 360 * DAY);
+  assert.equal(nc.until.album, PAID_FROM + 360 * DAY);
   const made = s.T.bj_albums.find((x) => x.id === row(s, n.id).album);
-  assert.equal(made.paid_until, PAID_FROM + 90 * DAY);
+  assert.equal(made.paid_until, PAID_FROM + 360 * DAY);
   const j = setup({ now: AFTER_JAN, albums: [{ id: 'abamtol', name: '밤톨 추억앨범', state: 'active', paid_until: null }], owners: [{ album: 'abamtol', member: 'mDj', created: 1 }] });
   const ja = ok(await j.call('mDj', 'order', { plan: 'album', months: 1 })).order;
   assert.equal(ok(await j.call('mOp', 'ops-confirm', { id: ja.id })).until.album, AFTER_JAN + 30 * DAY);
@@ -792,17 +792,17 @@ test('고침 1: card-done 이 안 와도(창을 닫음) info 다시 확인이 �
 });
 
 // 결제창을 닫아 버린 카드 신청을 바로 넣어 둔다(카드 신청은 card-start 때마다 앞의 것을 정리하므로)
-const seedCard = (s, id, months, created) => s.T.bj_orders.push({ ...DEFAULTS.bj_orders, id, member: 'mDj', nick: '밤톨', plan: 'munchkin', months, amount: 3000 * months,
+const seedCard = (s, id, months, created) => s.T.bj_orders.push({ ...DEFAULTS.bj_orders, id, member: 'mDj', nick: '밤톨', plan: 'munchkin', months, amount: months === 12 ? 30000 : 3000 * months,
   payer: '밤톨0000', album: null, created, pay: 'card', pay_id: 'mk-' + id, test_only: false });
 const READY = (id, amount) => ({ status: 'READY', id: 'mk-' + id, storeId: STORE, channel: { type: 'LIVE' }, amount: { total: amount }, currency: 'KRW' });
 
 test('고침 2: 결제창을 닫은 카드 신청 3개가 있어도 다른 내용의 [카드로 결제]는 된다 — 포트원이 결제 없음(404)·READY 면 취소로 정리', async () => {
   const s = setup({ card: LIVE, now: AFTER_DEC });
   const A = 'o' + 'a'.repeat(11), B = 'o' + 'b'.repeat(11), C = 'o' + 'c'.repeat(11);
-  seedCard(s, A, 1, AFTER_DEC - 60000); seedCard(s, B, 3, AFTER_DEC - 50000); seedCard(s, C, 6, AFTER_DEC - 40000);
+  seedCard(s, A, 12, AFTER_DEC - 60000); seedCard(s, B, 3, AFTER_DEC - 50000); seedCard(s, C, 1, AFTER_DEC - 40000);
   s.net.payments['mk-' + B] = READY(B, 9000);
   // C 와 같은 내용 → C 를 다시 쓰고, 다른 내용의 A(404)·B(READY)는 정리
-  assert.equal(ok(await s.call('mDj', 'card-start', { plan: 'munchkin', months: 6 })).order.id, C);
+  assert.equal(ok(await s.call('mDj', 'card-start', { plan: 'munchkin', months: 1 })).order.id, C);
   assert.equal(row(s, A).state, 'canceled');
   assert.equal(row(s, B).state, 'canceled');
   assert.equal(row(s, A).pay_channel, 'NONE');
@@ -815,7 +815,7 @@ test('고침 2: 결제창을 닫은 카드 신청 3개가 있어도 다른 내�
   assert.deepEqual(s.T.bj_orders.filter((x) => x.state === 'pending').map((x) => x.id), [d.order.id]);
   assert.equal(s.T.bj_entitlements.length, 0);
   // 정리된 신청에 뒤늦게 결제가 끝나면 → 고침 1 과 같이 환불 알림(이용권 없음)
-  s.net.payments['mk-' + A] = late({ id: A, amount: 3000 });
+  s.net.payments['mk-' + A] = late({ id: A, amount: 30000 });
   assert.equal(ok(await s.call('mDj', 'card-done', { id: A })).state, 'failed');
   assert.equal(s.net.hooks.filter((t) => t.includes('취소한 신청') && t.includes('환불')).length, 1);
   assert.equal(s.T.bj_entitlements.length, 0);
@@ -824,8 +824,8 @@ test('고침 2: 결제창을 닫은 카드 신청 3개가 있어도 다른 내�
 test('고침 2: 계좌이체 신청은 정리하지 않는다 · 기다리는 신청 3개 한도는 그대로(카드 신청이 막힘)', async () => {
   const s = setup({ card: LIVE, now: AFTER_DEC });
   ok(await s.call('mDj', 'order', { plan: 'munchkin', months: 1 }));
-  ok(await s.call('mDj', 'order', { plan: 'munchkin', months: 3 }));
-  ok(await s.call('mDj', 'order', { plan: 'munchkin', months: 6 }));
+  ok(await s.call('mDj', 'order', { plan: 'munchkin', months: 12 }));
+  ok(await s.call('mDj', 'order', { plan: 'munchkin', months: 1 }));
   const full = await s.call('mDj', 'card-start', { plan: 'munchkin', months: 12 });
   assert.equal(full.status, 409);
   assert.equal(s.T.bj_orders.filter((x) => x.state === 'pending').length, 3);
@@ -941,10 +941,17 @@ test('고침 10: 봇 munchkin-pass 의 waiting 은 계좌이체 신청만 · ops
   const card = ok(await s.call('mDj', 'card-start', { plan: 'munchkin', months: 1 })).order;
   let pass = ok(await s.call('mDj', 'munchkin-pass'));
   assert.equal(pass.waiting, 0);
-  const bank = ok(await s.call('mDj', 'order', { plan: 'munchkin', months: 3 })).order;
+  const bank = ok(await s.call('mDj', 'order', { plan: 'munchkin', months: 12 })).order;
   pass = ok(await s.call('mDj', 'munchkin-pass'));
   assert.equal(pass.waiting, 1);
   assert.equal((await s.call('mOp', 'ops-reject', { id: card.id, note: '시험' })).status, 404);
   assert.equal(row(s, card.id).state, 'pending');
   assert.equal(ok(await s.call('mOp', 'ops-reject', { id: bank.id, note: '시험' })).order.state, 'rejected');
+});
+
+test('이용권 기간은 1개월·1년만 — 3개월·6개월 새 신청은 400', async () => {
+  const s = setup({ card: LIVE, now: AFTER_DEC });
+  assert.equal((await s.call('mDj', 'order', { plan: 'munchkin', months: 3 })).status, 400);
+  assert.equal((await s.call('mDj', 'order', { plan: 'munchkin', months: 6 })).status, 400);
+  assert.equal((await s.call('mDj', 'card-start', { plan: 'munchkin', months: 6 })).status, 400);
 });

@@ -1,5 +1,5 @@
 // 추억앨범·먼치킨 계좌이체 이용권 — Supabase Edge Function "bakje-billing" (verify_jwt false, 2026-11-05)
-// 흐름: 로그인한 회원이 이용권 신청(먼치킨 / 추억앨범 / 먼치킨+추억앨범 × 1·3·6·12개월) → 운영자 계좌·금액·입금자명을 보고 이체
+// 흐름: 로그인한 회원이 이용권 신청(먼치킨 / 추억앨범 / 먼치킨+추억앨범 × 1개월·1년) → 운영자 계좌·금액·입금자명을 보고 이체
 //  추가(add-album·add-munchkin): 가진 이용권 끝나는 날까지, 더하는 것의 한 달 값(1년치로 샀으면 1년 값÷12) × 남은 날÷30
 //  → "입금했어요"(운영자 앱 푸시 bj_push_subs + 디스코드 웹후크 BILLING_WEBHOOK 이 있으면 그것도)
 //  → 운영자(bj_members.is_admin)가 운영자 앱(사이트 /ops/ 를 아이폰 홈 화면에 추가)에서 확인 → 이용 기간 30일 단위로 연장(bj_entitlements, 추억앨범은 bj_albums.paid_until 도)
@@ -57,7 +57,7 @@ const PLANS: Record<string, { name: string; products: string[] }> = {
   'add-munchkin': { name: '먼치킨 추가', products: ['munchkin'] }
 };
 const ADDON: Record<string, { have: string; add: string }> = { 'add-album': { have: 'munchkin', add: 'album' }, 'add-munchkin': { have: 'album', add: 'munchkin' } };
-const MONTHS = [1, 3, 6, 12];
+const MONTHS = [1, 12];
 const DAY = 86400000, MONTH_MS = 30 * DAY;
 const ALPHA = 'abcdefghijkmnpqrstuvwxyz23456789';
 const enc = new TextEncoder();
