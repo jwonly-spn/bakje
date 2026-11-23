@@ -1083,3 +1083,6 @@ label, .label { font-size: 13px; font-weight: 600; color: var(--ink); margin-top
 .payer legend { padding: 0; margin: 0 0 2px; font-size: 14px; font-weight: 700; color: var(--ink); }
 .payer label { margin-top: 4px; }
 .plan-order .notice, .plan-add .notice, .plan-pick .notice { margin: 0; }
+
+/* 댓글 DJ(이용권 결제) · 리스너 배지(2026-11-23) — 색은 원래 있던 DJ 보라(.cm-role.role-dj)·회색 배지 그대로 */
+.cm-tag.cm-tag-paid { background: #8b5cf6; color: #fff; }

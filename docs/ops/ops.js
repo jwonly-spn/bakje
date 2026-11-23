@@ -131,7 +131,7 @@ function loginView() {
   } },
     h('img', { class: 'app-icon', src: 'icon-180.png', alt: '' }),
     h('h1', { text: '입금 확인' }),
-    h('p', { class: 'muted', text: '추억앨범 운영자 계정으로 로그인해 주세요.' }),
+    h('p', { class: 'muted', text: '먼치킨 계정(운영자)으로 로그인해 주세요.' }),
     id, pw, msg, btn);
   return form;
 }

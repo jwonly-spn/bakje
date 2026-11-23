@@ -74,8 +74,9 @@ const ICONS = {
   headphones: '<path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3.5" y="14" width="4.5" height="6.5" rx="1.5"/><rect x="16" y="14" width="4.5" height="6.5" rx="1.5"/>',
   bell: '<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15zM10 20.5a2 2 0 0 0 4 0"/>'
 };
-// 댓글 단 사람 표시(이름 앞): 이 앨범 DJ · 다른 DJ · 청취자
-const ROLE_ICON = { owner: ['mic', 'DJ', 'role-owner'], dj: ['mic', 'DJ', 'role-dj'], fan: ['headphones', '청취자', 'role-fan'] };
+// 댓글 단 사람 표시(서버 bakje-social 이 정함 — 2026-11-23): owner 이 앨범 주인 · dj 이용권을 결제한 회원 · fan 리스너(결제하지 않은 회원)
+//  이름 앞 작은 그림 + 이름 뒤 글 배지(DJ · 리스너 — 화면 읽기는 배지 글을 읽는다)
+const ROLE_ICON = { owner: ['mic', 'DJ', 'role-owner'], dj: ['mic', 'DJ', 'role-dj'], fan: ['headphones', '리스너', 'role-fan'] };
 const SOCIAL = '../bakje-social/';
 function icon(name, cls = '') {
   const el = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -1539,7 +1540,7 @@ async function loadMe() {
 // 맨 위 줄: 로그인 전 "로그인", 로그인 뒤 닉네임(할 일이 남았으면 빨간 점)
 function memberButton() {
   if (!S.members) return null;
-  if (!S.me) return h('button', { class: 'btn small primary login-btn', type: 'button', text: '로그인', onclick: () => openAccount('login') });
+  if (!S.me) return h('button', { class: 'btn small primary login-btn', type: 'button', text: '먼치킨 계정으로 로그인', onclick: () => openAccount('login') });
   const todo = !S.me.nickname;
   return h('button', { class: 'me-btn', type: 'button', title: '내 정보', 'aria-label': `내 정보${S.me.nickname ? ' · ' + S.me.nickname : ''}${todo ? ' · 할 일이 남았어요' : ''}`, onclick: () => openAccount('me') },
     icon('user'), h('span', { class: 'me-name', text: S.me.nickname || '내 정보' }), todo ? h('i', { class: 'me-dot', 'aria-hidden': 'true' }) : null);
@@ -1895,13 +1896,14 @@ const STEPS = {
       });
     } }, field('m-id', '아이디', id), field('m-pw', '비밀번호', pw), st, go);
     return {
-      title: '로그인', focus: x.loginId ? pw : id,
+      title: '먼치킨 계정으로 로그인', focus: x.loginId ? pw : id,
       body: [
-        h('p', { class: 'acct-lead', text: '로그인하면 앨범에 댓글을 달 수 있어요. 계정 하나로 모든 DJ 추억앨범에서 써요.' }),
+        // 먼치킨 계정 = 이 사이트·먼치킨.com/album·먼치킨 봇·먼치킨 송출이 함께 쓰는 계정(bj_members — 서버 bakje member, 프로그램은 account.cjs)
+        h('p', { class: 'acct-lead', text: '먼치킨.com·먼치킨 봇·먼치킨 송출과 같은 계정이에요. 로그인하면 모든 DJ 추억앨범에 댓글을 달 수 있어요.' }),
         h('button', { class: 'btn block sso-btn', type: 'button', onclick: () => ssoContinue() }, icon('check'), '다른 추억앨범에서 로그인했다면 → 그 계정으로 계속'),
         S.members.kakao ? [kakaoButton(), h('p', { class: 'or' }, h('span', { text: '또는' }))] : null,
         form,
-        h('div', { class: 'acct-links' }, linkBtn('회원가입', () => showStep('signup')), h('span', { class: 'sep', 'aria-hidden': 'true' }), linkBtn('아이디·비밀번호 찾기', () => showStep('find')))
+        h('div', { class: 'acct-links' }, linkBtn('먼치킨 계정 만들기', () => showStep('signup')), h('span', { class: 'sep', 'aria-hidden': 'true' }), linkBtn('아이디·비밀번호 찾기', () => showStep('find')))
       ]
     };
   },
@@ -1970,9 +1972,10 @@ const STEPS = {
         agreeRow(privacy, 'agree-privacy', '개인정보 수집·이용에 동의해요', 'privacy.html')),
       st, go);
     return {
-      title: '회원가입', back: 'login', focus: x.kakaoAge ? age.box : id,
+      title: '먼치킨 계정 만들기', back: 'login', focus: x.kakaoAge ? age.box : id,
       body: [
         joinSteps(1),
+        h('p', { class: 'acct-lead', text: '먼치킨.com·먼치킨 봇·먼치킨 송출과 같은 계정이에요. 한 번 만들면 어디서나 이 계정으로 로그인해요.' }),
         age.wrap,
         S.members.kakao ? [kakaoButton(kakaoJoin), kst, h('p', { class: 'or' }, h('span', { text: '또는 아이디로 가입' }))] : kst,
         form
@@ -2019,7 +2022,7 @@ const STEPS = {
       body: [
         h('p', { class: 'acct-lead' }, '아이디나 비밀번호를 잊었다면 운영자(', h('a', { href: 'mailto:likegorogoro@naver.com', text: 'likegorogoro@naver.com' }), ')에게 알려 주세요. 닉네임과 생각나는 아이디를 함께 적어 주세요.'),
         S.members.kakao ? [h('p', { class: 'field-hint', text: '카카오로 가입했다면 카카오 로그인을 눌러 주세요.' }), kakaoButton()] : null,
-        h('div', { class: 'acct-links' }, linkBtn('회원가입', () => showStep('signup')))
+        h('div', { class: 'acct-links' }, linkBtn('먼치킨 계정 만들기', () => showStep('signup')))
       ]
     };
   },
@@ -2217,7 +2220,7 @@ function commentsContent(id, st) {
 const replyTo = new Map();   // 글 → {id: 답글을 달 댓글, nick}
 function roleMark(c) {
   const r = ROLE_ICON[c.r];
-  return r ? h('span', { class: 'cm-role ' + r[2], title: r[1], role: 'img', 'aria-label': r[1] }, icon(r[0])) : null;
+  return r ? h('span', { class: 'cm-role ' + r[2], title: r[1], 'aria-hidden': 'true' }, icon(r[0])) : null;
 }
 function commentItem(postId, c, replies = [], top = null) {
   const at = Number(c.at) || Date.now();
@@ -2229,7 +2232,9 @@ function commentItem(postId, c, replies = [], top = null) {
         h('p', { class: 'cm-head' },
           roleMark(c),
           h('b', { class: 'cm-nick', text: c.nick || '(알 수 없음)' }),
-          c.r === 'owner' ? h('span', { class: 'cm-tag cm-tag-dj', text: 'DJ' }) : null,
+          c.r === 'owner' ? h('span', { class: 'cm-tag cm-tag-dj', text: 'DJ' })
+            : c.r === 'dj' ? h('span', { class: 'cm-tag cm-tag-paid', text: 'DJ' })
+            : c.r === 'fan' ? h('span', { class: 'cm-tag cm-tag-fan', text: '리스너' }) : null,
           c.mine ? h('span', { class: 'cm-tag', text: '내 댓글' }) : null,
           h('time', { class: 'cm-time', datetime: new Date(at).toISOString(), title: fullTime(at), text: ago(at) })),
         h('p', { class: 'cm-text', text: c.text || '' }),
@@ -2264,7 +2269,7 @@ function composerContent(id, st) {
   if (state === 'can') return [commentForm(id)];
   const cta = (label, fn, ic) => h('button', { class: 'cm-cta', type: 'button', onclick: fn }, icon(ic), h('span', { text: label }));
   const note = (text, btn) => h('p', { class: 'cm-why' }, h('span', { text }), btn || null);
-  if (state === 'login') return [cta('로그인하고 댓글 달기', () => openAccount('login'), 'user')];
+  if (state === 'login') return [cta('먼치킨 계정으로 로그인하고 댓글 달기', () => openAccount('login'), 'user')];
   if (state === 'nickname') return [note('닉네임을 정하면 댓글을 달 수 있어요', h('button', { class: 'btn small primary', type: 'button', text: '닉네임 정하기', onclick: () => openAccount('nickname', {}) }))];
   if (state === 'blocked') return [note('이 앨범에서는 댓글을 달 수 없어요')];
   if (state === 'off') return [note('댓글을 받지 않는 앨범이에요')];
