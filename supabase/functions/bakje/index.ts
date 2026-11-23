@@ -775,9 +775,11 @@ async function member(req: Request, now: number) {
   switch (b.action) {
     // 먼치킨 프로그램이 기본 브라우저로 먼치킨.com/album 을 로그인된 채 열 때(#bjlogin=<표>) — 그 주소에서만 · 2분 · 한 번
     //  host(선택, 2026-11-23 봇 "내 앨범 열기"): 추억앨범 주소(퓨니코드, bj_hosts)면 그 주소용 표(그 앨범 사이트가 #bjlogin 으로 받음) — 아니면 먼치킨.com 용
+    //  답 {ok, ticket, host}: host = 표가 통하는 주소(siteOf 가 정한 실제 호스트, 못 알아보면 먼치킨.com) — 프로그램은 이 주소로 연다
     case 'web-ticket': {
       if (!await hit('bjwt:' + me.id, 3600, 30)) throw fail(429, '너무 자주 열었어요. 조금 뒤에 다시 해 주세요.');
-      return { ok: true, ticket: await loginTicket(me.id, webTicketHost(await siteOf(b.host), CENTER_HOST), now) };
+      const host = webTicketHost(await siteOf(b.host), CENTER_HOST);
+      return { ok: true, ticket: await loginTicket(me.id, host, now), host };
     }
     // 먼치킨 프로그램 카카오 로그인 승인(브라우저 먼치킨.com/album/?app=<자리>에서). 이미 다른 회원이 승인한 자리면 409.
     //  시간이 지났거나 없는 자리는 410(브라우저 로그인은 그대로 두게 401 을 쓰지 않는다)

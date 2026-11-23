@@ -58,6 +58,8 @@ test('표는 만든 주소에서만 쓸 수 있다(다른 앨범·먼치킨.com 
 test('web-ticket 과 ticket 이 이 판단을 쓴다(코드 자리)', () => {
   assert.match(raw, /case 'web-ticket': \{[\s\S]{0,400}webTicketHost\(await siteOf\(b\.host\), CENTER_HOST\)/);
   assert.match(raw, /if \(!ticketHostOk\(origin, row\.host, CENTER\)\) throw fail\(403/);
+  // 답에 표가 통하는 주소(host)도 같이 — 봇은 그 주소로 연다({ok, ticket, host})
+  assert.match(raw, /case 'web-ticket': \{[\s\S]{0,600}return \{ ok: true, ticket: await loginTicket\(me\.id, host, now\), host \};/);
   assert.ok(!/\\u[0-9a-fA-F]{4}/.test(raw), '백슬래시-u 글자 표기가 없어야 해요');
 });
 
