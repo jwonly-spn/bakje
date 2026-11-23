@@ -1086,3 +1086,10 @@ label, .label { font-size: 13px; font-weight: 600; color: var(--ink); margin-top
 
 /* 댓글 DJ(이용권 결제) · 리스너 배지(2026-11-23) — 색은 원래 있던 DJ 보라(.cm-role.role-dj)·회색 배지 그대로 */
 .cm-tag.cm-tag-paid { background: #8b5cf6; color: #fff; }
+
+/* 읽기 좋은 줄바꿈(2026-11-23 사용자 "줄바꿈 없이 난해해 보여") — 낱말은 그대로 둔 채(위 body keep-all) 끝줄에 한 글자만 남지 않게, 제목은 고르게,
+   긴 줄은 읽기 좋은 너비로. 안내 글의 문장 나누기는 app.js linesOf(.lines). */
+p, li, dd, dt, label, td, th, figcaption, .notice, .field-hint, .acct-lead, .status, .hint, .lines { text-wrap: pretty; }
+h1, h2, h3, .plan-order-title, .sheet-head h2, .empty-title { text-wrap: balance; }
+.pf-bio p { max-width: 36em; }
+.doc p, .doc li, .doc .doc-lead { max-width: 42em; }

@@ -19,11 +19,21 @@ const ls = {
 const S = { session: ls.get('ops_session'), me: null, tab: 'wait', data: null, busy: false, devices: null };
 
 // ---------- 작은 도구 ----------
+// 안내 글 줄바꿈(2026-11-23 사용자 "글들이 줄바꿈 없이 난해해 보여"): 글은 그대로 두고 한글 문장 끝(. ? !) 뒤 빈칸에서 줄을 나눈다.
+//  h(…, { lines: '…' }) 로 쓴다. 사용자 글(댓글·소개·캡션)에는 쓰지 않는다.
+const SENTENCE_END = /(?<=[가-힣"”')\]][.?!])\s+/;
+function linesOf(s) {
+  const box = document.createElement('span');
+  box.className = 'lines';
+  String(s).split(SENTENCE_END).forEach((x, i) => { if (i) box.append(document.createElement('br')); box.append(x); });
+  return box;
+}
 function h(tag, attrs, ...kids) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
     if (v == null || v === false) continue;
     if (k === 'text') el.textContent = v;
+    else if (k === 'lines') el.append(linesOf(v));
     else if (k === 'class') el.className = v;
     else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
     else el.setAttribute(k, v === true ? '' : v);
@@ -99,7 +109,7 @@ function installView() {
   return h('section', { class: 'install' },
     h('img', { class: 'app-icon', src: 'icon-180.png', alt: '' }),
     h('h1', { text: '입금 확인 앱 설치' }),
-    h('p', { class: 'muted', text: '홈 화면에 추가해야 입금 알림(푸시)을 받을 수 있어요. 스토어에서 받지 않아도 돼요.' }),
+    h('p', { class: 'muted', lines: '홈 화면에 추가해야 입금 알림(푸시)을 받을 수 있어요. 스토어에서 받지 않아도 돼요.' }),
     h('ol', { class: 'steps' },
       h('li', null, h('b', { text: '아래쪽 가운데 ' }), h('span', { class: 'share-ico', 'aria-hidden': 'true', text: '⬆︎' }), h('b', { text: ' 공유 단추' }), '를 눌러요'),
       h('li', null, '목록을 내려 ', h('b', { text: '"홈 화면에 추가"' }), '를 눌러요'),
@@ -211,7 +221,7 @@ function settingsView() {
   const mine = ls.get('ops_push_id');
   wrap.append(h('h2', { text: '알림' }),
     h('div', { class: 'group' },
-      h('p', { class: 'small', text: !pushReady() ? (isIOS() && !standalone() ? '홈 화면에 추가한 앱에서만 알림을 켤 수 있어요.' : '이 기기에서는 알림을 쓸 수 없어요.')
+      h('p', { class: 'small', lines: !pushReady() ? (isIOS() && !standalone() ? '홈 화면에 추가한 앱에서만 알림을 켤 수 있어요.' : '이 기기에서는 알림을 쓸 수 없어요.')
         : perm === 'granted' ? 'DJ가 "입금했어요"를 누르면 이 폰으로 알림이 와요.'
         : perm === 'denied' ? '알림이 꺼져 있어요. 아이폰 설정 › 알림 › 입금 확인 에서 켜 주세요.'
         : '알림을 켜면 DJ가 입금했을 때 바로 알려 드려요.' }),

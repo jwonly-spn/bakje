@@ -28,12 +28,22 @@ const enc = new TextEncoder();
 
 // ---------- 작은 도구 ----------
 const $ = (sel, root = document) => root.querySelector(sel);
+// 안내 글 줄바꿈(2026-11-23 사용자 "글들이 줄바꿈 없이 난해해 보여"): 글은 그대로 두고 한글 문장 끝(. ? !) 뒤 빈칸에서 줄을 나눈다.
+//  h(…, { lines: '…' }) 로 쓴다. 사용자 글(댓글·소개·캡션)에는 쓰지 않는다.
+const SENTENCE_END = /(?<=[가-힣"”')\]][.?!])\s+/;
+function linesOf(s) {
+  const box = document.createElement('span');
+  box.className = 'lines';
+  String(s).split(SENTENCE_END).forEach((x, i) => { if (i) box.append(document.createElement('br')); box.append(x); });
+  return box;
+}
 function h(tag, props, ...kids) {
   const el = document.createElement(tag);
   if (props) for (const [k, v] of Object.entries(props)) {
     if (v == null || v === false) continue;
     if (k === 'class') el.className = v;
     else if (k === 'text') el.textContent = v;
+    else if (k === 'lines') el.append(linesOf(v));
     else if (k === 'value') el.value = v;
     else if (k === 'style') Object.assign(el.style, v);
     else if (k === 'dataset') Object.assign(el.dataset, v);
@@ -297,14 +307,14 @@ function openNotes() {
   const paint = () => {
     const rows = noteRows(S.notes || []);
     if (!S.notes) { box.replaceChildren(h('p', { class: 'muted', text: '불러오는 중…' })); return; }
-    if (!rows.length) { box.replaceChildren(h('p', { class: 'muted notes-empty', text: '아직 알림이 없어요. 누가 하트를 누르거나 댓글을 달면 여기에 보여요.' })); return; }
+    if (!rows.length) { box.replaceChildren(h('p', { class: 'muted notes-empty', lines: '아직 알림이 없어요. 누가 하트를 누르거나 댓글을 달면 여기에 보여요.' })); return; }
     box.replaceChildren(h('ul', { class: 'notes' }, rows.map((r) => {
       const p = findPost(r.post), ph = p?.photos?.[0];
       return h('li', null, h('button', { class: 'note' + (r.at > seen ? ' new' : ''), type: 'button', onclick: () => { d.dismiss(); if (p) openViewer(r.post); else toast('지운 글이에요.'); } },
         h('span', { class: 'note-ic ' + r.kind }, icon(r.kind === 'heart' ? 'heart' : 'comment')),
         h('span', { class: 'note-text' }, h('span', null, ...noteText(r)), h('time', { class: 'muted', text: ago(r.at) })),
         ph ? h('img', { class: 'note-thumb', src: photoUrl(ph.t), alt: '', loading: 'lazy' }) : null));
-    })), h('p', { class: 'muted small notes-foot', text: '최근 60일 알림이에요. 로그인하지 않은 사람의 하트는 "손님"으로 보여요.' }));
+    })), h('p', { class: 'muted small notes-foot', lines: '최근 60일 알림이에요. 로그인하지 않은 사람의 하트는 "손님"으로 보여요.' }));
   };
   const d = sheet(h('div', null,
     h('div', { class: 'sheet-head' }, h('h2', { text: '알림' }), h('button', { class: 'icon-btn', type: 'button', 'aria-label': '닫기', onclick: () => d.dismiss() }, icon('close'))),
@@ -848,7 +858,7 @@ function calView() {
     h('span', { class: 'empty-icon' }, icon('calendar')), h('h2', { text: '아직 박제판이 없어요' }),
     h('p', { class: 'muted', text: '박제판 탭에 올린 사진을 여기서 달별로 모아 볼 수 있어요.' }),
     S.owner ? h('button', { class: 'link-btn', type: 'button', onclick: () => openComposer(), text: '첫 박제판 올리기' }) : null));
-  else if (!list.length) out.push(h('p', { class: 'sel-empty', text: `${when}에는 박제판이 없어요. 위 달력에서 박제판이 있는 달이나 날을 눌러 보세요.` }));
+  else if (!list.length) out.push(h('p', { class: 'sel-empty', lines: `${when}에는 박제판이 없어요. 위 달력에서 박제판이 있는 달이나 날을 눌러 보세요.` }));
   else out.push(h('h3', { class: 'sec-title sel-title' }, icon('photo'), `${when}의 박제판`, h('small', { text: num(list.length) })), h('div', { class: 'grid' }, list.map((p) => tile(p))));
   return h('div', { class: 'letters' }, out);
 }
@@ -997,7 +1007,7 @@ function registerView() {
   const back = h('a', { class: 'btn', href: './', text: '돌아가기' });
   if (!deviceSupported()) return h('main', { class: 'wrap narrow' }, h('section', { class: 'card' },
     h('h1', { text: '주인 기기 등록' }),
-    h('p', { text: '이 브라우저에서는 등록할 수 없어요. 크롬·사파리·엣지 최신 버전으로 열어 주세요.' }), back));
+    h('p', { lines: '이 브라우저에서는 등록할 수 없어요. 크롬·사파리·엣지 최신 버전으로 열어 주세요.' }), back));
   const code = h('input', { id: 'code', class: 'input code', inputmode: 'text', autocomplete: 'one-time-code', autocapitalize: 'characters', maxlength: '9', placeholder: 'ABCD-EFGH', required: true });
   code.addEventListener('input', () => {
     const v = code.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
@@ -1024,7 +1034,7 @@ function registerView() {
     status, h('div', { class: 'row end' }, back, go));
   return h('main', { class: 'wrap narrow' }, h('section', { class: 'card' },
     h('h1', { text: '주인 기기 등록' }),
-    h('p', { class: 'muted', text: '이 기기에서 박제판과 편지를 올릴 수 있게 등록해요. 등록 코드는 이미 등록한 기기의 ⚙ 설정 › "새 기기 등록 코드"에서 만들 수 있어요.' }),
+    h('p', { class: 'muted', lines: '이 기기에서 박제판과 편지를 올릴 수 있게 등록해요. 등록 코드는 이미 등록한 기기의 ⚙ 설정 › "새 기기 등록 코드"에서 만들 수 있어요.' }),
     form));
 }
 
@@ -1081,7 +1091,7 @@ function openComposer(post = null) {
   const ends = h('input', { class: 'input', id: 'ends', type: 'date', value: post?.ends || '', min: '2015-01-01', disabled: fromBot });
   const endsBox = h('div', { class: 'stack' },
     h('label', { for: 'ends', text: '종료 날짜' }), ends,
-    h('p', { class: 'muted small', text: fromBot
+    h('p', { class: 'muted small', lines: fromBot
       ? '먼치킨 봇이 올린 박제판이라 종료 날짜는 봇의 최초 박제판 화면에서 정해요. 정하면 여기에도 바로 보여요.'
       : '시즌 스푼이 끝나는 날을 고르면 목록과 글에 "D-5"처럼 남은 날이 보여요. 비워 두면 안 보여요.' }));
   // 미리 보기: 지금 적은 내용이 휴대폰·PC 에서 어떻게 보일지(줄바꿈 그대로)
@@ -1135,7 +1145,7 @@ function openComposer(post = null) {
   // 박제판 사진이 9:16 이 아니면 알려 준다(일반 게시물은 어떤 비율이든 그대로)
   function paintRatio() {
     const off = kind === 'post' ? 0 : photos.filter((p) => p.w && p.h && Math.abs(p.h / p.w - FRAME) / FRAME > 0.03).length;
-    ratioHint.textContent = off ? `${off}장은 9:16 사진이 아니에요. 휴대폰에선 사진 비율 그대로, PC에선 남는 곳이 검게 보여요.` : '';
+    ratioHint.replaceChildren(...(off ? [linesOf(`${off}장은 9:16 사진이 아니에요. 휴대폰에선 사진 비율 그대로, PC에선 남는 곳이 검게 보여요.`)] : []));
   }
   function paintPapers() {
     papers.replaceChildren(...PAPERS.map(([k, label]) => h('button', {
@@ -1236,7 +1246,7 @@ function openComposer(post = null) {
         h('div', { class: 'stack' }, h('label', { for: 'day', text: '날짜' }), day),
         h('label', { class: 'check', for: 'pinned' }, pinned, h('span', { text: '맨 위에 고정' }))),
       h('div', { class: 'pv-head' }, h('span', { class: 'label', text: '미리 보기' }), pvSeg),
-      h('p', { class: 'muted small', text: '줄바꿈이 실제 화면에서 어떻게 보이는지 확인해 보세요. 글을 고치면 바로 바뀌어요.' }),
+      h('p', { class: 'muted small', lines: '줄바꿈이 실제 화면에서 어떻게 보이는지 확인해 보세요. 글을 고치면 바로 바뀌어요.' }),
       pvBox),
     h('div', { class: 'sheet-foot' }, status, submit));
   for (const el of [caption, donor, theme, ends, day, to, text, from]) el.addEventListener('input', paintPreview);
@@ -1419,7 +1429,7 @@ function openSettings() {
       devList,
       h('div', { class: 'stack tight' }, makeCode, codeOut),
       h('p', { class: 'muted small', text: '이 코드는 다른 DJ 계정을 이 앨범에 연결할 때(내 정보 › DJ 계정으로 이 앨범 관리하기)나, 이 사이트 맨 아래 "주인 기기 등록"에 넣으면 돼요.' }),
-      ls.get('bj_owner') === '1' ? h('div', { class: 'row end' }, leave) : h('p', { class: 'muted small', text: 'DJ 계정으로 관리하고 있어요. 다른 기기에서도 로그인만 하면 돼요.' })
+      ls.get('bj_owner') === '1' ? h('div', { class: 'row end' }, leave) : h('p', { class: 'muted small', lines: 'DJ 계정으로 관리하고 있어요. 다른 기기에서도 로그인만 하면 돼요.' })
     )), { cls: 'settings-sheet', label: '설정' });
 }
 
@@ -1605,7 +1615,7 @@ function payerBox(key, st) {
   st.id = id('status');
   const el = h('fieldset', { class: 'payer', 'aria-describedby': id('note') },
     h('legend', { text: '결제하는 분' }),
-    h('p', { class: 'field-hint', id: id('note'), text: '카드 결제창에 넘기는 정보예요. 결제 회사로만 보내고 먼치킨은 저장하지 않아요.' }),
+    h('p', { class: 'field-hint', id: id('note'), lines: '카드 결제창에 넘기는 정보예요. 결제 회사로만 보내고 먼치킨은 저장하지 않아요.' }),
     field(id('name'), '이름', name), field(id('phone'), '휴대폰 번호', phone), field(id('email'), '이메일', email));
   const read = () => {
     const bad = (box, message) => { box.setAttribute('aria-invalid', 'true'); box.setAttribute('aria-describedby', st.id); say(st, message, true); box.focus(); return null; };
@@ -1678,7 +1688,7 @@ function payArea(key, body, { info, again, disabled = false }) {
     st,
     h('button', { class: 'btn primary block', type: 'button', text: '카드로 결제', disabled: disabled || !card.canPay, 'aria-describedby': card.canPay ? null : later,
       onclick: (e) => busy(e.currentTarget, st, () => payWithCard(body, st, payer, again)) }),
-    card.canPay ? null : h('p', { class: 'field-hint', id: later, text: CARD_LATER }),
+    card.canPay ? null : h('p', { class: 'field-hint', id: later, lines: CARD_LATER }),
     bankBtn('계좌이체로 신청', 'btn block')];
 }
 async function paintPlan(box, pick = { plan: 'munchkin', months: 1 }) {
@@ -1698,7 +1708,7 @@ async function paintPlan(box, pick = { plan: 'munchkin', months: 1 }) {
   if (PLAN_NOTE) {
     const n = PLAN_NOTE;
     PLAN_NOTE = null;
-    parts.push(h('p', { class: 'notice' + (n.bad ? ' bad-notice' : ''), role: n.bad ? 'alert' : 'status', text: n.text }));
+    parts.push(h('p', { class: 'notice' + (n.bad ? ' bad-notice' : ''), role: n.bad ? 'alert' : 'status', lines: n.text }));
     if (n.check) {
       const st0 = statusEl();
       parts.push(st0, h('button', { class: 'btn block', type: 'button', text: '결제 다시 확인', onclick: (e) => busy(e.currentTarget, st0, async () => { await finishCard(n.check); again(); }) }));
@@ -1724,7 +1734,7 @@ async function paintPlan(box, pick = { plan: 'munchkin', months: 1 }) {
         ...(o.newAlbum ? { newAlbum: { label: o.newAlbum.label, name: o.newAlbum.name } } : {}) };
       const payer = card.canPay ? payerBox('o-' + o.id, st) : null;
       parts.push(h('section', { class: 'plan-order' }, ...head,
-        h('p', { class: 'notice', text: card.canPay ? `${CARD_WAIT} 다시 결제하거나 신청을 취소할 수 있어요.` : `${CARD_WAIT} 신청을 취소할 수 있어요.` }),
+        h('p', { class: 'notice', lines: card.canPay ? `${CARD_WAIT} 다시 결제하거나 신청을 취소할 수 있어요.` : `${CARD_WAIT} 신청을 취소할 수 있어요.` }),
         card.canPay && card.mode === 'test' ? h('p', { class: 'notice pay-test', text: CARD_TEST }) : null,
         payer?.el, st,
         h('div', { class: 'plan-btns' }, cancelBtn('이 카드 신청을 취소할까요?'),
@@ -1737,8 +1747,8 @@ async function paintPlan(box, pick = { plan: 'munchkin', months: 1 }) {
         kv('계좌', h('span', { class: 'mono', text: bank.number }), copyBtn(bank.number.replace(/[^0-9]/g, ''), '계좌번호')),
         kv('예금주', bank.holder),
         kv('입금자명', h('b', { class: 'mono', text: o.payer }), copyBtn(o.payer, '입금자명'))) : null,
-      o.sent ? h('p', { class: 'notice', text: `입금했다고 알렸어요. ${WAIT_NOTE}` })
-        : h('p', { class: 'field-hint', text: '이체할 때 받는 분에게 보이는 이름(입금자명)을 위 글자 그대로 적어 주세요. 이체한 뒤 "입금했어요"를 눌러 주세요.' }),
+      o.sent ? h('p', { class: 'notice', lines: `입금했다고 알렸어요. ${WAIT_NOTE}` })
+        : h('p', { class: 'field-hint', lines: '이체할 때 받는 분에게 보이는 이름(입금자명)을 위 글자 그대로 적어 주세요. 이체한 뒤 "입금했어요"를 눌러 주세요.' }),
       st,
       h('div', { class: 'plan-btns' },
         cancelBtn('이 신청을 취소할까요? 이미 이체했다면 취소하지 말고 "입금했어요"를 눌러 주세요.'),
@@ -1747,7 +1757,7 @@ async function paintPlan(box, pick = { plan: 'munchkin', months: 1 }) {
         }) }) : null)));
   }
 
-  if (!info.open) parts.push(h('p', { class: 'notice', text: '이용권 신청을 준비하고 있어요. 조금 뒤에 다시 와 주세요.' }));
+  if (!info.open) parts.push(h('p', { class: 'notice', lines: '이용권 신청을 준비하고 있어요. 조금 뒤에 다시 와 주세요.' }));
   else {
     // 쓰는 중에 다른 것 더하기(끝나는 날을 맞춰서, 남은 날만큼)
     for (const [key, q] of Object.entries(info.addons || {})) {
@@ -1758,7 +1768,7 @@ async function paintPlan(box, pick = { plan: 'munchkin', months: 1 }) {
         h('p', { class: 'small', text: `쓰고 있는 ${have}이 끝나는 ${dayText(q.until)}까지 ${add}도 함께 써요(${q.days}일).` }),
         h('p', { class: 'small muted', text: `${add} ${q.yearly ? '1년 값 ÷ 12' : '한 달 값'} = 한 달 ${wonText(q.perMonth)} 기준으로 남은 날만큼` }),
         h('p', { class: 'plan-amount', text: wonText(q.amount) }),
-        needAlbum ? h('p', { class: 'field-hint', text: '추억앨범은 앨범을 연결한 DJ 계정만 신청할 수 있어요. 내 정보 › "DJ 계정으로 이 앨범 관리하기"를 먼저 해 주세요.' }) : null,
+        needAlbum ? h('p', { class: 'field-hint', lines: '추억앨범은 앨범을 연결한 DJ 계정만 신청할 수 있어요. 내 정보 › "DJ 계정으로 이 앨범 관리하기"를 먼저 해 주세요.' }) : null,
         ...payArea('add-' + key, { plan: key, album }, { info, again, disabled: needAlbum })));
     }
     // 새 이용권 고르기
@@ -1777,10 +1787,10 @@ async function paintPlan(box, pick = { plan: 'munchkin', months: 1 }) {
       h('p', { class: 'plan-amount', text: wonText(amount) }),
       pick.months === 12 && full > amount ? h('p', { class: 'small ok', text: `한 달씩보다 ${wonText(full - amount)} 아껴요 (한 달 ${wonText(Math.round(amount / 12))}꼴)` }) : null,
       !album ? h('p', { class: 'field-hint', text: '추억앨범 이용권은 앨범을 연결한 DJ 계정만 신청할 수 있어요.' }) : null,
-      h('p', { class: 'small muted', text: '쓰고 있는 기간이 남아 있으면 그 끝에 이어서 늘어나요. 한 달 = 30일.' }),
+      h('p', { class: 'small muted', lines: '쓰고 있는 기간이 남아 있으면 그 끝에 이어서 늘어나요. 한 달 = 30일.' }),
       ...payArea('pick', { plan: pick.plan, months: pick.months, album }, { info, again, disabled: !usable(pick.plan) })));
   }
-  parts.push(h('p', { class: 'notice', text: `계좌이체로 신청했다면 이체한 뒤 "입금했어요"를 눌러 주세요. ${WAIT_NOTE}` }));
+  parts.push(h('p', { class: 'notice', lines: `계좌이체로 신청했다면 이체한 뒤 "입금했어요"를 눌러 주세요. ${WAIT_NOTE}` }));
   const done = info.orders.filter((o) => o.state !== 'pending').slice(0, 6);
   if (done.length) parts.push(h('section', { class: 'plan-done' }, h('p', { class: 'plan-order-title', text: '지난 신청' }),
     done.map((o) => h('div', { class: 'plan-done-row' },
@@ -1828,7 +1838,7 @@ async function busy(btn, st, fn) {
 const linkBtn = (text, onclick) => h('button', { class: 'link-btn', type: 'button', text, onclick });
 function field(id, label, input, hint) {
   if (hint) input.setAttribute('aria-describedby', id + '-hint');
-  return [h('label', { for: id, text: label }), input, hint ? h('p', { class: 'field-hint', id: id + '-hint', text: hint }) : null];
+  return [h('label', { for: id, text: label }), input, hint ? h('p', { class: 'field-hint', id: id + '-hint', lines: hint }) : null];
 }
 const pwInput = (id, auto) => h('input', { class: 'input', id, type: 'password', autocomplete: auto, maxlength: '64' });
 function checkNewPassword(pw, pw2) {
@@ -1898,7 +1908,7 @@ const STEPS = {
       title: '먼치킨 계정으로 로그인', focus: x.loginId ? pw : id,
       body: [
         // 먼치킨 계정 = 이 사이트·먼치킨.com/album·먼치킨 봇·먼치킨 송출이 함께 쓰는 계정(bj_members — 서버 bakje member, 프로그램은 account.cjs)
-        h('p', { class: 'acct-lead', text: '먼치킨.com·먼치킨 봇·먼치킨 송출과 같은 계정이에요. 로그인하면 모든 DJ 추억앨범에 댓글을 달 수 있어요.' }),
+        h('p', { class: 'acct-lead', lines: '먼치킨.com·먼치킨 봇·먼치킨 송출과 같은 계정이에요. 로그인하면 모든 DJ 추억앨범에 댓글을 달 수 있어요.' }),
         h('button', { class: 'btn block sso-btn', type: 'button', onclick: () => ssoContinue() }, icon('check'), '다른 추억앨범에서 로그인했다면 → 그 계정으로 계속'),
         S.members.kakao ? [kakaoButton(), h('p', { class: 'or' }, h('span', { text: '또는' }))] : null,
         form,
@@ -1959,7 +1969,7 @@ const STEPS = {
       title: '먼치킨 계정 만들기', back: 'login', focus: x.kakaoAge ? age.box : id,
       body: [
         joinSteps(1),
-        h('p', { class: 'acct-lead', text: '먼치킨.com·먼치킨 봇·먼치킨 송출과 같은 계정이에요. 한 번 만들면 어디서나 이 계정으로 로그인해요.' }),
+        h('p', { class: 'acct-lead', lines: '먼치킨.com·먼치킨 봇·먼치킨 송출과 같은 계정이에요. 한 번 만들면 어디서나 이 계정으로 로그인해요.' }),
         age.wrap,
         S.members.kakao ? [kakaoButton(kakaoJoin), kst, h('p', { class: 'or' }, h('span', { text: '또는 아이디로 가입' }))] : kst,
         form
@@ -2020,7 +2030,7 @@ const STEPS = {
     return {
       title: '내 정보',
       body: [
-        S.banned ? h('p', { class: 'notice bad-notice', text: '이용이 막힌 계정이에요. 댓글을 달 수 없어요.' }) : null,
+        S.banned ? h('p', { class: 'notice bad-notice', lines: '이용이 막힌 계정이에요. 댓글을 달 수 없어요.' }) : null,
         h('dl', { class: 'kv' },
           row('닉네임', m.nickname ? h('b', { text: m.nickname }) : h('span', { class: 'muted', text: '아직 안 정했어요' })),
           row('로그인', m.loginId ? `아이디 ${m.loginId}` : m.kakao ? '카카오' : '—')),
@@ -2069,7 +2079,7 @@ const STEPS = {
     return {
       title: 'DJ 앨범 연결', back: x.from === 'me' ? 'me' : undefined, focus: code,
       body: [
-        h('p', { class: 'acct-lead', text: `${siteName()}을(를) 이 계정으로 관리해요. 연결하면 어느 기기에서든 로그인만 하면 글을 올리고 고칠 수 있어요.` }),
+        h('p', { class: 'acct-lead', lines: `${siteName()}을(를) 이 계정으로 관리해요. 연결하면 어느 기기에서든 로그인만 하면 글을 올리고 고칠 수 있어요.` }),
         h('p', { class: 'field-hint', text: '앨범 등록 코드는 먼치킨 이용권을 결제하면 운영자가 드려요.' }),
         form,
         x.join ? h('div', { class: 'acct-links' }, linkBtn('나중에 할게요', done)) : null
@@ -2185,7 +2195,7 @@ function commentsContent(id, st) {
   const out = [h('h3', { class: 'cm-title' }, '댓글', n ? h('span', { text: num(n) }) : null)];
   if (!st) out.push(h('p', { class: 'cm-empty', text: '댓글을 불러오는 중…' }));
   else if (st.err) out.push(h('p', { class: 'cm-empty' }, st.err + ' ', h('button', { class: 'link-btn', type: 'button', text: '다시 불러오기', onclick: () => { CM.delete(id); paintComments(id); loadComments(id); } })));
-  else if (!n) out.push(h('p', { class: 'cm-empty', text: st.off ? '아직 댓글이 없어요.' : '아직 댓글이 없어요. 첫 댓글을 남겨 보세요.' }));
+  else if (!n) out.push(h('p', { class: 'cm-empty', lines: st.off ? '아직 댓글이 없어요.' : '아직 댓글이 없어요. 첫 댓글을 남겨 보세요.' }));
   else {
     // 답글(한 단계)은 그 댓글 아래에. 지워진 댓글에 남은 답글은 "지워진 댓글" 아래에.
     const ids = new Set(st.list.map((c) => c.id)), kids = new Map(), tops = [];
@@ -2389,7 +2399,7 @@ function ownerCommentSettings(closeSettings) {
   const paintOn = (v) => {
     on.checked = v;
     on.disabled = false;
-    onNote.textContent = v ? '로그인한 회원이 글마다 댓글을 달 수 있어요.' : '새 댓글을 받지 않아요. 이미 달린 댓글은 그대로 보여요.';
+    onNote.replaceChildren(linesOf(v ? '로그인한 회원이 글마다 댓글을 달 수 있어요.' : '새 댓글을 받지 않아요. 이미 달린 댓글은 그대로 보여요.'));
   };
   on.addEventListener('change', async () => {
     const want = on.checked;
@@ -2420,7 +2430,7 @@ function ownerCommentSettings(closeSettings) {
     const p0 = byDate(posts())[0];
     if (!p0) { paintOn(true); return; }
     try { paintOn((await call('comments', { query: { post: p0.id } })).off !== true); }
-    catch { paintOn(true); onNote.textContent = '지금 상태를 알 수 없어요. 바꾸면 그대로 저장돼요.'; }
+    catch { paintOn(true); onNote.replaceChildren(linesOf('지금 상태를 알 수 없어요. 바꾸면 그대로 저장돼요.')); }
   }
   async function loadReports() {
     try {

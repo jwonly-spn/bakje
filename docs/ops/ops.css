@@ -84,3 +84,7 @@ dialog.sheet h2 { margin: 0; font-size: 19px; color: var(--text); }
 .sheet-btns { display: grid; grid-template-columns: 1fr 1.6fr; gap: 8px; margin-top: 4px; }
 #toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom)); transform: translateX(-50%); background: rgb(30 30 32 / .94); color: #fff; padding: 11px 16px; border-radius: 14px; font-size: 15px; max-width: 90vw; text-align: center; z-index: 10; }
 #toast.bad { background: var(--red); }
+
+/* 읽기 좋은 줄바꿈(2026-11-23) */
+p, li, .small, .muted, .lines { text-wrap: pretty; }
+h1, h2 { text-wrap: balance; }
