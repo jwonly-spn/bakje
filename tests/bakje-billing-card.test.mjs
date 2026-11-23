@@ -955,3 +955,22 @@ test('이용권 기간은 1개월·1년만 — 3개월·6개월 새 신청은 40
   assert.equal((await s.call('mDj', 'order', { plan: 'munchkin', months: 6 })).status, 400);
   assert.equal((await s.call('mDj', 'card-start', { plan: 'munchkin', months: 6 })).status, 400);
 });
+
+test('운영자 계정(is_admin)은 munchkin-pass 가 늘 이용권 있음 — until 은 2100-12-31(bakje 의 가장 먼 날) · 보통 회원은 그대로', async () => {
+  const FAR = Date.parse('2100-12-31T23:59:59+09:00');
+  for (const now of [BEFORE_DEC, AFTER_JAN]) {
+    const s = setup({ now });
+    const op = ok(await s.call('mOp', 'munchkin-pass'));
+    assert.equal(op.active, true);
+    assert.equal(op.until, FAR);
+    assert.equal(op.kind, 'munchkin');
+    assert.equal(op.from, PAID_FROM);
+    assert.equal(op.now, now);
+    assert.equal(op.free, now < PAID_FROM);
+    assert.equal(op.waiting, 0);
+    assert.equal(op.sent, false);
+    const dj = ok(await s.call('mDj', 'munchkin-pass'));
+    assert.deepEqual({ active: dj.active, until: dj.until, kind: dj.kind }, { active: false, until: null, kind: null });
+    assert.equal(s.T.bj_entitlements.length, 0, '운영자에게 이용권 줄을 만들지 않아요');
+  }
+});
