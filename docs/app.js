@@ -1871,9 +1871,8 @@ function afterLogin(message) {
   if (S.me && !S.me.nickname) openAccount('nickname', { join: true });
   else { closeAccount(); afterJoin(); }
 }
-// 가입·로그인을 다 마친 뒤: DJ 로 가입했으면 앨범 연결로, 아니면 서버에 로그인 맡겨 두기
+// 가입·로그인을 다 마친 뒤: 서버에 로그인 맡겨 두기(예전 가입 창의 DJ 고르기 값이 남아 있으면 지운다 — 고르기는 2026-11-23 없앰)
 function afterJoin() {
-  if (ss.get('bj_join_role') === 'dj' && !acctOwner()) { openAccount('claim', { join: true }); return; }
   ss.del('bj_join_role');
   ssoRemember();
 }
@@ -1930,20 +1929,7 @@ const STEPS = {
     const agreeRow = (box, forId, text, href) => h('div', { class: 'agree-row' },
       h('label', { class: 'check', for: forId }, box, h('span', null, h('em', { text: '(필수)' }), ' ' + text)),
       h('a', { class: 'agree-view', href, target: '_blank', rel: 'noopener', text: '보기', 'aria-label': text.replace(/에 동의해요$/, '') + ' 보기' }));
-    // 청취자 / DJ(2026-11-05) — DJ 는 가입을 마친 뒤 앨범 등록 코드(먼치킨 이용권 결제 뒤 받음)로 내 앨범을 잇는다
-    let role = ss.get('bj_join_role') === 'dj' ? 'dj' : 'listener';
-    const roleSeg = h('div', { class: 'seg wide role-seg', role: 'radiogroup', 'aria-label': '가입 종류' });
-    const roleHint = h('p', { class: 'field-hint' });
-    const paintRole = () => {
-      roleSeg.replaceChildren(...[['listener', '청취자로 가입'], ['dj', 'DJ로 가입']].map(([k, label]) => h('button', {
-        type: 'button', role: 'radio', 'aria-checked': String(role === k), class: 'kind-opt' + (role === k ? ' on' : ''),
-        onclick: () => { role = k; paintRole(); }
-      }, h('span', { class: 'kind-top' }, role === k ? icon('check') : null, label))));
-      roleHint.textContent = role === 'dj'
-        ? 'DJ는 가입한 뒤 앨범 등록 코드를 넣으면 이 계정으로 내 추억앨범을 관리해요. 코드는 먼치킨 이용권을 결제하면 드려요.'
-        : '댓글을 달고 하트를 누를 수 있어요.';
-    };
-    paintRole();
+    // 청취자/DJ 고르기는 없앴다(2026-11-23 — DJ·리스너는 댓글 마크처럼 결제로만 정해진다). 내 앨범 잇기는 내 정보 › "DJ 계정으로 이 앨범 관리하기"
     const st = statusEl();
     const go = h('button', { class: 'btn primary block', type: 'submit', text: '가입하기' });
     const form = h('form', { class: 'stack', onsubmit: (e) => {
@@ -1955,14 +1941,12 @@ const STEPS = {
       if (!age.box.checked) { say(st, AGE14_NEED, true); age.box.focus(); return; }
       if (!terms.checked || !privacy.checked) { say(st, '이용약관과 개인정보 수집·이용에 동의해 주세요.', true); return; }
       busy(go, st, async () => {
-        const r = await memberCall('signup', { loginId, password: pw.value, agree: true, age14: true, role });
-        if (role === 'dj') ss.set('bj_join_role', 'dj'); else ss.del('bj_join_role');
+        const r = await memberCall('signup', { loginId, password: pw.value, agree: true, age14: true });
         setSession(r.session, r.member);
         toast('가입했어요');
         showStep('nickname', { join: true });
       });
     } },
-      roleSeg, roleHint,
       field('s-id', '아이디', id, '영어 소문자·숫자·_ 로 4~20자'),
       field('s-pw', '비밀번호', pw, '8자 이상'),
       field('s-pw2', '비밀번호 확인', pw2),
@@ -2039,8 +2023,7 @@ const STEPS = {
         S.banned ? h('p', { class: 'notice bad-notice', text: '이용이 막힌 계정이에요. 댓글을 달 수 없어요.' }) : null,
         h('dl', { class: 'kv' },
           row('닉네임', m.nickname ? h('b', { text: m.nickname }) : h('span', { class: 'muted', text: '아직 안 정했어요' })),
-          row('로그인', m.loginId ? `아이디 ${m.loginId}` : m.kakao ? '카카오' : '—'),
-          row('계정', acctOwner() ? h('b', { text: 'DJ · 이 앨범 관리 중' }) : m.role === 'dj' ? 'DJ' : '청취자')),
+          row('로그인', m.loginId ? `아이디 ${m.loginId}` : m.kakao ? '카카오' : '—')),
         !m.nickname ? h('p', { class: 'field-hint', text: '닉네임을 정하면 댓글을 달 수 있어요.' }) : null,
         todo,
         h('div', { class: 'menu acct-menu' },
