@@ -615,7 +615,8 @@ async function dropIfUnpaid(o: any, now: number, got?: any) {
   return false;
 }
 // 카드 신청 다시 확인(info — 결제창을 닫아 버린 경우): 만든 지 1분 지난 것·최대 3개. 못 물어도 info 는 그대로 된다.
-//  기다림: 결제 없음(404)·READY → 정리 · 결제 있음 → 마무리(finishCard) / 취소·거절(pay_channel 비어 있음): 뒤늦은 결제가 있나 한 번(lateCard).
+//  기다림: 결제 없음(404) → 정리 · READY 는 그대로(결제창이 열려 있을 수 있음 — 다른 탭이 결제 중인 신청을 지우지 않게, READY 정리는 card-start 때만)
+//   · 그 밖 → 마무리(finishCard) / 취소·거절(pay_channel 비어 있음): 뒤늦은 결제가 있나 한 번(lateCard).
 //  pay_channel 이 채워진 것(결제를 봤거나 'NONE' 으로 정리·확인한 것)은 다시 묻지 않는다.
 async function recheckCards(member: string, now: number) {
   if (!env('PORTONE_API_SECRET')) return;
@@ -626,7 +627,8 @@ async function recheckCards(member: string, now: number) {
       try {
         if (o.state !== 'pending') { await lateCard(o, now); return; }
         const p = await portonePayment(o.pay_id);
-        if (!await dropIfUnpaid(o, now, p)) await finishCard(o, now, p);
+        if (!p) await dropCard(o, now);
+        else await finishCard(o, now, p);
       } catch (e) { if (!(e instanceof Fail)) console.error('카드 다시 확인', e); }
     }));
   } catch (e) { if (!(e instanceof Fail)) console.error('카드 다시 확인', e); }

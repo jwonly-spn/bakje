@@ -833,21 +833,38 @@ test('고침 2: 결제가 진행된 카드 신청(FAILED·결제 있음)·계좌
   assert.equal(s.T.bj_orders.filter((x) => x.state === 'pending').length, 3);
 });
 
-test('고침 2: info 다시 확인도 1분 지난 결제 없음(404)·READY 신청을 정리하고, 정리된 것은 다시 안 묻는다', async () => {
+test('고침 2: info 다시 확인은 1분 지난 결제 없음(404) 신청만 정리하고, 정리된 것은 다시 안 묻는다', async () => {
   const s = setup({ card: LIVE, now: AFTER_DEC });
-  const A = 'o' + 'd'.repeat(11), B = 'o' + 'e'.repeat(11);
-  seedCard(s, A, 1, AFTER_DEC); seedCard(s, B, 3, AFTER_DEC);
-  s.net.payments['mk-' + B] = READY(B, 9000);
+  const A = 'o' + 'd'.repeat(11);
+  seedCard(s, A, 1, AFTER_DEC);
   s.setNow(AFTER_DEC + 30000);
   ok(await s.call('mDj', 'info'));
   assert.equal(s.net.calls.length, 0, '1분 안 된 신청은 묻지 않아요');
   assert.equal(row(s, A).state, 'pending');
   s.setNow(AFTER_DEC + 2 * 60000);
   const i = ok(await s.call('mDj', 'info'));
-  assert.equal(s.net.calls.length, 2);
-  assert.deepEqual(i.orders.map((x) => x.state), ['canceled', 'canceled']);
+  assert.equal(s.net.calls.length, 1);
+  assert.deepEqual(i.orders.map((x) => x.state), ['canceled']);
+  assert.equal(row(s, A).pay_channel, 'NONE');
   ok(await s.call('mDj', 'info'));
-  assert.equal(s.net.calls.length, 2, '정리된 것은 다시 안 물어요');
+  assert.equal(s.net.calls.length, 1, '정리된 것은 다시 안 물어요');
+});
+
+test('고침 2(추가): info 다시 확인은 READY(결제창이 열려 있을 수 있음) 신청을 정리하지 않는다 — 그대로 기다림', async () => {
+  const s = setup({ card: LIVE, now: AFTER_DEC });
+  const B = 'o' + 'e'.repeat(11);
+  seedCard(s, B, 3, AFTER_DEC);
+  s.net.payments['mk-' + B] = READY(B, 9000);
+  s.setNow(AFTER_DEC + 2 * 60000);
+  const i = ok(await s.call('mDj', 'info'));
+  assert.equal(s.net.calls.length, 1);
+  assert.deepEqual(i.orders.map((x) => x.state), ['pending']);
+  assert.equal(row(s, B).state, 'pending');
+  assert.equal(row(s, B).pay_channel, null);
+  // 그 사이 결제가 끝나면 다음 다시 확인이 마무리한다
+  s.net.payments['mk-' + B] = payment({ id: B, amount: 9000 });
+  assert.equal(ok(await s.call('mDj', 'info')).orders[0].state, 'paid');
+  assert.equal(entOf(s, 'mDj', 'munchkin'), PAID_FROM + 90 * DAY);
 });
 
 test('고침 3: 금액이 다른 결제가 들어온 신청은 취소할 수 있고(알림은 이미 한 번), 운영자 지난 신청에 보이고, 같은 내용으로 다시 누르면 새 신청', async () => {
