@@ -821,16 +821,52 @@ test('고침 2: 결제창을 닫은 카드 신청 3개가 있어도 다른 내�
   assert.equal(s.T.bj_entitlements.length, 0);
 });
 
-test('고침 2: 결제가 진행된 카드 신청(FAILED·결제 있음)·계좌이체 신청은 정리하지 않는다 · 기다리는 신청 3개 한도는 그대로', async () => {
+test('고침 2: 계좌이체 신청은 정리하지 않는다 · 기다리는 신청 3개 한도는 그대로(카드 신청이 막힘)', async () => {
   const s = setup({ card: LIVE, now: AFTER_DEC });
-  const f = ok(await s.call('mDj', 'card-start', { plan: 'munchkin', months: 1 })).order;
-  s.net.payments['mk-' + f.id] = { status: 'FAILED', id: 'mk-' + f.id, storeId: STORE, channel: { type: 'LIVE' }, amount: { total: f.amount }, currency: 'KRW' };
+  ok(await s.call('mDj', 'order', { plan: 'munchkin', months: 1 }));
   ok(await s.call('mDj', 'order', { plan: 'munchkin', months: 3 }));
   ok(await s.call('mDj', 'order', { plan: 'munchkin', months: 6 }));
   const full = await s.call('mDj', 'card-start', { plan: 'munchkin', months: 12 });
   assert.equal(full.status, 409);
-  assert.equal(row(s, f.id).state, 'pending');
   assert.equal(s.T.bj_orders.filter((x) => x.state === 'pending').length, 3);
+  assert.equal(s.net.calls.length, 0, '계좌이체 신청은 포트원에 묻지 않아요');
+});
+
+test('고침 2회차 2: 카드 거절(FAILED)로 남은 카드 신청 3개도 다른 내용의 card-start 때 정리 — 4번째가 409 가 아님', async () => {
+  const s = setup({ card: LIVE, now: AFTER_DEC });
+  const ids = ['o' + 'f'.repeat(11), 'o' + 'g'.repeat(11), 'o' + 'h'.repeat(11)];
+  ids.forEach((id, i) => { seedCard(s, id, [1, 3, 6][i], AFTER_DEC - 60000); s.net.payments['mk-' + id] = { status: 'FAILED', id: 'mk-' + id, storeId: STORE, channel: { type: 'LIVE' }, amount: { total: 3000 }, currency: 'KRW', failure: { reason: '카드 거절' } }; });
+  const d = ok(await s.call('mDj', 'card-start', { plan: 'munchkin', months: 12 }));
+  assert.equal(d.order.state, 'pending');
+  for (const id of ids) { assert.equal(row(s, id).state, 'canceled'); assert.equal(row(s, id).pay_channel, 'NONE'); }
+  assert.equal(s.T.bj_entitlements.length, 0);
+  // 같은 내용이면 거절된 신청을 다시 쓴다(같은 결제 번호로 다시 결제)
+  const t = setup({ card: LIVE, now: AFTER_DEC });
+  const F = 'o' + 'i'.repeat(11);
+  seedCard(t, F, 1, AFTER_DEC - 60000);
+  t.net.payments['mk-' + F] = { status: 'FAILED', id: 'mk-' + F, storeId: STORE, channel: { type: 'LIVE' }, amount: { total: 3000 }, currency: 'KRW' };
+  assert.equal(ok(await t.call('mDj', 'card-start', { plan: 'munchkin', months: 1 })).order.id, F);
+  assert.equal(row(t, F).state, 'pending');
+});
+
+test('고침 2회차 1: 결제가 끝나는 순간 다른 탭이 그 신청을 정리해도(조건부 update 가 빗나감) → 이용권 없이 환불 알림 한 번', async () => {
+  for (const [label, card, who, over] of [['LIVE 보통 신청', LIVE, 'mDj', {}], ['테스트 모드 신청에 LIVE 결제', CARD, 'mKg', {}]]) {
+    const s = setup({ card, now: AFTER_DEC });
+    const o = ok(await s.call(who, 'card-start', { plan: 'munchkin', months: 1 })).order;
+    s.net.payments['mk-' + o.id] = payment(o, over);
+    s.net.setDelay(30);
+    const done = s.call(who, 'card-done', { id: o.id });
+    while (!s.net.calls.length) await new Promise((r) => setTimeout(r, 1));   // 포트원에 묻는 사이에
+    Object.assign(row(s, o.id), { state: 'canceled', done: AFTER_DEC, pay_channel: 'NONE' });   // 다른 탭 card-start 의 정리(dropCard)
+    const r = ok(await done);
+    assert.equal(r.state, 'failed', label);
+    assert.equal(r.order.state, 'canceled', label);
+    assert.match(r.message, /취소한 신청이라 이용권은 생기지 않아요/, label);
+    assert.equal(row(s, o.id).pay_channel, 'LIVE', label);
+    assert.equal(typeof row(s, o.id).pay_at, 'number', label);
+    assert.equal(s.T.bj_entitlements.length, 0, label);
+    assert.equal(s.net.hooks.filter((t) => t.includes('취소한 신청') && t.includes('환불')).length, 1, label);
+  }
 });
 
 test('고침 2: info 다시 확인은 1분 지난 결제 없음(404) 신청만 정리하고, 정리된 것은 다시 안 묻는다', async () => {

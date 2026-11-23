@@ -1566,6 +1566,7 @@ const CARD_TEST = '🧪 테스트 결제예요 — 실제로 돈이 나가지 �
 const CARD_LATER = '카드 결제는 KG이니시스 심사가 끝나면 열려요. 지금은 계좌이체로 결제할 수 있어요.';
 const CARD_WAIT = '카드 결제를 아직 마치지 않았어요.';
 const CARD_FAIL = '결제를 마치지 못했어요. 다시 결제하거나 신청을 취소해 주세요.';
+const CARD_CHECK = '결제를 확인하고 있어요. 잠시 뒤 [결제 다시 확인]을 눌러 주세요.';   // 먼치킨홈 album.js(7175d0a)와 같은 글
 const PAYER = { name: '', phone: '', email: '' };
 let PLAN_NOTE = null;   // 카드 결제 결과·멈춘 까닭 {text, bad} — 이용권 창을 다음에 그릴 때 한 번 보인다
 async function billCall(action, body = {}) {
@@ -1645,7 +1646,9 @@ async function finishCard(id) {
   catch (e) { PLAN_NOTE = { text: e.message, bad: true }; return; }
   if (r.state === 'paid') { PLAN_NOTE = { text: r.message || '카드로 결제했어요. 이용 기간에 더했어요.' }; toast('결제했어요'); }
   else if (r.state === 'test') { PLAN_NOTE = { text: r.message || '테스트 결제를 마쳤어요. 실제 결제가 아니라 이용권은 생기지 않아요.' }; toast('테스트 결제를 마쳤어요'); }
-  else PLAN_NOTE = { text: r.state === 'failed' ? (r.message || CARD_FAIL) : '결제가 아직 끝나지 않았어요. 다시 결제해 주세요.', bad: true };
+  else if (r.state === 'failed') PLAN_NOTE = { text: r.message || CARD_FAIL, bad: true };
+  // pending: 방금 결제했는데 포트원 쪽 반영이 늦을 수 있다 — 다시 결제하라고 하지 않고 [결제 다시 확인](card-done 다시)으로
+  else PLAN_NOTE = { text: CARD_CHECK, check: id };
 }
 // 휴대폰 카드 결제에서 돌아옴(?pay=): code 가 있으면(그만둠·실패) 내 결제 안 끝난 카드 신청일 때만 그 글을 보이고, 없으면 card-done 으로 마무리 → 내 정보 › 이용권
 async function payBack(p) {
@@ -1691,7 +1694,15 @@ async function paintPlan(box, pick = { plan: 'munchkin', months: 1 }) {
   const parts = [];
   // 위 띠(변경-1123): 유료화 전(서버 시각으로 2027-01-01 0시 전)에만
   if ((Number(info.now) || now) < (Number(info.munchkinPaidFrom) || PAID_FROM)) parts.push(h('p', { class: 'notice plan-banner', text: PAY_BANNER }));
-  if (PLAN_NOTE) { parts.push(h('p', { class: 'notice' + (PLAN_NOTE.bad ? ' bad-notice' : ''), role: PLAN_NOTE.bad ? 'alert' : 'status', text: PLAN_NOTE.text })); PLAN_NOTE = null; }
+  if (PLAN_NOTE) {
+    const n = PLAN_NOTE;
+    PLAN_NOTE = null;
+    parts.push(h('p', { class: 'notice' + (n.bad ? ' bad-notice' : ''), role: n.bad ? 'alert' : 'status', text: n.text }));
+    if (n.check) {
+      const st0 = statusEl();
+      parts.push(st0, h('button', { class: 'btn block', type: 'button', text: '결제 다시 확인', onclick: (e) => busy(e.currentTarget, st0, async () => { await finishCard(n.check); again(); }) }));
+    }
+  }
   parts.push(h('dl', { class: 'kv' }, kv('먼치킨', until('munchkin')), kv('추억앨범', until('album'))));
   const bank = info.bank;
 

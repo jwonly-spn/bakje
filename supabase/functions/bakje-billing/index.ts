@@ -527,6 +527,13 @@ function settled(o: any) {
   return { state: 'failed', order: o, message: CARD_DONE_MSG[o.state === 'rejected' ? 'rejected' : 'canceled'] };
 }
 const reread = async (o: any) => await q(db.from('bj_orders').select('*').eq('id', o.id).maybeSingle());
+// 조건부 update 가 빗나갔을 때(그 사이 다른 요청이 상태를 바꿈): 다시 읽어 취소·거절이 됐으면(예: 결제가 끝나는 순간 다른 탭의 card-start 가 READY 로 보고 정리)
+//  이미 받은 포트원 답으로 lateCard — 이용권 없이 운영자에게 환불 알림 한 번(고침 2회차 1). 그 밖에는 그 상태로 답한다.
+async function missed(o: any, now: number, p: any): Promise<{ state: string; order: any; message?: string }> {
+  const fresh = await reread(o);
+  if (fresh && (fresh.state === 'canceled' || fresh.state === 'rejected')) return lateCard(fresh, now, p);
+  return settled(fresh);
+}
 // 카드 신청 마무리(card-done · cancel · info 다시 확인이 같이 씀). 이용권을 줄지는 화면이 아니라 포트원이 알려 준 결제로만 정한다:
 //  TEST 채널(또는 모르는 채널) → 'test'(이용권·앨범 없음) · LIVE 라도 테스트 모드에서 만든 신청(test_only) → 'test' + 운영자에게 환불 알림
 //  LIVE + 보통 신청 + 결제 번호·상점·금액·통화가 신청과 같음 → paid + 기간. pending 에서 바꾸기는 조건부 update 한 번(card-done 두 번·동시에 와도 한 번).
@@ -547,7 +554,7 @@ async function finishCard(o: any, now: number, got?: any): Promise<{ state: stri
   const what = `${o.nick || '(닉네임 없음)'} · ${PLANS[o.plan].name} ${periodText(o)}`;
   if (channel !== 'LIVE' || o.test_only === true) {
     const r: any = await q(db.from('bj_orders').update({ state: 'test', done: now, pay_at: at, pay_channel: channel }).eq('id', o.id).eq('state', 'pending').select('*'));
-    if (!r?.[0]) return settled(await reread(o));
+    if (!r?.[0]) return missed(o, now, p);
     const real = channel === 'LIVE';
     if (real) await quiet(notifyOps(`⚠️ 실제 돈이 들어온 테스트 결제 신청 — 환불 필요\n${what}\n금액 ${won(o.amount)} · 결제 번호 ${o.pay_id}\n이용권은 주지 않았어요. 포트원 콘솔에서 결제를 취소해 주세요.`,
       `⚠️ 테스트 결제 신청에 실제 결제 ${won(o.amount)}`, `${what}\n환불(결제 취소)이 필요해요.`));
@@ -558,12 +565,13 @@ async function finishCard(o: any, now: number, got?: any): Promise<{ state: stri
   if (p.id !== o.pay_id || p.storeId !== env('PORTONE_STORE_ID') || p.currency !== 'KRW' || total !== Number(o.amount)) {
     // 이용권 없음 · 신청은 기다림 그대로. 알림은 한 번만(pay_channel 이 비어 있을 때 채우면서)
     const r: any = await q(db.from('bj_orders').update({ pay_channel: channel, pay_at: at }).eq('id', o.id).eq('state', 'pending').is('pay_channel', null).select('id'));
-    if (r?.[0]) await quiet(notifyOps(`⚠️ 카드 결제가 신청과 달라요 — 이용권 안 줌\n${what}\n신청 금액 ${won(o.amount)} · 결제 금액 ${Number.isFinite(total) ? won(total) : '?'} ${line(p.currency, 8)}\n결제 번호 ${o.pay_id} — 포트원 콘솔에서 확인하고 결제를 취소해 주세요.`,
+    if (!r?.[0]) { const fresh = await reread(o); if (fresh && (fresh.state === 'canceled' || fresh.state === 'rejected')) return lateCard(fresh, now, p); }
+    else await quiet(notifyOps(`⚠️ 카드 결제가 신청과 달라요 — 이용권 안 줌\n${what}\n신청 금액 ${won(o.amount)} · 결제 금액 ${Number.isFinite(total) ? won(total) : '?'} ${line(p.currency, 8)}\n결제 번호 ${o.pay_id} — 포트원 콘솔에서 확인하고 결제를 취소해 주세요.`,
       '⚠️ 카드 결제가 신청과 달라요', `${what}\n신청 금액 ${won(o.amount)} — 포트원 콘솔에서 확인해 주세요.`));
     return { state: 'failed', order: { ...o, pay_channel: channel, pay_at: o.pay_at ?? at }, message: CARD_DONE_MSG.mismatch };
   }
   const r: any = await q(db.from('bj_orders').update({ state: 'paid', done: now, pay_at: at, pay_channel: 'LIVE' }).eq('id', o.id).eq('state', 'pending').select('*'));
-  if (!r?.[0]) return settled(await reread(o));
+  if (!r?.[0]) return missed(o, now, p);
   const paid = r[0];
   let g: { until: Record<string, number>; albumFail: string } | null = null;
   try { g = await grantOrder(paid, now, true); } catch (e) { console.error('카드 결제 기간 늘리기', e); }
@@ -606,11 +614,12 @@ async function lateCard(o: any, now: number, got?: any) {
 async function dropCard(o: any, now: number) {
   await q(db.from('bj_orders').update({ state: 'canceled', done: now, pay_channel: 'NONE' }).eq('id', o.id).eq('state', 'pending').is('pay_channel', null));
 }
-// 포트원이 결제 없음(404)·READY 라고 하면 정리 · 그 밖(결제 진행·실패·끝남)은 그대로 — 못 물으면 그대로 둔다(신청은 막지 않는다)
+// card-start 때(다른 내용): 포트원이 결제 없음(404)·READY·카드 거절(FAILED — 돈이 없음)이라고 하면 정리 · 그 밖(결제 끝남·취소됨 등)은 그대로 — 못 물으면 그대로 둔다(신청은 막지 않는다)
 async function dropIfUnpaid(o: any, now: number, got?: any) {
   try {
     const p = got === undefined ? await portonePayment(o.pay_id) : got;
-    if (!p || String(p.status || '') === 'READY') { await dropCard(o, now); return true; }
+    const status = p ? String(p.status || '') : '';
+    if (!p || status === 'READY' || status === 'FAILED') { await dropCard(o, now); return true; }
   } catch (e) { if (!(e instanceof Fail)) console.error('카드 정리', e); }
   return false;
 }
