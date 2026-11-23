@@ -1,6 +1,8 @@
 // 추억앨범 댓글(답글 한 단계 · DJ/청취자 표시) · DJ 알림(하트·댓글·답글) — Supabase Edge Function "bakje-social" (verify_jwt false, 2026-11-05)
 // 큰 함수 bakje 를 다시 올리지 않으려고 따로 뗐다. 댓글 지우기·신고·주인 관리는 그대로 bakje(POST comment · owner).
-//  GET  comments?album=&post=  → 댓글 목록(r: owner 이 앨범 DJ · dj 다른 DJ · fan 청취자, p: 답글이 달린 댓글)
+//  GET  comments?album=&post=  → 댓글 목록(r: owner 이 앨범 주인 · dj 이용권을 결제한 회원 · fan 리스너, p: 답글이 달린 댓글)
+//   v2(2026-11-23 사용자 "먼치킨에서 결제한 사람들만 추억앨범 댓글 칸에 DJ 마크, 결제하지 않은 사람은 리스너 마크"): dj 는 가입 때 고른 종류(bj_members.role)가 아니라
+//   bj_orders state 'paid'(계좌 입금 확인 · 카드 실결제 — 먼치킨·추억앨범 어느 이용권이든)가 하나라도 있는 회원. 서버가 정해 보낸다(화면이 정하지 않음).
 //  POST comment {action:'add', album, post, text, parent?} → 댓글·답글 달기 + DJ 알림
 //  POST heart-note {post, vid, on} → 하트를 누른 뒤 사이트가 부른다(진짜 하트가 있을 때만 알림을 남김). 로그인했으면 닉네임, 아니면 손님.
 //  POST notes {album} + 세션(DJ 계정) 또는 주인 기기 서명(BAKJE/1, action notes) → 최근 60일 알림
@@ -75,8 +77,17 @@ async function needMember(req: Request, now: number) {
   return m;
 }
 const albumOwners = async (album: string) => new Set(((await q(db.from('bj_album_owners').select('member').eq('album', album))) as any[]).map((r) => r.member));
-// owner(이 앨범 DJ) · dj(다른 DJ) · fan(청취자)
-const roleOf = (owners: Set<string>, member: string | null, role: unknown) => (member && owners.has(member) ? 'owner' : role === 'dj' ? 'dj' : 'fan');
+// ==== 시험이 따로 읽는 곳 시작 ====
+// 시험: tests/bakje-social-marks.test.mjs 가 이 사이만 잘라 가짜 DB 로 돌린다(그 사이에는 Deno·바깥 모듈을 쓰지 않는다).
+// 댓글 단 사람 표시: owner(이 앨범 주인 — 결제와 상관없이 그대로) · dj(이용권을 결제한 회원) · fan(리스너 — 그 밖, 탈퇴한 회원 포함)
+const roleOf = (owners: Set<string>, member: string | null, paid: Set<string>) => (member && owners.has(member) ? 'owner' : member && paid.has(member) ? 'dj' : 'fan');
+// 결제한 회원 찾기(댓글 단 사람만, 같은 사람은 한 번): bj_orders state 'paid' — 'test'(테스트 결제)·'pending'·'canceled'·'rejected' 는 아님. 물을 사람이 없으면 null.
+function paidMembers(dbx: any, ids: unknown[]) {
+  const list = [...new Set(ids.filter((x) => typeof x === 'string' && x !== ''))] as string[];
+  return list.length ? dbx.from('bj_orders').select('member').in('member', list).eq('state', 'paid') : null;
+}
+// ==== 시험이 따로 읽는 곳 끝 ====
+const paidSet = async (ids: unknown[]) => { const p = paidMembers(db, ids); return new Set(p ? ((await q(p)) as any[]).map((r) => r.member) : []); };
 async function addNote(row: Record<string, unknown>) {
   const { error } = await db.from('bj_notes').insert(row);
   if (error) console.error('note', error.message);   // 알림이 안 남아도 댓글·하트는 그대로
@@ -128,14 +139,14 @@ async function commentsList(req: Request, now: number) {
   const post = await postIn(album.id, u.searchParams.get('post'));
   const [me, rows, owners]: any = await Promise.all([
     sessionMember(req, now),
-    q(db.from('bj_comments').select('id,member,text,created,parent,bj_members!bj_comments_member_fkey(nickname,role)').eq('post', post).eq('state', 'visible').order('created', { ascending: true }).limit(500)),
+    q(db.from('bj_comments').select('id,member,text,created,parent,bj_members!bj_comments_member_fkey(nickname)').eq('post', post).eq('state', 'visible').order('created', { ascending: true }).limit(500)),
     albumOwners(album.id)
   ]);
-  const why = await canWrite(me, album);
+  const [why, paid] = await Promise.all([canWrite(me, album), paidSet(rows.map((c: any) => c.member))]);
   return {
     ok: true, off: why === 'off',
     comments: rows.map((c: any) => ({ id: c.id, m: c.member, nick: c.bj_members?.nickname || '(알 수 없음)', text: c.text, at: c.created, mine: Boolean(me && me.id === c.member),
-      r: roleOf(owners, c.member, c.bj_members?.role), ...(c.parent ? { p: c.parent } : {}) })),
+      r: roleOf(owners, c.member, paid), ...(c.parent ? { p: c.parent } : {}) })),
     me: { can: why === null, why }
   };
 }
@@ -163,10 +174,10 @@ async function commentAdd(req: Request, now: number) {
   if (!await hit('bjch:' + me.id, 3600, 30)) throw fail(429, '한 시간에 달 수 있는 댓글을 넘었어요. 조금 뒤에 다시 달아 주세요.');
   const id = 'c' + rid(11);
   await q(db.from('bj_comments').insert({ id, album: album.id, post, member: me.id, text: body, created: now, parent }));
-  const owners = await albumOwners(album.id);
+  const [owners, paid] = await Promise.all([albumOwners(album.id), paidSet([me.id])]);
   if (!owners.has(me.id)) await addNote({ album: album.id, kind: parent ? 'reply' : 'comment', post, member: me.id, nick: me.nickname || '', text: [...body.replace(/\s+/g, ' ')].slice(0, 80).join(''), comment: id, created: now });
   later(buildSnap(album.id, now));
-  return { ok: true, comment: { id, m: me.id, nick: me.nickname, text: body, at: now, mine: true, r: roleOf(owners, me.id, me.role), ...(parent ? { p: parent } : {}) } };
+  return { ok: true, comment: { id, m: me.id, nick: me.nickname, text: body, at: now, mine: true, r: roleOf(owners, me.id, paid), ...(parent ? { p: parent } : {}) } };
 }
 
 // ---- 하트 알림(하트 자체는 bakje 가 센다) ----
@@ -237,7 +248,7 @@ Deno.serve(async (req) => {
   const route = new URL(req.url).pathname.replace(/^.*?\/bakje-social\/?/, '').replace(/\/+$/, '');
   const now = Date.now();
   try {
-    if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: 1, replies: true, notes: true, roles: true });
+    if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: 2, replies: true, notes: true, roles: true, paidRoles: true });
     if (req.method === 'GET' && route === 'comments') return json(200, await commentsList(req, now));
     if (req.method === 'POST' && route === 'comment') return json(200, await commentAdd(req, now));
     if (req.method === 'POST' && route === 'heart-note') return json(200, await heartNote(req, now));

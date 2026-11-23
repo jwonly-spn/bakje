@@ -22,7 +22,7 @@
 //  DB 칸(bj_members.verified·person, bj_verifications, bj_banned_people)은 그대로 둔다(마이그레이션 없음).
 // 2026-11-05: 일반 게시물(kind post) · 앨범 사이 로그인 이어 주기(서버 쿠키 bj_sso) · DJ 계정(bj_album_owners — 주인 기기 대신 계정으로 앨범 관리) · 앨범 결제 끝나는 날(paid_until).
 // 먼치킨 계정(v9, 2026-11-05 밤): 먼치킨 프로그램(봇·송출)도 같은 회원 계정으로 로그인한다. 가입·신청 중심 주소 = 먼치킨.com/album(xn--s22bu18a0ub.com).
-//  member web-ticket(프로그램 → 브라우저로 로그인된 채 열기) · app-start/app-approve/app-claim(프로그램 카카오 로그인 — 브라우저에서 승인) ·
+//  member web-ticket(프로그램 → 브라우저로 로그인된 채 열기 — host 를 주면 그 추억앨범 주소용 표, 2026-11-23) · app-start/app-approve/app-claim(프로그램 카카오 로그인 — 브라우저에서 승인) ·
 //  bot device-link(로그인한 먼치킨 기기를 계정에 잇고, 앨범이 하나면 최초 박제판 저절로 올리기도 잇는다) · album-info 에 paidUntil.
 // 주의: MCP 로 올릴 때 백슬래시-u 글자 표기가 풀려 버리므로 이 파일에는 그런 표기를 쓰지 않는다.
 import { createClient } from 'jsr:@supabase/supabase-js@2';
@@ -689,8 +689,8 @@ async function member(req: Request, now: number) {
       const row = t?.[0];
       if (!row || row.expires < now) throw fail(401, '로그인 시간이 지났어요. 다시 해 주세요.');
       let origin = ''; try { origin = new URL(req.headers.get('origin') || '').host; } catch { /* 없음 */ }
-      // 중심 주소(먼치킨.com · www)끼리는 같은 곳으로 본다
-      if (origin && origin !== row.host && !(CENTER.has(origin) && CENTER.has(row.host))) throw fail(403, '로그인을 처음부터 다시 해 주세요.');
+      // 표는 만든 주소에서만(중심 주소 먼치킨.com · www 끼리는 같은 곳으로 본다)
+      if (!ticketHostOk(origin, row.host, CENTER)) throw fail(403, '로그인을 처음부터 다시 해 주세요.');
       const m: any = await q(db.from('bj_members').select(MEMBER_COLS).eq('id', row.member).maybeSingle());
       if (!m) throw fail(401, '로그인을 처음부터 다시 해 주세요.');
       if (m.state === 'banned') throw fail(403, '이용이 막힌 계정이에요.');
@@ -774,9 +774,10 @@ async function member(req: Request, now: number) {
   if (me.state === 'banned') throw fail(403, '이용이 막힌 계정이에요.');
   switch (b.action) {
     // 먼치킨 프로그램이 기본 브라우저로 먼치킨.com/album 을 로그인된 채 열 때(#bjlogin=<표>) — 그 주소에서만 · 2분 · 한 번
+    //  host(선택, 2026-11-23 봇 "내 앨범 열기"): 추억앨범 주소(퓨니코드, bj_hosts)면 그 주소용 표(그 앨범 사이트가 #bjlogin 으로 받음) — 아니면 먼치킨.com 용
     case 'web-ticket': {
       if (!await hit('bjwt:' + me.id, 3600, 30)) throw fail(429, '너무 자주 열었어요. 조금 뒤에 다시 해 주세요.');
-      return { ok: true, ticket: await loginTicket(me.id, CENTER_HOST, now) };
+      return { ok: true, ticket: await loginTicket(me.id, webTicketHost(await siteOf(b.host), CENTER_HOST), now) };
     }
     // 먼치킨 프로그램 카카오 로그인 승인(브라우저 먼치킨.com/album/?app=<자리>에서). 이미 다른 회원이 승인한 자리면 409.
     //  시간이 지났거나 없는 자리는 410(브라우저 로그인은 그대로 두게 401 을 쓰지 않는다)
@@ -869,6 +870,8 @@ const json409 = (body: unknown) => { throw new Json409(body); };
 //  a=1 = 화면에서 "만 14세 이상이에요"에 체크함(2026-11-18). 처음 카카오로 가입할 때만 본다 — 없으면 계정을 만들지 않고 #bjlogin-error=age14.
 //  표에 칸을 더하지 않으려고 이 값은 state 맨 앞 한 글자(y/n)로 싣는다. state 는 sha256 으로만 저장하니 돌아올 때 바꿔 끼울 수 없다.
 const kakaoReady = () => Boolean(env('KAKAO_REST_KEY'));
+// ==== 시험이 따로 읽는 곳 시작 ====
+// 시험: tests/bakje-web-ticket.test.mjs 가 이 사이만 잘라 가짜 DB 로 돌린다(바깥 이름 db · q · HOST_RE · CENTER · CENTER_HOST 는 시험이 넣는다).
 const DEV_HOST = /^(localhost|127\.0\.0\.1)(:\d{2,5})?$/;
 async function siteOf(h: unknown) {
   if (typeof h !== 'string' || h.length > 260) return null;
@@ -881,6 +884,12 @@ async function siteOf(h: unknown) {
   if (!CENTER.has(host) && !await q(db.from('bj_hosts').select('host').eq('host', host).maybeSingle())) return null;
   return { host, origin: 'https://' + host };
 }
+// web-ticket 로그인 표를 어느 주소용으로 만들지(2026-11-23 — 봇 "내 앨범 열기"): siteOf 가 받아 준 https 사이트(먼치킨.com·www · 추억앨범 주소 bj_hosts)면 그 주소,
+//  없거나 모르는 주소(이 PC 미리 보기 localhost 포함)면 지금처럼 먼치킨.com
+const webTicketHost = (site: { host: string; origin: string } | null, center: string) => (site && site.origin.startsWith('https://') ? site.host : center);
+// 로그인 표는 만든 주소에서만 쓴다(요청 Origin 의 호스트 = 표의 호스트, 먼치킨.com·www 끼리는 같은 곳). Origin 이 없는 요청은 지금 규칙 그대로 받는다.
+const ticketHostOk = (origin: string, host: string, center: Set<string>) => !origin || origin === host || (center.has(origin) && center.has(host));
+// ==== 시험이 따로 읽는 곳 끝 ====
 const pathOf = (r: unknown) => typeof r === 'string' && r.startsWith('/') && !r.startsWith('//') && r.length <= 300 && !/[\s\\]/.test(r) ? r.replace(/#.*$/, '') : '/';
 const redirect = (to: string, cookie = '') => new Response(null, { status: 302, headers: { ...CORS, Location: to, 'Cache-Control': 'no-store', ...(cookie ? { 'Set-Cookie': cookie } : {}) } });
 const htmlPage = (msg: string) => new Response(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>추억앨범</title><p style="font:16px/1.6 sans-serif;padding:24px">${msg}</p>`, { status: 400, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
