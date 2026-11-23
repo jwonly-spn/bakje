@@ -180,6 +180,8 @@ async function cfg() {
 const PAID_FROM = Date.parse('2027-01-01T00:00:00+09:00');
 // 옛 화면(먼치킨.com/album v10)은 info.munchkinFrom 이 지나야 먼치킨 이용권 신청 칸을 연다 — 신청을 받기 시작한 때(11/23)를 준다(새 화면은 쓰지 않음)
 const ORDER_OPENED = Date.parse('2026-11-23T00:00:00+09:00');
+// 운영자 계정의 먼치킨 이용권 끝나는 때(munchkin-pass) — 새 숫자 대신 bakje 가 받는 가장 먼 날(종료 날짜 2100-12-31)과 같은 날
+const ADMIN_UNTIL = Date.parse('2100-12-31T23:59:59+09:00');
 // 먼치킨 이용 기간이 생기는 신청(먼치킨만·먼치킨 + 추억앨범·먼치킨 추가)
 const MUNCHKIN_PLANS = ['munchkin', 'bundle', 'add-munchkin'];
 const ALBUM_BETA = '추억앨범은 지금 베타 테스트 중이라 아직 신청할 수 없어요. 추후 공개할게요.';
@@ -676,7 +678,9 @@ async function handle(req: Request, now: number) {
       const [ents, paid, waiting]: any = await Promise.all([entsOf(me.id),
         q(db.from('bj_orders').select('plan').eq('member', me.id).eq('state', 'paid').in('plan', MUNCHKIN_PLANS).order('done', { ascending: false }).limit(1)),
         q(db.from('bj_orders').select('sent').eq('member', me.id).eq('state', 'pending').eq('pay', 'bank').in('plan', MUNCHKIN_PLANS).limit(5))]);   // 확인을 기다리는 것은 계좌이체 신청만(v6)
-      const until = Number(ents.munchkin) || 0, plan = paid?.[0]?.plan;
+      // 운영자 계정(bj_members.is_admin — needMember 가 이미 읽음)은 늘 이용권이 있다고 답한다(2026-11-23 Ruling: PC 쪽 운영자 판정을 서버로 옮김).
+      //  끝나는 때는 bakje 가 받는 가장 먼 날(2100-12-31)과 같은 날 — 이용권 줄(bj_entitlements)은 만들지 않는다
+      const until = me.is_admin === true ? ADMIN_UNTIL : Number(ents.munchkin) || 0, plan = paid?.[0]?.plan;
       return { ok: true, active: until > now, until: until || null, kind: until ? (plan && plan !== 'munchkin' ? 'bundle' : 'munchkin') : null,
         from: PAID_FROM, now, free: now < PAID_FROM, waiting: waiting.length, sent: waiting.some((o: any) => Boolean(o.sent)) };
     }
