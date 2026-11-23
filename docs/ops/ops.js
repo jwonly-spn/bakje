@@ -8,7 +8,9 @@ const STATE = { paid: '확인함', rejected: '거절함', canceled: 'DJ가 취�
 //  state test = 테스트 결제(실제 결제 아님, 이용권 없음). 입금자명 자리에는 "카드 결제".
 const isCard = (o) => o.pay === 'card';
 const payerText = (o) => (isCard(o) ? '카드 결제' : o.payer);
-const stateText = (o) => (isCard(o) && o.state === 'paid' ? '💳 결제됨' : STATE[o.state] || o.state);
+// 돈이 들어왔는데 이용권을 주지 않은 카드 신청(취소한 뒤 결제됨 · 금액이 다름): payAt 이 있고 결제됨·테스트가 아님 → 포트원 콘솔에서 환불 확인
+const refundCheck = (o) => isCard(o) && o.payAt && o.state !== 'paid' && o.state !== 'test';
+const stateText = (o) => (refundCheck(o) ? '⚠️ 환불 확인' : isCard(o) && o.state === 'paid' ? '💳 결제됨' : STATE[o.state] || o.state);
 const app = document.getElementById('app');
 const ls = {
   get: (k) => { try { return localStorage.getItem(k); } catch { return null; } },

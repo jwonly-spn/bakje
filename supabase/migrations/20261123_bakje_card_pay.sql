@@ -11,7 +11,7 @@ alter table bj_orders add constraint bj_orders_pay_check check (pay in ('bank', 
 alter table bj_orders add column if not exists pay_id text;            -- 포트원 paymentId
 create unique index if not exists bj_orders_pay_id on bj_orders(pay_id) where pay_id is not null;
 alter table bj_orders add column if not exists pay_at bigint;           -- 결제 끝난 때
-alter table bj_orders add column if not exists pay_channel text;        -- 포트원이 알려 준 채널 종류 TEST / LIVE
+alter table bj_orders add column if not exists pay_channel text;        -- 포트원이 알려 준 채널 종류 TEST / LIVE · NONE = 포트원에 결제가 없는 것을 확인하고 정리함(다시 묻지 않음)
 alter table bj_orders add column if not exists test_only boolean not null default false;  -- 심사 보기로 만든 신청(어떤 결제가 와도 이용권 없음)
 alter table bj_orders drop constraint if exists bj_orders_state_check;
 alter table bj_orders add constraint bj_orders_state_check check (state in ('pending', 'paid', 'rejected', 'canceled', 'test'));

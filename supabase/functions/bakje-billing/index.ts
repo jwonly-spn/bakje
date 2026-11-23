@@ -27,6 +27,10 @@
 //     · prices: 로그인 안 한 방문자도 가격·카드 표시를 본다(계좌·결제는 로그인 뒤) · card-start returnUrl(먼치킨.com·그 하위·추억앨범 주소만, 아니면 먼치킨.com/album).
 //  ④ 카드 신청은 sent·ops-confirm 이 받지 않고 운영자 기다림 목록·알림 숫자에서 빠진다. cancel 은 카드면 먼저 포트원에 물어 PAID 면 취소 대신 마친다.
 //  ⑤ info 를 부를 때 내 결제 안 끝난 카드 신청(1분 지난 것, 최대 3개)을 다시 물어 마무리(창을 닫아 버린 경우). 결제하는 분 이름·휴대폰·이메일은 받지도 두지도 않는다(화면 → 결제창).
+//  ⑦ 고침 1회차(보안 검토 11/23): 취소·거절한 카드 신청에 뒤늦게 결제가 끝나면 이용권 없이 운영자에게 환불 알림 한 번(lateCard)
+//     · 결제창을 닫은 카드 신청(포트원 결제 없음 404·READY)은 card-start(다른 내용일 때)·info 다시 확인 때 취소로 정리(dropCard) — pay_channel 'NONE' = 결제 없음을 확인함
+//     · 금액이 다른 결제가 들어온 신청은 취소할 수 있고 운영자 지난 신청에도 보임 · card-done 1시간 300번(album-name 과 같은 값)
+//     · returnUrl 은 bakje siteOf 와 같은 판단(먼치킨.com·www + bj_hosts) · 봇 waiting·ops-reject 는 계좌이체 신청만
 //  표: 마이그레이션 bakje_card_pay(bj_orders pay·pay_id·pay_at·pay_channel·test_only, state 'test') — 이 함수보다 먼저 적용한다.
 // 주의: MCP 로 올릴 때 백슬래시-u 글자 표기가 풀려 버리므로 이 파일에는 그런 표기를 쓰지 않는다.
 import { createClient } from 'jsr:@supabase/supabase-js@2';
@@ -118,9 +122,9 @@ async function newAlbumOf(v: unknown, me: any, pay = 'bank') {
   if (taken) throw fail(409, taken);
   const name = albumNameOf(v, me);
   // 새 앨범 신청은 한 번에 하나만(입금 확인 때 앨범이 둘 생기지 않게)
-  //  카드(v6): 같은 주소의 결제 안 끝난 카드 신청이면 그것을 다시 쓸 수 있게 넘긴다(busy — buildOrder 가 같은 내용인지 본다)
-  const mine: any = await q(db.from('bj_orders').select('id,pay,want_host').eq('member', me.id).eq('state', 'pending').not('want_host', 'is', null).limit(1));
-  const busy = Boolean(mine.length && pay === 'card' && mine[0].pay === 'card' && mine[0].want_host === n.host);
+  //  카드(v6): 결제 안 끝난(돈이 들어온 적 없는) 카드 새 앨범 신청이면 넘긴다(busy — buildOrder 가 같은 내용이면 다시 쓰고, 다르면 정리한 뒤 다시 본다)
+  const mine: any = await q(db.from('bj_orders').select('id,pay,want_host,pay_channel').eq('member', me.id).eq('state', 'pending').not('want_host', 'is', null).limit(1));
+  const busy = Boolean(mine.length && pay === 'card' && mine[0].pay === 'card' && !mine[0].pay_channel);
   if (mine.length && !busy) throw fail(409, ALBUM_WAITING);
   return { host: n.host, label: n.label, name, busy };
 }
@@ -383,10 +387,16 @@ async function buildOrder(b: any, me: any, now: number, c: any, pay = 'bank', te
   }
   if (pay === 'card') {
     const mine: any[] = await q(db.from('bj_orders').select('*').eq('member', me.id).eq('state', 'pending').eq('pay', 'card'));
-    const same = mine.find((o) => o.plan === plan && o.months === months && (o.album ?? null) === album && (o.want_host ?? null) === (want?.host ?? null)
+    const same = mine.find((o) => !o.pay_channel && o.plan === plan && o.months === months && (o.album ?? null) === album && (o.want_host ?? null) === (want?.host ?? null)
       && o.amount === amount && (o.until_to ?? null) === untilTo && o.test_only === testOnly);
+    // 결제창을 닫아 버린 다른 내용의 카드 신청(돈이 들어온 적 없음)은 포트원에 물어 결제 없음(404)·READY 면 취소로 정리 — 기다리는 신청 한도에 막히지 않게(고침 2)
+    await Promise.all(mine.filter((o) => o !== same && !o.pay_channel).map((o) => dropIfUnpaid(o, now)));
     if (same) return { row: same, reuse: true };
-    if (want?.busy) throw fail(409, ALBUM_WAITING);
+    // 새 앨범 신청은 한 번에 하나만 — 결제 안 끝난 카드 새 앨범 신청이 정리되고 나서도 남아 있으면 409
+    if (want?.busy) {
+      const still: any[] = await q(db.from('bj_orders').select('id').eq('member', me.id).eq('state', 'pending').not('want_host', 'is', null).limit(1));
+      if (still.length) throw fail(409, ALBUM_WAITING);
+    }
   }
   if (!await hit('bjod:' + me.id, 3600, 10)) throw fail(429, '신청을 너무 자주 했어요. 조금 뒤에 다시 해 주세요.');
   const waiting: any = await q(db.from('bj_orders').select('id').eq('member', me.id).eq('state', 'pending'));
@@ -467,8 +477,8 @@ function cardFor(cc: any, me: any) {
   const keys = show && Boolean(me);
   return { show, canPay, mode: cc.mode, storeId: keys ? storeId : '', channelKey: keys ? cc.channelKey : '' };
 }
-// 결제창에서 돌아올 주소(변경-1123 6번, 휴대폰 결제): 화면이 보낸 returnUrl 은 https 이고 주소가 먼치킨.com·그 하위 주소이거나
-//  추억앨범 주소(bj_hosts — bakje siteOf 와 같은 판단)일 때만 쓴다. 아니면 먼치킨.com/album. 그 주소에 ?pay=<신청 번호>(포트원이 paymentId·code·message 를 덧붙임).
+// 결제창에서 돌아올 주소(변경-1123 6번, 휴대폰 결제): 화면이 보낸 returnUrl 은 https 이고 주소가 먼치킨.com·www.먼치킨.com 이거나
+//  추억앨범 주소(bj_hosts)일 때만 쓴다 — bakje siteOf(CENTER + bj_hosts)와 같은 판단(고침 5). 아니면 먼치킨.com/album. 그 주소에 ?pay=<신청 번호>(포트원이 paymentId·code·message 를 덧붙임).
 const CENTER_HOST = 'xn--s22bu18a0ub.com';
 const RETURN_DROP = ['pay', 'paymentId', 'code', 'message', 'pgCode', 'pgMessage', 'transactionType', 'txId'];
 async function returnBase(v: unknown) {
@@ -477,7 +487,7 @@ async function returnBase(v: unknown) {
   try { u = new URL(v); } catch { return ''; }
   if (u.protocol !== 'https:' || u.username || u.password || u.port) return '';
   const host = u.hostname.toLowerCase();
-  const ok = host === CENTER_HOST || host.endsWith('.' + CENTER_HOST) || Boolean(await q(db.from('bj_hosts').select('host').eq('host', host).maybeSingle()));
+  const ok = host === CENTER_HOST || host === 'www.' + CENTER_HOST || Boolean(await q(db.from('bj_hosts').select('host').eq('host', host).maybeSingle()));
   if (!ok) return '';
   for (const k of RETURN_DROP) u.searchParams.delete(k);
   u.hash = '';
@@ -507,6 +517,7 @@ const CARD_DONE_MSG: Record<string, string> = {
   album: '결제는 끝났어요. 앨범은 운영자가 곧 만들어 드릴게요.',
   grant: '결제는 끝났어요. 이용 기간은 운영자가 곧 넣어 드릴게요.',
   canceled: '취소한 신청이에요. 새로 신청해 주세요.',
+  late: '취소한 신청이라 이용권은 생기지 않아요. 결제한 돈은 운영자가 돌려 드려요.',
   rejected: '운영자가 거절한 신청이에요. 새로 신청해 주세요.'
 };
 // 이미 끝난 신청은 포트원에 다시 묻지 않고 그 상태로 답한다
@@ -521,6 +532,7 @@ const reread = async (o: any) => await q(db.from('bj_orders').select('*').eq('id
 //  LIVE + 보통 신청 + 결제 번호·상점·금액·통화가 신청과 같음 → paid + 기간. pending 에서 바꾸기는 조건부 update 한 번(card-done 두 번·동시에 와도 한 번).
 //  got: 이미 물어 본 포트원 답(cancel) — 없으면 여기서 묻는다.
 async function finishCard(o: any, now: number, got?: any): Promise<{ state: string; order: any; message?: string }> {
+  if (o.state === 'canceled' || o.state === 'rejected') return lateCard(o, now, got);
   if (o.state !== 'pending') return settled(o);
   const p = got === undefined ? await portonePayment(o.pay_id) : got;
   if (!p) return { state: 'pending', order: o };
@@ -545,10 +557,10 @@ async function finishCard(o: any, now: number, got?: any): Promise<{ state: stri
   const total = isObj(p.amount) ? Number(p.amount.total) : NaN;
   if (p.id !== o.pay_id || p.storeId !== env('PORTONE_STORE_ID') || p.currency !== 'KRW' || total !== Number(o.amount)) {
     // 이용권 없음 · 신청은 기다림 그대로. 알림은 한 번만(pay_channel 이 비어 있을 때 채우면서)
-    const r: any = await q(db.from('bj_orders').update({ pay_channel: channel }).eq('id', o.id).eq('state', 'pending').is('pay_channel', null).select('id'));
+    const r: any = await q(db.from('bj_orders').update({ pay_channel: channel, pay_at: at }).eq('id', o.id).eq('state', 'pending').is('pay_channel', null).select('id'));
     if (r?.[0]) await quiet(notifyOps(`⚠️ 카드 결제가 신청과 달라요 — 이용권 안 줌\n${what}\n신청 금액 ${won(o.amount)} · 결제 금액 ${Number.isFinite(total) ? won(total) : '?'} ${line(p.currency, 8)}\n결제 번호 ${o.pay_id} — 포트원 콘솔에서 확인하고 결제를 취소해 주세요.`,
       '⚠️ 카드 결제가 신청과 달라요', `${what}\n신청 금액 ${won(o.amount)} — 포트원 콘솔에서 확인해 주세요.`));
-    return { state: 'failed', order: { ...o, pay_channel: channel }, message: CARD_DONE_MSG.mismatch };
+    return { state: 'failed', order: { ...o, pay_channel: channel, pay_at: o.pay_at ?? at }, message: CARD_DONE_MSG.mismatch };
   }
   const r: any = await q(db.from('bj_orders').update({ state: 'paid', done: now, pay_at: at, pay_channel: 'LIVE' }).eq('id', o.id).eq('state', 'pending').select('*'));
   if (!r?.[0]) return settled(await reread(o));
@@ -561,13 +573,62 @@ async function finishCard(o: any, now: number, got?: any): Promise<{ state: stri
   await quiet(notifyOps(`💳 카드 결제 ${won(paid.amount)}\n${what}${fresh}\n${after}`, `💳 카드 결제 ${won(paid.amount)}`, `${what}${fresh}\n${after}`));
   return { state: 'paid', order: paid, ...(!g ? { message: CARD_DONE_MSG.grant } : g.albumFail ? { message: CARD_DONE_MSG.album } : {}) };
 }
-// 내 결제 안 끝난 카드 신청 다시 확인(info — 결제창을 닫아 버린 경우): 만든 지 1분 지난 것·최대 3개. 못 물어도 info 는 그대로 된다.
+// 취소·거절한 카드 신청에 뒤늦게 결제가 끝난 경우(취소한 사이 다른 창·휴대폰 결제창에서 결제를 마침 — 고침 1):
+//  이용권은 주지 않고, 결제를 처음 본 때 pay_channel(LIVE 면 pay_at 도)을 채우며 운영자에게 한 번 알린다(LIVE = 환불 필요).
+//  결제가 없으면 pay_channel 'NONE'(결제 없음을 확인함)으로 표시해 info 다시 확인이 또 묻지 않게 한다. card-done 은 'NONE' 이어도 묻는다(그 뒤에 결제가 끝날 수 있어서).
+async function lateCard(o: any, now: number, got?: any) {
+  const base = settled(o);
+  if (o.pay_channel && o.pay_channel !== 'NONE') return o.pay_channel === 'LIVE' ? { ...base, message: CARD_DONE_MSG.late } : base;
+  const p = got === undefined ? await portonePayment(o.pay_id) : got;
+  const same = (b: any) => (o.pay_channel ? b.eq('pay_channel', o.pay_channel) : b.is('pay_channel', null));
+  if (!p || String(p.status || '') !== 'PAID') {
+    if (!o.pay_channel) await q(same(db.from('bj_orders').update({ pay_channel: 'NONE' }).eq('id', o.id).eq('state', o.state)));
+    return base;
+  }
+  const type = isObj(p.channel) ? p.channel.type : '';
+  const channel = type === 'LIVE' || type === 'TEST' ? type : '?';
+  const paidAt = Date.parse(String(p.paidAt || ''));
+  const at = Number.isFinite(paidAt) ? paidAt : now;
+  const real = channel === 'LIVE';
+  const r: any = await q(same(db.from('bj_orders').update({ pay_channel: channel, ...(real ? { pay_at: at } : {}) }).eq('id', o.id).eq('state', o.state)).select('*'));
+  const row = r?.[0] || (await reread(o)) || o;
+  if (r?.[0]) {
+    const what = `${o.nick || '(닉네임 없음)'} · ${PLANS[o.plan].name} ${periodText(o)}`;
+    const total = isObj(p.amount) ? Number(p.amount.total) : NaN;
+    const why = o.state === 'rejected' ? '거절한' : '취소한';
+    if (real) await quiet(notifyOps(`⚠️ ${why} 신청에 결제가 들어왔어요 — 환불 필요\n${what}\n결제 금액 ${Number.isFinite(total) ? won(total) : '?'} · 결제 번호 ${o.pay_id}\n이용권은 주지 않았어요. 포트원 콘솔에서 결제를 취소해 주세요.`,
+      `⚠️ ${why} 신청에 결제 ${Number.isFinite(total) ? won(total) : ''}`, `${what}\n환불(결제 취소)이 필요해요.`));
+    else await quiet(notifyOps(`🧪 ${why} 신청에 테스트 결제가 들어왔어요(실제 돈 아님)\n${what}\n결제 번호 ${o.pay_id}`, `🧪 ${why} 신청에 테스트 결제`, what));
+  }
+  return { state: 'failed', order: row, message: real ? CARD_DONE_MSG.late : base.message };
+}
+// 결제창을 닫아 버린 카드 신청 정리(고침 2): 기다림 → 취소, pay_channel 'NONE'(결제 없음을 확인함). 돈이 들어온 적 있는 신청은 건드리지 않는다.
+async function dropCard(o: any, now: number) {
+  await q(db.from('bj_orders').update({ state: 'canceled', done: now, pay_channel: 'NONE' }).eq('id', o.id).eq('state', 'pending').is('pay_channel', null));
+}
+// 포트원이 결제 없음(404)·READY 라고 하면 정리 · 그 밖(결제 진행·실패·끝남)은 그대로 — 못 물으면 그대로 둔다(신청은 막지 않는다)
+async function dropIfUnpaid(o: any, now: number, got?: any) {
+  try {
+    const p = got === undefined ? await portonePayment(o.pay_id) : got;
+    if (!p || String(p.status || '') === 'READY') { await dropCard(o, now); return true; }
+  } catch (e) { if (!(e instanceof Fail)) console.error('카드 정리', e); }
+  return false;
+}
+// 카드 신청 다시 확인(info — 결제창을 닫아 버린 경우): 만든 지 1분 지난 것·최대 3개. 못 물어도 info 는 그대로 된다.
+//  기다림: 결제 없음(404)·READY → 정리 · 결제 있음 → 마무리(finishCard) / 취소·거절(pay_channel 비어 있음): 뒤늦은 결제가 있나 한 번(lateCard).
+//  pay_channel 이 채워진 것(결제를 봤거나 'NONE' 으로 정리·확인한 것)은 다시 묻지 않는다.
 async function recheckCards(member: string, now: number) {
   if (!env('PORTONE_API_SECRET')) return;
   try {
-    const rows: any[] = await q(db.from('bj_orders').select('*').eq('member', member).eq('state', 'pending').eq('pay', 'card').is('pay_channel', null)
+    const rows: any[] = await q(db.from('bj_orders').select('*').eq('member', member).in('state', ['pending', 'canceled', 'rejected']).eq('pay', 'card').is('pay_channel', null)
       .lt('created', now - CARD_RECHECK_AFTER).order('created', { ascending: false }).limit(3));
-    await Promise.all(rows.map((o) => finishCard(o, now).catch((e) => { if (!(e instanceof Fail)) console.error('카드 다시 확인', e); })));
+    await Promise.all(rows.map(async (o) => {
+      try {
+        if (o.state !== 'pending') { await lateCard(o, now); return; }
+        const p = await portonePayment(o.pay_id);
+        if (!await dropIfUnpaid(o, now, p)) await finishCard(o, now, p);
+      } catch (e) { if (!(e instanceof Fail)) console.error('카드 다시 확인', e); }
+    }));
   } catch (e) { if (!(e instanceof Fail)) console.error('카드 다시 확인', e); }
 }
 
@@ -603,7 +664,7 @@ async function handle(req: Request, now: number) {
     case 'munchkin-pass': {
       const [ents, paid, waiting]: any = await Promise.all([entsOf(me.id),
         q(db.from('bj_orders').select('plan').eq('member', me.id).eq('state', 'paid').in('plan', MUNCHKIN_PLANS).order('done', { ascending: false }).limit(1)),
-        q(db.from('bj_orders').select('sent').eq('member', me.id).eq('state', 'pending').in('plan', MUNCHKIN_PLANS).limit(5))]);
+        q(db.from('bj_orders').select('sent').eq('member', me.id).eq('state', 'pending').eq('pay', 'bank').in('plan', MUNCHKIN_PLANS).limit(5))]);   // 확인을 기다리는 것은 계좌이체 신청만(v6)
       const until = Number(ents.munchkin) || 0, plan = paid?.[0]?.plan;
       return { ok: true, active: until > now, until: until || null, kind: until ? (plan && plan !== 'munchkin' ? 'bundle' : 'munchkin') : null,
         from: PAID_FROM, now, free: now < PAID_FROM, waiting: waiting.length, sent: waiting.some((o: any) => Boolean(o.sent)) };
@@ -632,6 +693,7 @@ async function handle(req: Request, now: number) {
     }
     // 카드 결제 마치기(v6): 서버가 포트원에 직접 물어 확인 → {state: paid | test | pending | failed, order, message?}
     case 'card-done': {
+      if (!await hit('bjcd:' + me.id, 3600, 300)) throw fail(429, '너무 자주 확인했어요. 조금 뒤에 다시 해 주세요.');
       const o: any = await q(db.from('bj_orders').select('*').eq('id', String(b.id || '')).eq('member', me.id).eq('pay', 'card').maybeSingle());
       if (!o) throw fail(404, '신청을 찾을 수 없어요.');
       const r = await finishCard(o, now);
@@ -654,8 +716,8 @@ async function handle(req: Request, now: number) {
         const p = await portonePayment(mine.pay_id);
         if (p && String(p.status || '') === 'PAID') {
           const done = await finishCard(mine, now, p);
-          if (done.state === 'failed') throw fail(409, done.message || BROKEN);
-          return { ok: true, finished: true, state: done.state, order: orderOut(done.order),
+          // 금액·통화·상점·결제 번호가 달라 이용권을 못 준 결제(failed): 신청은 취소로(돈은 운영자가 환불 — 알림은 이미 감)
+          if (done.state !== 'failed') return { ok: true, finished: true, state: done.state, order: orderOut(done.order),
             message: done.message || (done.state === 'paid' ? '결제가 이미 끝나 있어서 취소하지 않았어요. 이용 기간이 생겼어요.' : '테스트 결제가 이미 끝나 있어서 취소하지 않았어요.') };
         }
       }
@@ -668,11 +730,13 @@ async function handle(req: Request, now: number) {
   if (me.is_admin !== true) throw fail(403, '운영자만 할 수 있어요.');
   switch (b.action) {
     case 'ops-orders': {
-      const [waiting, recent, c]: any = await Promise.all([
+      const [waiting, recent, odd, c]: any = await Promise.all([
         q(db.from('bj_orders').select('*').eq('state', 'pending').eq('pay', 'bank').order('created', { ascending: true }).limit(200)),   // 카드 신청은 확인할 것이 없어 빠진다(v6)
         q(db.from('bj_orders').select('*').neq('state', 'pending').order('done', { ascending: false }).limit(30)),
+        // 돈이 들어왔는데 이용권을 못 준 기다림 카드 신청(금액이 다름 — 고침 3): 지난 신청 맨 위에(환불 확인용)
+        q(db.from('bj_orders').select('*').eq('state', 'pending').eq('pay', 'card').not('pay_at', 'is', null).order('created', { ascending: false }).limit(30)),
         cfg()]);
-      return { ok: true, waiting: waiting.map(orderOut), recent: recent.map(orderOut), billing: c };
+      return { ok: true, waiting: waiting.map(orderOut), recent: [...odd, ...recent].map(orderOut), billing: c };
     }
     // 운영자 앱 알림 받는 기기
     case 'push-key': return { ok: true, key: (await vapid()).pub };
@@ -708,7 +772,7 @@ async function handle(req: Request, now: number) {
       return { ok: true, order: orderOut(o), until };
     }
     case 'ops-reject': {
-      const r: any = await q(db.from('bj_orders').update({ state: 'rejected', done: now, note: line(b.note, 200) }).eq('id', String(b.id || '')).eq('state', 'pending').select('*'));
+      const r: any = await q(db.from('bj_orders').update({ state: 'rejected', done: now, note: line(b.note, 200) }).eq('id', String(b.id || '')).eq('state', 'pending').eq('pay', 'bank').select('*'));   // 계좌이체 신청만(v6)
       if (!r?.[0]) throw fail(404, '신청을 찾을 수 없어요.');
       return { ok: true, order: orderOut(r[0]) };
     }

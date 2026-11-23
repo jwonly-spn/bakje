@@ -1590,7 +1590,7 @@ function loadPortOne() {
 function payerBox(key, st) {
   const id = (k) => `pay-${key}-${k}`;
   const mk = (k, props) => {
-    const el = h('input', { class: 'input', id: id(k), value: PAYER[k], 'aria-required': 'true', dataset: { payer: k }, maxlength: '100', ...props });
+    const el = h('input', { class: 'input', id: id(k), value: PAYER[k], 'aria-required': 'true', dataset: { payer: k }, ...props });
     el.addEventListener('input', () => {
       PAYER[k] = el.value; el.removeAttribute('aria-invalid');
       for (const x of document.querySelectorAll(`input[data-payer="${k}"]`)) if (x !== el) x.value = el.value;   // 다른 칸도 같은 글로
@@ -1707,7 +1707,9 @@ async function paintPlan(box, pick = { plan: 'munchkin', months: 1 }) {
       again();
     }) });
     if (o.pay === 'card') {
-      const body = { plan: o.plan, ...(o.months ? { months: o.months } : {}), ...(o.album ? { album: o.album } : {}) };
+      // [다시 결제]는 처음 신청과 같은 내용으로(서버가 같은 신청을 다시 줌) — 새 추억앨범 신청이면 주소 이름·앨범 이름도(먼치킨홈 cardBodyOf 와 같게)
+      const body = { plan: o.plan, ...(o.months ? { months: o.months } : {}), ...(o.album ? { album: o.album } : {}),
+        ...(o.newAlbum ? { newAlbum: { label: o.newAlbum.label, name: o.newAlbum.name } } : {}) };
       const payer = card.canPay ? payerBox('o-' + o.id, st) : null;
       parts.push(h('section', { class: 'plan-order' }, ...head,
         h('p', { class: 'notice', text: card.canPay ? `${CARD_WAIT} 다시 결제하거나 신청을 취소할 수 있어요.` : `${CARD_WAIT} 신청을 취소할 수 있어요.` }),
@@ -1771,7 +1773,9 @@ async function paintPlan(box, pick = { plan: 'munchkin', months: 1 }) {
   if (done.length) parts.push(h('section', { class: 'plan-done' }, h('p', { class: 'plan-order-title', text: '지난 신청' }),
     done.map((o) => h('div', { class: 'plan-done-row' },
       h('span', { text: `${PLAN_NAME[o.plan] || o.plan} ${planPeriod(o)} · ${wonText(o.amount)}${o.pay === 'card' ? ' · 카드' : ''}` }),
-      h('span', { class: o.state === 'paid' ? 'ok' : 'muted', text: (o.pay === 'card' && o.state === 'paid' ? '결제했어요' : PLAN_STATE[o.state] || o.state) + (o.state === 'rejected' && o.note ? ` (${o.note})` : '') })))));
+      h('span', { class: o.state === 'paid' ? 'ok' : 'muted', text: (o.pay === 'card' && o.state === 'paid' ? '결제했어요' : PLAN_STATE[o.state] || o.state)
+        + (o.pay === 'card' && o.payAt && o.state !== 'paid' && o.state !== 'test' ? ' (결제한 돈은 돌려 드려요)' : '')   // 취소한 뒤 결제가 들어옴 — 서버가 운영자에게 알림
+        + (o.state === 'rejected' && o.note ? ` (${o.note})` : '') })))));
   box.replaceChildren(...parts);
 }
 
