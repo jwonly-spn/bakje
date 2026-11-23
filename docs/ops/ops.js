@@ -3,7 +3,12 @@
 'use strict';
 const SB = 'https://aksegkhhugqvvaidgvro.supabase.co/functions/v1/';
 const PLAN = { munchkin: '먼치킨', album: '추억앨범', bundle: '먼치킨 + 추억앨범', 'add-album': '추억앨범 추가', 'add-munchkin': '먼치킨 추가' };
-const STATE = { paid: '확인함', rejected: '거절함', canceled: 'DJ가 취소', pending: '기다림' };
+const STATE = { paid: '확인함', rejected: '거절함', canceled: 'DJ가 취소', pending: '기다림', test: '🧪 테스트' };
+// 카드 결제(포트원 · KG이니시스) 신청은 운영자가 확인할 것이 없어 "확인할 것"에 오지 않는다 — 지난 신청에만 💳 로 보인다.
+//  state test = 테스트 결제(실제 결제 아님, 이용권 없음). 입금자명 자리에는 "카드 결제".
+const isCard = (o) => o.pay === 'card';
+const payerText = (o) => (isCard(o) ? '카드 결제' : o.payer);
+const stateText = (o) => (isCard(o) && o.state === 'paid' ? '💳 결제됨' : STATE[o.state] || o.state);
 const app = document.getElementById('app');
 const ls = {
   get: (k) => { try { return localStorage.getItem(k); } catch { return null; } },
@@ -191,9 +196,9 @@ function doneView() {
   const list = S.data?.recent || [];
   if (!list.length) return h('p', { class: 'empty', text: '아직 처리한 신청이 없어요.' });
   return h('section', { class: 'list' }, list.map((o) => h('article', { class: 'row-card' },
-    h('div', null, h('b', { text: `${won(o.amount)} · ${o.payer}` }), h('p', { class: 'muted small', text: `${o.nick || ''} · ${PLAN[o.plan] || o.plan} ${period(o)}` }),
+    h('div', null, h('b', { text: `${won(o.amount)} · ${payerText(o)}` }), h('p', { class: 'muted small', text: `${isCard(o) ? '💳 카드 · ' : ''}${o.nick || ''} · ${PLAN[o.plan] || o.plan} ${period(o)}` }),
       o.newAlbum ? h('p', { class: 'muted small', text: newAlbumLine(o) }) : null),
-    h('div', { class: 'right' }, h('span', { class: 'chip ' + (o.state === 'paid' ? 'green' : 'gray'), text: STATE[o.state] || o.state }), h('p', { class: 'muted small', text: o.done ? when(o.done) : '' })))));
+    h('div', { class: 'right' }, h('span', { class: 'chip ' + (o.state === 'paid' ? 'green' : 'gray'), text: stateText(o) }), h('p', { class: 'muted small', text: o.done ? when(o.done) : '' })))));
 }
 
 function settingsView() {

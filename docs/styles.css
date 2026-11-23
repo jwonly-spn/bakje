@@ -1075,3 +1075,11 @@ label, .label { font-size: 13px; font-weight: 600; color: var(--ink); margin-top
   .topbar .icon-btn { width: 40px; }
   .brand { font-size: 26px; }
 }
+
+/* 이용권 카드 결제(2026-11-23): 위 띠 · 테스트 결제 표시 · 결제하는 분 칸 */
+.plan-banner { background: color-mix(in srgb, var(--blue) 11%, transparent); color: var(--ink); font-weight: 600; }
+.pay-test { background: color-mix(in srgb, #f5a623 16%, transparent); color: var(--ink); }
+.payer { display: flex; flex-direction: column; gap: 6px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.payer legend { padding: 0; margin: 0 0 2px; font-size: 14px; font-weight: 700; color: var(--ink); }
+.payer label { margin-top: 4px; }
+.plan-order .notice, .plan-add .notice, .plan-pick .notice { margin: 0; }
