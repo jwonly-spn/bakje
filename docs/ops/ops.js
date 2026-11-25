@@ -1,5 +1,5 @@
 // 추억앨범 · 입금 확인(운영자 앱) — 아이폰 홈 화면에 추가해서 쓴다. 푸시 알림은 홈 화면 앱에서만 된다(iOS 16.4+).
-// 서버: bakje(회원 로그인) · bakje-billing(입금 목록·확인·알림 기기). 세션은 이 앱 저장소(localStorage)에만.
+// 서버: bakje(회원 로그인) · bakje-billing(입금 목록·확인·알림 기기) · bakje-beta(추억앨범 베타테스터 신청 — "베타" 탭). 세션은 이 앱 저장소(localStorage)에만.
 'use strict';
 const SB = 'https://aksegkhhugqvvaidgvro.supabase.co/functions/v1/';
 const PLAN = { munchkin: '먼치킨', album: '추억앨범', bundle: '먼치킨 + 추억앨범', 'add-album': '추억앨범 추가', 'add-munchkin': '먼치킨 추가' };
@@ -16,7 +16,7 @@ const ls = {
   get: (k) => { try { return localStorage.getItem(k); } catch { return null; } },
   set: (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} }
 };
-const S = { session: ls.get('ops_session'), me: null, tab: 'wait', data: null, busy: false, devices: null };
+const S = { session: ls.get('ops_session'), me: null, tab: 'wait', data: null, busy: false, devices: null, beta: null, betaErr: '' };
 
 // ---------- 작은 도구 ----------
 // 안내 글 줄바꿈(2026-11-23 사용자 "글들이 줄바꿈 없이 난해해 보여"): 글은 그대로 두고 한글 문장 끝(. ? !) 뒤 빈칸에서 줄을 나눈다.
@@ -38,7 +38,7 @@ function h(tag, attrs, ...kids) {
     else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
     else el.setAttribute(k, v === true ? '' : v);
   }
-  for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid.nodeType ? kid : String(kid));
+  for (const kid of kids.flat(Infinity)) if (kid != null && kid !== false) el.append(kid.nodeType ? kid : String(kid));
   return el;
 }
 const won = (n) => Number(n || 0).toLocaleString('ko-KR') + '원';
@@ -79,6 +79,7 @@ async function call(fn, body, timeout = 20000) {
   return j;
 }
 const bill = (action, extra = {}) => call('bakje-billing', { action, ...extra });
+const beta = (action, extra = {}) => call('bakje-beta', { action, ...extra });
 
 // 확인 창(<dialog>)
 function ask({ title, lines = [], ok = '확인', cancel = '취소', danger = false, input = null }) {
@@ -99,10 +100,17 @@ function ask({ title, lines = [], ok = '확인', cancel = '취소', danger = fal
 
 // ---------- 화면 ----------
 function render() {
+  const restore = keepStrips();
   app.replaceChildren();
   if (!standalone() && isIOS() && !ls.get('ops_skip_install')) return app.append(installView());
   if (!S.session) return app.append(loginView());
-  app.append(header(), tabs(), S.tab === 'wait' ? waitView() : S.tab === 'done' ? doneView() : settingsView());
+  app.append(header(), tabs(), S.tab === 'wait' ? waitView() : S.tab === 'done' ? doneView() : S.tab === 'beta' ? betaView() : settingsView());
+  restore();
+}
+// 1분마다 다시 그려도 옆으로 넘겨 보던 사진 줄 자리는 그대로(베타 탭)
+function keepStrips() {
+  const at = new Map([...app.querySelectorAll('.shots[data-id]')].map((el) => [el.dataset.id, el.scrollLeft]));
+  return () => { for (const el of app.querySelectorAll('.shots[data-id]')) { const x = at.get(el.dataset.id); if (x) el.scrollLeft = x; } };
 }
 
 function installView() {
@@ -156,8 +164,10 @@ function header() {
 
 function tabs() {
   const n = (S.data?.waiting || []).length;
-  const tab = (key, label) => h('button', { type: 'button', class: S.tab === key ? 'on' : '', 'aria-pressed': String(S.tab === key), onclick: () => { S.tab = key; render(); } }, label);
-  return h('nav', { class: 'seg' }, tab('wait', `확인할 것${n ? ' ' + n : ''}`), tab('done', '처리한 것'), tab('set', '설정'));
+  const nb = (S.beta?.apps || []).filter((a) => a.state === 'wait').length;
+  const tab = (key, label) => h('button', { type: 'button', class: S.tab === key ? 'on' : '', 'aria-pressed': String(S.tab === key),
+    onclick: () => { S.tab = key; render(); if (key === 'beta') loadBeta().then(render); } }, label);
+  return h('nav', { class: 'seg' }, tab('wait', `확인할 것${n ? ' ' + n : ''}`), tab('done', '처리한 것'), tab('beta', '베타' + (nb ? ' ' + nb : '')), tab('set', '설정'));
 }
 
 function waitView() {
@@ -211,6 +221,196 @@ function doneView() {
     h('div', null, h('b', { text: `${won(o.amount)} · ${payerText(o)}` }), h('p', { class: 'muted small', text: `${isCard(o) ? '💳 카드 · ' : ''}${o.nick || ''} · ${PLAN[o.plan] || o.plan} ${period(o)}` }),
       o.newAlbum ? h('p', { class: 'muted small', text: newAlbumLine(o) }) : null),
     h('div', { class: 'right' }, h('span', { class: 'chip ' + (o.state === 'paid' ? 'green' : 'gray'), text: stateText(o) }), h('p', { class: 'muted small', text: o.done ? when(o.done) : '' })))));
+}
+
+// ---------- 추억앨범 베타테스터(bakje-beta) ----------
+// 신청(스푼 닉네임·주소 이름·앨범 이름·하고 싶은 말·첨부한 박제 사진·편지 3~10장)을 보고 운영자가 [뽑기]·[넘기기].
+//  뽑으면 서버가 앨범·주소를 바로 만들고 12월 31일까지 무료. 0원 결제 기록은 만들지 않는다 — 뽑힌 기록은 이 탭에만 보인다(11/25).
+//  사진은 비공개 칸의 1시간짜리 보기 주소라 이 앱 안에서만 크게 본다. 모집이 끝난 날부터 30일 뒤 [지난 신청 정리하기](개인정보처리방침).
+const BETA_STATE = { wait: ['기다림', 'blue'], picked: ['뽑힘', 'green'], passed: ['넘김', 'gray'], canceled: ['취소', 'gray'] };
+const PURGE_AFTER = 30 * 86400000;
+const albumHost = (label) => `${label}.먼치킨.com`;
+const md = (ms) => { const d = new Date(Number(ms)); return `${d.getMonth() + 1}월 ${d.getDate()}일`; };
+let acting = null;   // 지금 처리 중인 일 { id, kind } — 두 번 누르기 막기('head' = 모집 열기·닫기·정리)
+
+// 사진 보기 주소는 불러올 때마다 새로 온다(1시간짜리) — 같은 사진은 50분 동안 처음 주소를 그대로 써서 1분마다 다시 내려받지 않게
+const shotUrls = new Map();
+function steadyUrl(u) {
+  const key = String(u).split('?')[0], now = Date.now(), had = shotUrls.get(key);
+  if (had && now - had.at < 50 * 60000) return had.url;
+  shotUrls.set(key, { url: u, at: now });
+  return u;
+}
+
+function betaView() {
+  const b = S.beta;
+  if (!b) return S.betaErr
+    ? h('div', { class: 'empty' }, h('p', { text: S.betaErr }), h('button', { class: 'link', type: 'button', text: '다시 불러오기', onclick: () => loadBeta().then(render) }))
+    : h('p', { class: 'empty', text: '불러오는 중이에요…' });
+  const apps = b.apps || [];
+  const of = (s) => apps.filter((a) => a.state === s);
+  const wait = of('wait'), picked = of('picked'), passed = of('passed'), canceled = of('canceled');
+  const part = (title, list, card) => (list.length ? [h('h2', { text: `${title} ${list.length}` }), h('div', { class: 'list' }, list.map(card))] : []);
+  return h('section', { class: 'beta' },
+    betaHead(b, apps),
+    !apps.length ? h('p', { class: 'empty', text: '아직 신청이 없어요.' }) : [
+      wait.length ? [h('h2', { text: `기다리는 신청 ${wait.length}` }), h('div', { class: 'list' }, wait.map(betaCard))] : h('h2', { text: '기다리는 신청이 없어요' }),
+      part('뽑은 분', picked, betaCard),
+      part('넘긴 신청', passed, betaCard),
+      part('취소한 신청', canceled, betaRow)]);
+}
+
+// 위 칸: 모집 상태 · 뽑힘 B / 10 · 남은 자리 · [모집 열기]/[모집 닫기] · 모집이 끝나고 30일 뒤 [지난 신청 정리하기]
+function betaHead(b, apps) {
+  const now = Date.now();
+  // 모집이 끝난 때 = 운영자가 닫았거나 10명이 차서 닫힌 때(closedAt). 서버 ops-purge 도 닫혀 있고 closedAt 이 있을 때만 정리한다.
+  //  기한(12/31)이 지났는데 닫지 않았으면 끝난 날이 없다 → [모집 닫기]로 끝난 날을 남긴다.
+  const endAt = !b.open && b.closedAt != null ? b.closedAt : null;
+  const late = now > b.until;
+  const [stateText, tone] = b.open ? ['모집 중', 'green'] : endAt == null && !late && b.left > 0 ? ['시작 전', 'gray'] : ['모집 끝', 'gray'];
+  const busy = acting?.id === 'head' ? acting.kind : '';
+  let action;
+  const closeBtn = () => h('button', { class: 'btn wide', type: 'button', disabled: !!acting, text: busy === 'open' ? '닫는 중…' : '모집 닫기', onclick: () => setBetaOpen(false) });
+  if (b.open) action = closeBtn();
+  else if (endAt == null && late) action = [h('p', { class: 'muted small', lines: `모집 기한(${md(b.until)})이 지났어요. 모집을 닫으면 그날부터 30일 뒤 지난 신청을 정리할 수 있어요.` }), closeBtn()];
+  else if (b.left <= 0) action = h('p', { class: 'muted small', text: `${b.seats}명을 다 뽑아 모집이 끝났어요.` });
+  else if (late) action = h('p', { class: 'muted small', text: `모집 기한(${md(b.until)})이 지났어요.` });
+  else action = h('button', { class: 'btn wide' + (endAt == null ? ' primary' : ''), type: 'button', disabled: !!acting, text: busy === 'open' ? '여는 중…' : '모집 열기', onclick: () => setBetaOpen(true) });   // 끝난 모집을 다시 열 때는 회색(정리 단추와 겹치지 않게)
+  let tidy = null;
+  if (endAt != null && apps.length) {
+    const due = endAt + PURGE_AFTER;
+    const left = apps.some((a) => a.state !== 'picked' || (a.photos || []).length || a.msg);
+    if (!left) tidy = h('p', { class: 'muted small', text: '지난 신청을 정리했어요.' });
+    else if (now >= due) tidy = h('div', { class: 'tidy' },
+      h('b', { text: '모집이 끝난 지 30일이 지났어요' }),
+      h('p', { class: 'small', text: '개인정보처리방침에 적은 대로 지난 신청을 정리해 주세요.' }),
+      h('button', { class: 'btn danger wide', type: 'button', disabled: !!acting, text: busy === 'purge' ? '정리하는 중…' : '지난 신청 정리하기', onclick: purgeBeta }));
+    else tidy = h('p', { class: 'muted small', text: `${md(due)}부터 지난 신청을 정리할 수 있어요(모집이 끝나고 30일 뒤).` });
+  }
+  return h('div', { class: 'beta-head' },
+    h('div', { class: 'card-top' }, h('b', { class: 'beta-title', text: '추억앨범 베타테스터' }), h('span', { class: 'chip ' + tone, text: stateText })),
+    h('div', { class: 'stats' },
+      h('p', { class: 'stat' }, h('span', { text: '뽑힘' }), h('b', { text: `${b.picked} / ${b.seats}` })),
+      h('p', { class: 'stat' }, h('span', { text: '남은 자리' }), h('b', { text: String(b.left) }))),
+    h('p', { class: 'muted small', lines: `모집 기한은 ${md(b.until)}까지예요. 뽑힌 분은 12월 31일까지 무료로 써요.` }),
+    action, tidy);
+}
+
+function betaCard(a) {
+  const [label, tone] = BETA_STATE[a.state] || [a.state, 'gray'];
+  const mine = acting?.id === a.id ? acting.kind : '';
+  const stamp = a.state === 'picked' && a.decided ? `뽑음 ${when(a.decided)}` : a.state === 'passed' && a.decided ? `넘김 ${when(a.decided)}` : `신청 ${when(a.created)}`;
+  let foot = null;
+  if (a.state === 'wait') foot = h('div', { class: 'card-btns' },
+    h('button', { class: 'btn', type: 'button', disabled: !!acting, text: mine === 'pass' ? '넘기는 중…' : '넘기기', onclick: () => passBeta(a) }),
+    h('button', { class: 'btn primary', type: 'button', disabled: !!acting, text: mine === 'pick' ? '뽑는 중…' : '뽑기', onclick: () => pickBeta(a) }));
+  else if (a.state === 'passed') foot = h('button', { class: 'btn wide', type: 'button', disabled: !!acting, text: mine === 'wait' ? '되돌리는 중…' : '다시 기다림', onclick: () => unpassBeta(a) });
+  else if (a.state === 'picked') foot = h('a', { class: 'plan new-album made', href: `https://${a.host || albumHost(a.label)}/`, target: '_blank', rel: 'noopener' }, `앨범 만들었어요 · ${albumHost(a.label)}`);
+  return h('article', { class: 'card beta-card ' + a.state },
+    h('div', { class: 'card-top' }, h('span', { class: 'chip ' + tone, text: label }), h('span', { class: 'muted small', text: stamp })),
+    h('div', null,
+      h('p', { class: 'who', text: a.spoonNick }),
+      h('p', { class: 'muted small', text: `계정 닉네임 ${a.nick || '(없음)'}` })),
+    h('p', { class: 'addr' }, h('b', { text: albumHost(a.label) }), ` · ${a.name}`),
+    a.msg ? h('p', { class: 'msg', text: a.msg }) : null,
+    shotsRow(a),
+    foot);
+}
+
+// 첨부 사진 줄(72px 작은 칸) — 누르면 앱 안에서 크게
+function shotsRow(a) {
+  const list = a.photos || [];
+  if (!list.length) return a.state === 'picked' ? null : h('p', { class: 'muted small', text: '첨부 사진이 없어요(정리했거나 불러오지 못했어요).' });
+  return h('div', { class: 'shots-wrap' },
+    h('p', { class: 'muted small', text: `박제 사진·편지 ${list.length}장${list.length > 4 ? ' · 옆으로 넘겨 보세요' : ''}` }),
+    h('div', { class: 'shots', 'data-id': a.id },
+      list.map((u, i) => h('button', { class: 'shot', type: 'button', 'aria-label': `${a.spoonNick} 님 첨부 사진 ${i + 1}, 크게 보기`, onclick: () => viewShots(list, i, a.spoonNick) },
+        h('img', { loading: 'lazy', decoding: 'async', draggable: 'false', alt: '', src: u, onerror: (e) => e.target.parentNode?.classList.add('broken') })))));
+}
+
+// 취소한 신청은 한 줄만(사진은 취소할 때 지워졌어요)
+function betaRow(a) {
+  return h('article', { class: 'row-card' },
+    h('div', null, h('b', { text: a.spoonNick }), h('p', { class: 'muted small', text: `${albumHost(a.label)} · 신청 ${when(a.created)}` })),
+    h('div', { class: 'right' }, h('span', { class: 'chip gray', text: '취소' }), h('p', { class: 'muted small', text: a.decided ? when(a.decided) : '' })));
+}
+
+// 사진 크게 보기(앱 안 겹쳐 보기): 바깥·✕·Esc 로 닫기 · ‹ › 또는 옆으로 밀어 다음 사진
+function viewShots(list, start, who) {
+  let i = start, x0 = null, swiped = false;
+  const img = h('img', { class: 'viewer-img', draggable: 'false', alt: '' });
+  const count = h('p', { class: 'viewer-count', 'aria-live': 'polite' });
+  const prev = h('button', { class: 'viewer-nav prev', type: 'button', 'aria-label': '앞 사진', text: '‹', onclick: () => go(-1) });
+  const next = h('button', { class: 'viewer-nav next', type: 'button', 'aria-label': '다음 사진', text: '›', onclick: () => go(1) });
+  const stage = h('div', { class: 'viewer-stage' }, img);
+  const many = list.length > 1;
+  const dlg = h('dialog', { class: 'viewer', 'aria-label': `${who} 님 첨부 사진 크게 보기` },
+    h('button', { class: 'viewer-close', type: 'button', 'aria-label': '닫기', text: '✕', onclick: () => dlg.close() }),
+    stage, many ? h('div', { class: 'viewer-bar' }, prev, count, next) : null);
+  function show() {
+    img.src = list[i];
+    img.alt = `${who} 님 첨부 사진 ${i + 1}`;
+    count.textContent = `${i + 1} / ${list.length}`;
+    prev.disabled = i === 0; next.disabled = i === list.length - 1;
+  }
+  function go(d) { const n = i + d; if (n >= 0 && n < list.length) { i = n; show(); } }
+  dlg.addEventListener('click', (e) => { if (swiped) { swiped = false; return; } if (e.target === dlg || e.target === stage || e.target.classList.contains('viewer-bar')) dlg.close(); });
+  dlg.addEventListener('keydown', (e) => { if (e.key === 'ArrowLeft') go(-1); else if (e.key === 'ArrowRight') go(1); });
+  stage.addEventListener('pointerdown', (e) => { x0 = e.clientX; swiped = false; });
+  stage.addEventListener('pointerup', (e) => { if (x0 != null && many && Math.abs(e.clientX - x0) > 50) { swiped = true; go(e.clientX < x0 ? 1 : -1); } x0 = null; });
+  dlg.addEventListener('close', () => dlg.remove());
+  show();
+  document.body.append(dlg);
+  dlg.showModal();
+}
+
+// 처리 하나(두 번 누르기 막기) → 끝나면 목록 다시 불러오기
+async function betaAct(id, kind, job) {
+  if (acting) return;
+  acting = { id, kind }; render();
+  try { await job(); } catch (err) { toast(err.message, true); }
+  acting = null;
+  await loadBeta();
+  render();
+}
+async function pickBeta(a) {
+  if (acting) return;
+  const yes = await ask({ title: `${a.spoonNick} 님을 뽑을까요?`, ok: '뽑기', cancel: '아직',
+    lines: [`앨범 ${albumHost(a.label)} 이 바로 만들어지고 12월 31일까지 무료예요.`, `앨범 이름: ${a.name}`] });
+  if (!yes) return;
+  await betaAct(a.id, 'pick', async () => {
+    const j = await beta('ops-pick', { id: a.id });
+    toast(`${a.spoonNick} 님을 뽑았어요 · ${j.closed ? '자리가 다 차서 모집을 닫았어요' : `남은 자리 ${j.left}`}`);
+  });
+}
+async function passBeta(a) {
+  await betaAct(a.id, 'pass', async () => { await beta('ops-pass', { id: a.id }); toast(`${a.spoonNick} 님 신청을 넘겼어요`); });
+}
+async function unpassBeta(a) {
+  await betaAct(a.id, 'wait', async () => { await beta('ops-wait', { id: a.id }); toast('기다림으로 되돌렸어요'); });
+}
+async function setBetaOpen(open) {
+  if (acting) return;
+  const b = S.beta;
+  const yes = await ask(open
+    ? { title: '베타테스터 모집을 열까요?', ok: '모집 열기', lines: ['먼치킨.com/album 에서 신청을 받기 시작해요.', `남은 자리 ${b.left}명 · 모집 기한 ${md(b.until)}`] }
+    : { title: '베타테스터 모집을 닫을까요?', ok: '모집 닫기', lines: ['새 신청을 더 받지 않아요.', '들어온 신청은 그대로 남아서 뽑을 수 있어요.'] });
+  if (!yes) return;
+  await betaAct('head', 'open', async () => {
+    const j = await beta('ops-open', { open });
+    if (open && !j.open) toast('모집을 열지 못했어요 · 자리가 다 찼거나 기한이 지났어요', true);
+    else toast(j.open ? '모집을 열었어요' : '모집을 닫았어요');
+  });
+}
+async function purgeBeta() {
+  if (acting) return;
+  const yes = await ask({ title: '지난 신청을 정리할까요?', danger: true, ok: '정리하기', cancel: '닫기',
+    lines: ['뽑히지 않은 신청과 모든 첨부 사진을 지워요. 되돌릴 수 없어요.'] });
+  if (!yes) return;
+  await betaAct('head', 'purge', async () => {
+    const j = await beta('ops-purge');
+    toast(typeof j.removed === 'number' ? `정리했어요 · 사진 ${j.removed}장을 지웠어요` : '정리했어요');
+  });
 }
 
 function settingsView() {
@@ -271,15 +471,40 @@ async function load(manual = false) {
   if (!S.session) return render();
   if (loading) return loading;
   loading = (async () => {
-    try {
-      S.data = await bill('ops-orders');
-      setBadge();
-      if (manual) toast('새로 불러왔어요');
-    } catch (err) { if (err.status !== 401) toast(err.message, true); }
+    // 베타 신청은 베타 탭을 볼 때(와 처음 한 번 — 탭 글의 기다림 수) 함께 불러온다
+    const withBeta = S.tab === 'beta' || !S.beta;
+    const [ok, betaOk] = await Promise.all([
+      (async () => {
+        try { S.data = await bill('ops-orders'); setBadge(); return true; }
+        catch (err) { if (err.status !== 401) toast(err.message, true); return false; }
+      })(),
+      withBeta ? loadBeta() : true]);
+    if (manual && ok && betaOk) toast('새로 불러왔어요');
     loading = null;
     render();
   })();
   return loading;
+}
+// 베타 신청 목록(ops-list). 베타 탭이 아닐 때 실패하면 조용히(탭 글 숫자만 안 나옴)
+let betaLoading = null;
+function loadBeta() {
+  if (!S.session) return Promise.resolve(false);
+  if (betaLoading) return betaLoading;
+  betaLoading = (async () => {
+    try {
+      const j = await beta('ops-list');
+      for (const a of j.apps || []) a.photos = (a.photos || []).map(steadyUrl);
+      const old = Date.now() - 60 * 60000;
+      for (const [k, v] of shotUrls) if (v.at < old) shotUrls.delete(k);
+      S.beta = j; S.betaErr = '';
+      return true;
+    } catch (err) {
+      S.betaErr = err.message;
+      if (S.tab === 'beta' && err.status !== 401) toast(err.message, true);
+      return false;
+    } finally { betaLoading = null; }
+  })();
+  return betaLoading;
 }
 function setBadge() {
   const n = (S.data?.waiting || []).filter((o) => o.sent).length;
@@ -290,7 +515,7 @@ async function loadDevices() {
   if (S.tab === 'set') render();
 }
 function signOut() {
-  S.session = null; S.me = null; S.data = null; S.devices = null;
+  S.session = null; S.me = null; S.data = null; S.devices = null; S.beta = null; S.betaErr = '';
   ls.set('ops_session', null);
   render();
 }
