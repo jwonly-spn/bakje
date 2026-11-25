@@ -118,7 +118,7 @@ function fakeDb(seed) {
   }
   // 가짜 Storage: 칸마다 파일(path → {size, mimetype, text}) · 서명 올리기 주소는 진짜 모양(…/storage/v1/object/upload/sign/<칸>/<경로>?token=…)
   const files = new Map(), signs = [], removed = [];
-  let tokens = 0;
+  let tokens = 0, api = null;
   const STORE = 'https://example.supabase.co/storage/v1';
   const storage = {
     from(bucket) {
@@ -135,6 +135,7 @@ function fakeDb(seed) {
           return { data: { signedUrl: `${STORE}/object/upload/sign/${bucket}/${p}?token=${token}`, path: p, token }, error: null };
         },
         list: async (prefix = '', opts = {}) => {
+          if (api.beforeList) { const f = api.beforeList; api.beforeList = null; f(prefix); }   // 시험: 목록을 읽기 직전에 다른 요청이 끼어든 것처럼(한 번)
           if (broken.has('storage-list')) return { data: null, error: { message: '시험: 목록 고장' } };
           const pre = `${bucket}/` + (prefix ? prefix.replace(/\/+$/, '') + '/' : '');
           const seen = new Map();
@@ -153,8 +154,8 @@ function fakeDb(seed) {
       };
     }
   };
-  const api = {
-    T, hits, broken, files, signs, removed, from, storage, beforeClaim: null,
+  api = {
+    T, hits, broken, files, signs, removed, from, storage, beforeClaim: null, beforeList: null,
     rpc: async (name, a) => {
       if (name === 'fp_hit') {
         const n = (hits.get(a.p_key) || 0) + 1;
@@ -274,11 +275,16 @@ test('status 로그인 없이: 닫힘 기본', async () => {
   for (const beta of [CLOSED, null]) {
     const s = setup({ beta });
     const r = ok(await s.call(null, 'status'));
-    assert.deepEqual(r, { ok: true, open: false, seats: 10, picked: 0, left: 10, until: BETA_UNTIL, mine: null });
+    assert.deepEqual(r, { ok: true, open: false, seats: 10, picked: 0, left: 10, until: BETA_UNTIL, closedAt: null, mine: null });
   }
   const o = ok(await setup({ beta: OPEN }).call(null, 'status'));
   assert.equal(o.open, true);
   assert.equal(o.left, 10);
+  assert.equal(o.closedAt, null);
+  // 끝난 모집은 closedAt(화면이 "모집이 끝났어요"와 "아직 시작하지 않았어요"를 가름)
+  const e = ok(await setup({ beta: { ...CLOSED, closedAt: NOW - DAY } }).call(null, 'status'));
+  assert.equal(e.open, false);
+  assert.equal(e.closedAt, NOW - DAY);
 });
 
 test('status 틀린 세션은 401 이 아니라 mine null', async () => {
@@ -415,14 +421,14 @@ test('apply 성공 → 표 한 줄 wait + jl_watch_alerts 한 줄', async () => 
   const al = s.T.jl_watch_alerts[0];
   assert.equal(al.key, 'beta-apply');
   assert.equal(al.level, 'info');
-  assert.equal(al.title, '🧪 추억앨범 베타 신청 1번');
+  assert.equal(al.title, '🧪 추억앨범 베타 신청 — 먼치');
   assert.equal(al.body, ['스푼 닉네임: 먼치', '원하는 주소: 먼치.먼치킨.com', '하고 싶은 말: 매일 밤 라디오 해요', '첨부: 박제 사진 3장 (운영자 앱에서 보기)', '지금 신청 1명 · 뽑힘 0명 / 10명', '운영자 앱: https://한이준.com/ops/ → 베타'].join('\n'));
   assert.ok(!al.body.includes('bakje-beta/'), '사진 주소는 알림에 넣지 않아요');
-  // 하고 싶은 말이 없으면 그 줄이 없음 · 번호는 전체 줄 수
+  // 하고 싶은 말이 없으면 그 줄이 없음 · 제목은 스푼 닉네임(번호 없음 — 수는 "지금 신청" 줄)
   const q = await shoot(s, STAR, 4);
   ok(await s.call(STAR, 'apply', form(q, { spoonNick: '별사탕', label: '사탕', name: '사탕 앨범', msg: '' })));
   const b2 = s.T.jl_watch_alerts[1];
-  assert.equal(b2.title, '🧪 추억앨범 베타 신청 2번');
+  assert.equal(b2.title, '🧪 추억앨범 베타 신청 — 별사탕');
   assert.equal(b2.body, ['스푼 닉네임: 별사탕', '원하는 주소: 사탕.먼치킨.com', '첨부: 박제 사진 4장 (운영자 앱에서 보기)', '지금 신청 2명 · 뽑힘 0명 / 10명', '운영자 앱: https://한이준.com/ops/ → 베타'].join('\n'));
   assert.equal(appOf(s, STAR).msg, null);
   // 한 시간 10번
@@ -493,10 +499,32 @@ test('cancel → canceled, 사진 지움, mine.state none', async () => {
   assert.equal(appOf(s, DJ).created, NOW + 60000);
   assert.equal(appOf(s, DJ).decided, null);
   assert.equal(s.T.jl_watch_alerts.length, 2);
-  // 뽑힌 신청은 취소 못 함
+  // 뽑힌 신청은 취소 못 함 · 사진도 그대로
   s.T.bj_beta_apps[0].state = 'picked';
   no(await s.call(DJ, 'cancel'), 400, '이미 뽑혔어요.');
   assert.equal(appOf(s, DJ).state, 'picked');
+  for (const x of q) assert.ok(s.db.files.has('bakje-beta/' + x), '뽑힌 신청 사진은 지우지 않아요 ' + x);
+});
+
+test('cancel 은 상태를 먼저 바꾸고, 실제로 바뀐 때만 사진을 지움(그사이 뽑혔으면 사진을 지우지 않음)', async () => {
+  const s = setup({ beta: OPEN });
+  const p = await shoot(s, DJ, 3);
+  ok(await s.call(DJ, 'apply', form(p)));
+  // 사진 목록을 읽는 순간 운영자가 뽑음(뽑기는 wait·passed 일 때만 된다)
+  s.db.beforeList = () => { const a = appOf(s, DJ); if (['wait', 'passed'].includes(a.state)) a.state = 'picked'; };
+  const r = await s.call(DJ, 'cancel');
+  const a = appOf(s, DJ);
+  if (a.state === 'picked') {
+    for (const x of p) assert.ok(s.db.files.has('bakje-beta/' + x), '뽑힌 신청의 사진을 지우면 안 돼요 ' + x);
+  }
+  // 상태를 먼저 바꾸므로 취소가 이기고(그 뒤엔 뽑을 수 없음) 사진이 지워짐
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(a.state, 'canceled');
+  for (const x of p) assert.ok(!s.db.files.has('bakje-beta/' + x));
+  // 이미 취소한 신청에 다시 cancel: 바뀐 것이 없으니 사진을 지우지 않음
+  const later = await shoot(s, DJ, 1);
+  ok(await s.call(DJ, 'cancel'));
+  assert.ok(s.db.files.has('bakje-beta/' + later[0]));
 });
 
 test('ops-* 운영자 아니면 403', async () => {
@@ -601,7 +629,7 @@ test('ops-pick 10명째에 모집 저절로 닫힘 → status open false · 11�
   assert.equal(betaCfg(s).seats, 10);
   assert.equal(betaCfg(s).until, BETA_UNTIL);
   const st = ok(await s.call(null, 'status'));
-  assert.deepEqual([st.open, st.picked, st.left], [false, 10, 0]);
+  assert.deepEqual([st.open, st.picked, st.left, st.closedAt], [false, 10, 0, NOW + 777]);
   // 안 뽑힌 신청은 "모집이 끝났어요"(closed) · 새 신청은 끝
   assert.equal(ok(await s.call(fanId(10), 'status')).mine.state, 'closed');
   no(await s.call(DJ, 'apply', form([])), 400, ENDED);
@@ -679,6 +707,7 @@ test('ops-pass → 신청한 분 mine 은 모집 중이면 wait, 닫히면 close
   assert.deepEqual(off, { ok: true, open: false, closedAt: NOW + 100 });
   const me = ok(await s.call(DJ, 'status'));
   assert.equal(me.open, false);
+  assert.equal(me.closedAt, NOW + 100);
   assert.equal(me.mine.state, 'closed');
   assert.equal(me.mine.canApply, false);
   no(await s.call(STAR, 'apply', form([])), 400, ENDED);
@@ -696,15 +725,25 @@ test('ops-pass → 신청한 분 mine 은 모집 중이면 wait, 닫히면 close
   assert.equal(ok(await s.call(OPS, 'ops-pick', { id })).app.state, 'picked');
 });
 
-test('ops-purge 는 모집 닫혔을 때만, 사진 모두 지우고 photos {}·msg null', async () => {
+test('ops-purge 는 모집이 끝났을 때만(open false + closedAt): 안 뽑힌 줄은 통째로 지우고, 뽑힌 줄은 사진·하고 싶은 말만 비움', async () => {
+  const PURGE_LATER = '모집이 끝난 뒤에 정리할 수 있어요.';
+  // 시작 전(open false · closedAt 없음)에는 못 함
+  no(await setup({ beta: CLOSED }).call(OPS, 'ops-purge'), 400, PURGE_LATER);
   const s = setup({ beta: OPEN });
   const p = await shoot(s, DJ, 3);
   ok(await s.call(DJ, 'apply', form(p)));
   const q = await shoot(s, STAR, 4);
   ok(await s.call(STAR, 'apply', form(q, { spoonNick: '별사탕', label: '사탕' })));
+  const r3 = await shoot(s, RABBIT, 3);
+  ok(await s.call(RABBIT, 'apply', form(r3, { spoonNick: '달토끼', label: '토끼' })));
+  ok(await s.call(RABBIT, 'cancel'));
   const orphan = await shoot(s, CLOUD, 2);   // 올리기만 하고 신청하지 않은 사진
   ok(await s.call(OPS, 'ops-pick', { id: appOf(s, DJ).id }));
-  no(await s.call(OPS, 'ops-purge'), 409);
+  ok(await s.call(OPS, 'ops-pass', { id: appOf(s, STAR).id }));
+  const oldStar = appOf(s, STAR).id;
+  // 열려 있을 때는 못 함
+  no(await s.call(OPS, 'ops-purge'), 400, PURGE_LATER);
+  assert.equal(s.T.bj_beta_apps.length, 3);
   assert.equal([...s.db.files.keys()].filter((k) => k.startsWith('bakje-beta/')).length, 9);
   ok(await s.call(OPS, 'ops-open', { open: false }));
   const r = ok(await s.call(OPS, 'ops-purge'));
@@ -712,11 +751,26 @@ test('ops-purge 는 모집 닫혔을 때만, 사진 모두 지우고 photos {}·
   assert.equal([...s.db.files.keys()].filter((k) => k.startsWith('bakje-beta/')).length, 0);
   for (const x of [...p, ...q, ...orphan]) assert.ok(s.db.removed.includes('bakje-beta/' + x));
   assert.ok(s.db.files.has(`bakje/h/${hostOf('먼치')}.json`), '앨범 주소 파일(bakje 칸)은 그대로');
-  for (const a of s.T.bj_beta_apps) { assert.deepEqual(a.photos, []); assert.equal(a.msg, null); }
-  assert.equal(appOf(s, DJ).state, 'picked');
-  assert.equal(appOf(s, DJ).want_host, hostOf('먼치'));
+  // 안 뽑힌 줄(넘김·취소)은 없어짐 · 뽑힌 줄은 스푼 닉네임·주소·앨범 이름이 남고 사진·하고 싶은 말만 비움
+  assert.deepEqual(s.T.bj_beta_apps.map((a) => a.member), [DJ]);
+  const a = appOf(s, DJ);
+  assert.equal(a.state, 'picked');
+  assert.equal(a.spoon_nick, '먼치');
+  assert.equal(a.want_label, '먼치');
+  assert.equal(a.want_host, hostOf('먼치'));
+  assert.equal(a.want_name, '먼치 추억앨범');
+  assert.ok(a.album);
+  assert.deepEqual(a.photos, []);
+  assert.equal(a.msg, null);
   const list = ok(await s.call(OPS, 'ops-list'));
-  assert.ok(list.apps.every((a) => a.photos.length === 0 && a.msg === ''));
+  assert.deepEqual(list.apps.map((x) => [x.spoonNick, x.photos.length, x.msg]), [['먼치', 0, '']]);
+  // 지운 뒤 같은 회원이 다시 신청할 수 있음(회원마다 한 줄 — 지운 줄은 막지 않음)
+  ok(await s.call(OPS, 'ops-open', { open: true }));
+  const again = await shoot(s, STAR, 3);
+  const re = ok(await s.call(STAR, 'apply', form(again, { spoonNick: '별사탕', label: '사탕' })));
+  assert.equal(re.mine.state, 'wait');
+  assert.notEqual(appOf(s, STAR).id, oldStar);
+  assert.equal(s.T.bj_beta_apps.length, 2);
 });
 
 test('status until 지나면 open false', async () => {

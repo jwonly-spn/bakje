@@ -5,7 +5,7 @@
 //  → apply(스푼 닉네임·주소 이름·앨범 이름·하고 싶은 말·사진 3~10장 — 서버가 칸에 실제로 있는지·크기·형식을 다시 본다)
 //  → 표 bj_beta_apps 한 줄(wait) + 운영자 DM 알림(jl_watch_alerts — 접수 봇이 5분마다 읽어 DM, 사진은 보내지 않음)
 //  → 운영자 앱 "베타" 탭(ops-list: 사진은 1시간짜리 서명 보기 주소) → [뽑기](ops-pick: 잠금 함수 bj_beta_claim 으로 자리 → 앨범·주소·주인 · 12/31 까지 무료)
-//     / [넘기기](ops-pass: 신청한 분 화면엔 모집이 끝날 때까지 "기다리는 중") · 10명째를 뽑으면 모집이 저절로 닫힘 · 모집이 끝나면 ops-purge 로 사진·하고 싶은 말 지움.
+//     / [넘기기](ops-pass: 신청한 분 화면엔 모집이 끝날 때까지 "기다리는 중") · 10명째를 뽑으면 모집이 저절로 닫힘 · 모집이 끝나면 ops-purge 로 사진을 모두 지우고 안 뽑힌 신청은 줄째 지움(뽑힌 줄은 사진·하고 싶은 말만 비움).
 // 모집 설정: bj_settings "beta" {open, seats, until, closedAt}. 열림 = open && 지금 <= until && 뽑힌 수 < seats. 시범 앨범 3개는 세지 않는다(뽑힌 신청만 셈).
 // 회원 세션은 bakje 와 같은 x-bj-session(bj_sessions sha256). 표: 마이그레이션 20261125_bakje_beta(이 함수보다 먼저 적용).
 // 주의: MCP 로 올릴 때 백슬래시-u 글자 표기가 풀려 버리므로 이 파일에는 그런 표기를 쓰지 않는다.
@@ -224,6 +224,7 @@ const appOut = (r: any, urls: Map<string, string>) => ({ id: r.id, nick: r.nick 
 const appWithUrls = async (r: any) => appOut(r, await viewUrls(r.photos || []));
 
 // 운영자 DM 알림(접수 봇이 jl_watch_alerts 를 읽어 보낸다) — 제목 한 줄 + 한 줄에 한 가지. 사진·사진 주소는 넣지 않는다.
+//  제목에 번호는 없다(줄을 지우면 번호가 겹쳐서 — 고침 1회차). 수는 "지금 신청 A명 · 뽑힘 B명" 줄이 알려 준다.
 async function alertApply(app: any, b: Board) {
   const rows: any[] = await q(db.from('bj_beta_apps').select('state'));
   const live = rows.filter((r) => r.state !== 'canceled').length, picked = rows.filter((r) => r.state === 'picked').length;
@@ -235,7 +236,7 @@ async function alertApply(app: any, b: Board) {
     `지금 신청 ${live}명 · 뽑힘 ${picked}명 / ${b.seats}명`,
     `운영자 앱: ${OPS_APP} → 베타`
   ].join('\n');
-  await q(db.from('jl_watch_alerts').insert({ key: 'beta-apply', level: 'info', title: `🧪 추억앨범 베타 신청 ${rows.length}번`, body: body.slice(0, 1500) }));
+  await q(db.from('jl_watch_alerts').insert({ key: 'beta-apply', level: 'info', title: `🧪 추억앨범 베타 신청 — ${app.spoon_nick}`, body: body.slice(0, 1500) }));
 }
 
 // ── 새 추억앨범 만들기(운영자가 뽑을 때) — bakje-billing makeAlbum 과 같은 일 ──
@@ -291,11 +292,12 @@ async function handle(req: Request, now: number) {
   let b: any; try { b = JSON.parse(raw); } catch { throw fail(400, '요청 모양이 올바르지 않아요.'); }
   if (!isObj(b) || typeof b.action !== 'string') throw fail(400, '요청 모양이 올바르지 않아요.');
   // 모집 상황(누구나 — 남은 자리만, 신청한 사람 이름은 없음). 세션이 있으면 내 신청도(틀린 세션이면 mine null — 401 아님)
+  //  closedAt: 설정 값(없으면 null) — 화면이 "모집이 끝났어요"와 "아직 시작하지 않았어요"를 가른다(고침 1회차)
   if (b.action === 'status') {
     const bd = await board(now);
     let me: any = null;
     try { me = await needMember(req, now); } catch (e) { if (!(e instanceof Fail) || e.status >= 500) throw e; }
-    return { ok: true, open: bd.isOpen, seats: bd.seats, picked: bd.picked, left: bd.left, until: bd.until, mine: me ? await mineOf(me, bd) : null };
+    return { ok: true, open: bd.isOpen, seats: bd.seats, picked: bd.picked, left: bd.left, until: bd.until, closedAt: bd.closedAt, mine: me ? await mineOf(me, bd) : null };
   }
   const me = await needMember(req, now);
   switch (b.action) {
@@ -349,15 +351,16 @@ async function handle(req: Request, now: number) {
       if (fresh) await quiet(alertApply(saved, bd));      // 운영자 DM(실패해도 신청은 됨 — 운영자 앱에는 보임)
       return { ok: true, mine: await mineOf(me, bd) };
     }
-    // 신청 취소: 사진을 먼저 지우고(못 지우면 503 — 취소하지 않음) 취소로. 신청이 없거나 이미 취소면 그대로 답한다.
+    // 신청 취소: 상태를 먼저 조건부로 바꾸고(wait·passed → canceled — 그 뒤엔 뽑을 수 없음) 실제로 바뀐 때만 내 폴더 사진을 지운다(고침 1회차).
+    //  그사이 뽑혔으면 400 이미 뽑혔어요(사진은 그대로). 신청이 없거나 이미 취소면 아무것도 지우지 않고 그대로 답한다.
+    //  사진 지우기가 실패해도 취소는 된 것 — 남은 사진은 다음 신청 때·모집 끝 정리(ops-purge) 때 지워진다.
     case 'cancel': {
-      const row: any = await q(db.from('bj_beta_apps').select('*').eq('member', me.id).maybeSingle());
-      if (row?.state === 'picked') throw fail(400, PICKED);
-      if (MEMBER_ID.test(String(me.id))) {
-        if (row && row.state !== 'canceled') await cleanFolder(me.id, []);
-        else await quiet(cleanFolder(me.id, []));
+      const r: any = await q(db.from('bj_beta_apps').update({ state: 'canceled', decided: now, photos: [] }).eq('member', me.id).in('state', ['wait', 'passed']).select('id'));
+      if (r?.[0]) { if (MEMBER_ID.test(String(me.id))) await quiet(cleanFolder(me.id, [])); }
+      else {
+        const row: any = await q(db.from('bj_beta_apps').select('state').eq('member', me.id).maybeSingle());
+        if (row?.state === 'picked') throw fail(400, PICKED);
       }
-      if (row && row.state !== 'canceled') await q(db.from('bj_beta_apps').update({ state: 'canceled', decided: now, photos: [] }).eq('id', row.id).in('state', ['wait', 'passed']));
       return { ok: true, mine: await mineOf(me, await board(now)) };
     }
   }
@@ -420,17 +423,22 @@ async function handle(req: Request, now: number) {
       const after = await board(now);
       return { ok: true, open: after.isOpen, closedAt: after.closedAt };
     }
-    // 모집 끝 정리(모집이 닫혔을 때만): 칸 안 사진을 모두 지우고(신청하지 않은 사진까지) 신청의 사진·하고 싶은 말을 비운다. 뽑힌 분의 주소·앨범 이름은 남는다.
+    // 모집 끝 정리 — 모집이 끝났을 때만(설정 open false + closedAt 있음. 시작 전·열려 있으면 400). 컨트롤러 판정(고침 1회차):
+    //  ① 칸 안 사진을 모두 지운다(뽑힌 분 것·신청하지 않고 올리기만 한 것까지 — 앨범에 저절로 올리지 않음). 못 지우면 503, 표는 그대로.
+    //  ② 뽑힌 줄은 사진·하고 싶은 말만 비운다(스푼 닉네임·주소·앨범 이름은 앨범 정보로 남김).
+    //  ③ 안 뽑힌 줄(기다림·넘김·취소)은 줄째 지운다 — 그 회원은 다음 모집에 다시 신청할 수 있다(회원마다 한 줄).
+    //  removed = 지운 사진 수.
     case 'ops-purge': {
-      const bd = await board(now);
-      if (bd.isOpen) throw fail(409, '모집이 열려 있어요. 모집을 닫은 뒤 정리해 주세요.');
+      const c = await betaCfg();
+      if (c.open || c.closedAt === null) throw fail(400, '모집이 끝난 뒤에 정리할 수 있어요.');
       let removed = 0;
       for (const f of await filesOf('')) {
         if (!f || typeof f.name !== 'string' || !f.name) continue;
         if (f.id == null) removed += await removeFiles((await filesOf(f.name)).filter((x) => x && x.id != null).map((x) => f.name + '/' + x.name));
         else removed += await removeFiles([f.name]);
       }
-      await q(db.from('bj_beta_apps').update({ photos: [], msg: null }).not('id', 'is', null));
+      await q(db.from('bj_beta_apps').update({ photos: [], msg: null }).eq('state', 'picked'));
+      await q(db.from('bj_beta_apps').delete().in('state', ['wait', 'passed', 'canceled']));
       return { ok: true, removed };
     }
   }
