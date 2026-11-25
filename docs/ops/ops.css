@@ -68,7 +68,10 @@ button { font: inherit; color: inherit; -webkit-tap-highlight-color: transparent
 .plan.new-album { font-weight: 600; background: var(--green-bg); color: var(--green); border-radius: 10px; padding: 8px 10px; }
 .card-btns { display: grid; grid-template-columns: 1fr 2fr; gap: 8px; }
 .row-card { background: var(--card); border-radius: 14px; padding: 12px 14px; display: flex; justify-content: space-between; gap: 10px; }
-.row-card .right { text-align: right; display: grid; gap: 4px; justify-items: end; }
+.row-card .right { text-align: right; display: grid; gap: 4px; justify-items: end; align-content: start; }
+/* 현금영수증 번호(2026-11-25): 입금자명 칸과 같은 모양 — 종류 글 아래에 번호(휴대폰 번호가 한 줄에 들어가게) */
+.payer.receipt .rc { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.payer.receipt .copy { white-space: nowrap; }
 
 /* 설정 */
 .group { background: var(--card); border-radius: 16px; padding: 14px; display: grid; gap: 10px; }

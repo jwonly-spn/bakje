@@ -54,6 +54,18 @@ const when = (ms) => {
 const period = (o) => (o.months ? (o.months === 12 ? '1년' : o.months + '개월') : `${day(o.until_to)}까지`);
 // 새 추억앨범 신청(앨범이 없는 DJ 가 먼치킨.com/album 에서): 입금을 확인하면 앨범·주소가 바로 만들어진다
 const newAlbumLine = (o) => (o.newAlbum ? `📚 새 추억앨범 · ${o.newAlbum.label}.먼치킨.com · ${o.newAlbum.name}` : '');
+// 현금영수증(2026-11-25): DJ 가 "입금했어요" 때 적은 번호(서버 ops-orders 만 줌 — 숫자만). 입금을 확인한 뒤 손택스로 발급한다. 없으면 아무것도 안 보임.
+//  보기 좋게 하이픈: 휴대폰 010-1234-5678 · 사업자등록번호 123-45-67890 · 현금영수증 카드 번호 4자리씩. [번호 복사]는 숫자만.
+const RECEIPT = { personal: '소득공제', business: '지출증빙' };
+const receiptOf = (o) => (o.receipt && Object.hasOwn(RECEIPT, o.receipt.kind) &&/^[0-9]+$/.test(String(o.receipt.number || '')) ? o.receipt : null);
+function receiptNo(r) {
+  const n = String(r.number);
+  if (r.kind === 'business' && n.length === 10) return `${n.slice(0, 3)}-${n.slice(3, 5)}-${n.slice(5)}`;
+  if (/^01[0-9]{8,9}$/.test(n)) return `${n.slice(0, 3)}-${n.slice(3, n.length - 4)}-${n.slice(-4)}`;
+  return n.match(/.{1,4}/g).join('-');
+}
+const receiptText = (r) => `🧾 ${RECEIPT[r.kind]} ${receiptNo(r)}`;
+const copyReceipt = (r) => copy(r.number, '현금영수증 번호');
 let toastTimer = 0;
 function toast(text, bad = false) {
   const t = document.getElementById('toast');
@@ -168,6 +180,7 @@ function waitView() {
 }
 
 function orderCard(o) {
+  const r = receiptOf(o);
   return h('article', { class: 'card' + (o.sent ? ' sent' : '') },
     h('div', { class: 'card-top' },
       h('span', { class: 'chip ' + (o.sent ? 'green' : 'gray'), text: o.sent ? `입금했어요 · ${when(o.sent)}` : `신청만 함 · ${when(o.created)}` }),
@@ -175,6 +188,9 @@ function orderCard(o) {
     h('p', { class: 'amount', text: won(o.amount) }),
     h('button', { class: 'payer', type: 'button', onclick: () => copy(o.payer, '입금자명') },
       h('span', { class: 'muted small', text: '입금자명' }), h('b', { text: o.payer }), h('span', { class: 'copy', text: '복사' })),
+    // 현금영수증 번호(입금자명 칸과 같은 모양 — 누르면 숫자만 복사)
+    r ? h('button', { class: 'payer receipt', type: 'button', 'aria-label': `${receiptText(r)} — 번호 복사`, onclick: () => copyReceipt(r) },
+      h('span', { class: 'rc' }, h('span', { class: 'muted small', text: `🧾 ${RECEIPT[r.kind]}` }), h('b', { text: receiptNo(r) })), h('span', { class: 'copy', text: '번호 복사' })) : null,
     h('p', { class: 'plan', text: `${PLAN[o.plan] || o.plan} · ${period(o)}${o.album ? ' · 앨범 ' + o.album : ''}` }),
     o.newAlbum ? h('p', { class: 'plan new-album', text: newAlbumLine(o) }) : null,
     h('div', { class: 'card-btns' },
@@ -185,7 +201,8 @@ function orderCard(o) {
 async function confirmPaid(o) {
   const yes = await ask({ title: '입금이 들어왔나요?', ok: o.newAlbum ? '들어왔어요 · 앨범 만들기' : '들어왔어요 · 기간 늘리기', cancel: '아직',
     lines: [`토스뱅크에서 입금자명 "${o.payer}", ${won(o.amount)}이 들어왔는지 확인해 주세요.`, `${o.nick || 'DJ'} · ${PLAN[o.plan] || o.plan} ${period(o)}`,
-      ...(o.newAlbum ? [newAlbumLine(o), '입금을 확인하면 앨범과 주소가 바로 만들어져요.'] : [])] });
+      ...(o.newAlbum ? [newAlbumLine(o), '입금을 확인하면 앨범과 주소가 바로 만들어져요.'] : []),
+      ...(receiptOf(o) ? [`${receiptText(receiptOf(o))} — 확인한 뒤 현금영수증을 발급해 주세요.`] : [])] });
   if (!yes) return;
   try {
     const j = await bill('ops-confirm', { id: o.id });
@@ -209,7 +226,9 @@ function doneView() {
   if (!list.length) return h('p', { class: 'empty', text: '아직 처리한 신청이 없어요.' });
   return h('section', { class: 'list' }, list.map((o) => h('article', { class: 'row-card' },
     h('div', null, h('b', { text: `${won(o.amount)} · ${payerText(o)}` }), h('p', { class: 'muted small', text: `${isCard(o) ? '💳 카드 · ' : ''}${o.nick || ''} · ${PLAN[o.plan] || o.plan} ${period(o)}` }),
-      o.newAlbum ? h('p', { class: 'muted small', text: newAlbumLine(o) }) : null),
+      o.newAlbum ? h('p', { class: 'muted small', text: newAlbumLine(o) }) : null,
+      receiptOf(o) ? h('p', { class: 'muted small', text: receiptText(receiptOf(o)) }) : null,
+      receiptOf(o) ? h('button', { class: 'btn small', type: 'button', text: '번호 복사', 'aria-label': `${receiptText(receiptOf(o))} — 번호 복사`, onclick: () => copyReceipt(receiptOf(o)) }) : null),
     h('div', { class: 'right' }, h('span', { class: 'chip ' + (o.state === 'paid' ? 'green' : 'gray'), text: stateText(o) }), h('p', { class: 'muted small', text: o.done ? when(o.done) : '' })))));
 }
 

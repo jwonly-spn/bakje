@@ -37,9 +37,9 @@ const LIVE = { ...CARD, mode: 'live' };
 const KEYS = { bj_orders: ['id'], bj_entitlements: ['member', 'product'], bj_settings: ['key'], bj_albums: ['id'], bj_hosts: ['host'], bj_album_owners: ['album', 'member'],
   bj_push_subs: ['id'], bj_bots: ['id'], bj_members: ['id'], bj_sessions: ['token'], bj_member_devices: ['device'], junlive_devices: ['id'] };
 const UNIQUE = { bj_orders: [['pay_id']], bj_push_subs: [['endpoint']] };
-// 마이그레이션 bakje_card_pay 뒤의 bj_orders 기본값·제약
-const DEFAULTS = { bj_orders: { state: 'pending', sent: null, done: null, note: '', until_to: null, want_host: null, want_label: null, want_name: null, pay: 'bank', pay_id: null, pay_at: null, pay_channel: null, test_only: false } };
-const CHECKS = { bj_orders: (r) => ['pending', 'paid', 'rejected', 'canceled', 'test'].includes(r.state) && ['bank', 'card'].includes(r.pay) };
+// 마이그레이션 bakje_card_pay · bakje_cash_receipt 뒤의 bj_orders 기본값·제약
+const DEFAULTS = { bj_orders: { state: 'pending', sent: null, done: null, note: '', until_to: null, want_host: null, want_label: null, want_name: null, pay: 'bank', pay_id: null, pay_at: null, pay_channel: null, test_only: false, receipt_kind: null, receipt_no: null } };
+const CHECKS = { bj_orders: (r) => ['pending', 'paid', 'rejected', 'canceled', 'test'].includes(r.state) && ['bank', 'card'].includes(r.pay) && (r.receipt_kind == null || ['personal', 'business'].includes(r.receipt_kind)) };
 const clone = (v) => structuredClone(v);
 
 function fakeDb(seed) {
@@ -134,9 +134,9 @@ function fakeDb(seed) {
   };
 }
 
-// ---- 가짜 인터넷: 포트원 결제 조회 · 디스코드 웹후크 ----
+// ---- 가짜 인터넷: 포트원 결제 조회 · 디스코드 웹후크 · 운영자 앱 푸시(fcm — 암호문 그대로 모음) ----
 function fakeNet() {
-  const calls = [], hooks = [], payments = {};
+  const calls = [], hooks = [], payments = {}, pushes = [];
   let down = false, delay = 0;
   const fetch = async (url, init = {}) => {
     url = String(url);
@@ -150,9 +150,10 @@ function fakeNet() {
       return new Response(JSON.stringify(p), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
     if (url.startsWith('https://discord.com/api/webhooks/')) { hooks.push(JSON.parse(init.body).content); return new Response(null, { status: 204 }); }
+    if (url.startsWith('https://fcm.googleapis.com/')) { pushes.push(new Uint8Array(init.body)); return new Response(null, { status: 201 }); }
     throw new Error('시험에서 모르는 주소예요: ' + url);
   };
-  return { fetch, calls, hooks, payments, setDown: (v) => { down = v; }, setDelay: (ms) => { delay = ms; } };
+  return { fetch, calls, hooks, payments, pushes, setDown: (v) => { down = v; }, setDelay: (ms) => { delay = ms; } };
 }
 // 포트원 V2 GET /payments/{paymentId} 답(필요한 칸만)
 const payment = (o, over = {}) => ({
@@ -203,13 +204,14 @@ test('함수 글에 백슬래시-u 글자 표기가 없다(MCP 로 올릴 때 �
   assert.ok(!/\\u\{/.test(raw));
 });
 
-test('health: v 6 · card true', async () => {
+test('health: v 7 · card true · receipt true', async () => {
   const s = setup();
   const res = await s.handler(new Request(URL_FN + '/health'));
   const j = await res.json();
   assert.equal(res.status, 200);
-  assert.equal(j.v, 6);
+  assert.equal(j.v, 7);
   assert.equal(j.card, true);
+  assert.equal(j.receipt, true);
   assert.equal(j.munchkinPass, true);
 });
 
@@ -973,4 +975,205 @@ test('운영자 계정(is_admin)은 munchkin-pass 가 늘 이용권 있음 — u
     assert.deepEqual({ active: dj.active, until: dj.until, kind: dj.kind }, { active: false, until: null, kind: null });
     assert.equal(s.T.bj_entitlements.length, 0, '운영자에게 이용권 줄을 만들지 않아요');
   }
+});
+
+// ================= 현금영수증(v7, 2026-11-25) =================
+// 계좌이체 "입금했어요"(sent) 때 원하면 받는 번호: receipt {kind 'personal' | 'business', number}. 번호는 숫자만 저장.
+// personal = 휴대폰 번호(01 로 시작 10~11자리) 또는 현금영수증 카드 번호(13~19자리) · business = 사업자등록번호 10자리.
+// 번호는 운영자 목록(ops-orders · ops-confirm · ops-reject)에만 — 회원 답·운영자 알림(디스코드·푸시)·console 기록에는 없다.
+// 시험 번호는 지어낸 것이에요(010-1234-5678 · 123-45-67890).
+const PHONE = '01012345678', BIZ = '1234567890';
+// 운영자 앱 푸시를 받는 가짜 휴대폰(웹 푸시 열쇠) — 서버가 보낸 암호문(aes128gcm)을 이 열쇠로 풀어 알림 글을 본다
+async function fakePhone() {
+  const wc = crypto.webcrypto.subtle;
+  const kp = await wc.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+  const pub = new Uint8Array(await wc.exportKey('raw', kp.publicKey));
+  const auth = crypto.randomBytes(16);
+  const hkdf = async (salt, ikm, info, len) => new Uint8Array(await wc.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt, info }, await wc.importKey('raw', ikm, 'HKDF', false, ['deriveBits']), len * 8));
+  const cat = (...a) => Buffer.concat(a.map((x) => Buffer.from(x)));
+  const open = async (msg) => {
+    const salt = msg.slice(0, 16), idlen = msg[20], server = msg.slice(21, 21 + idlen), body = msg.slice(21 + idlen);
+    const shared = new Uint8Array(await wc.deriveBits({ name: 'ECDH', public: await wc.importKey('raw', server, { name: 'ECDH', namedCurve: 'P-256' }, false, []) }, kp.privateKey, 256));
+    const ikm = await hkdf(auth, shared, cat(Buffer.from('WebPush: info\0'), pub, server), 32);
+    const cek = await hkdf(salt, ikm, Buffer.from('Content-Encoding: aes128gcm\0'), 16);
+    const nonce = await hkdf(salt, ikm, Buffer.from('Content-Encoding: nonce\0'), 12);
+    const plain = new Uint8Array(await wc.decrypt({ name: 'AES-GCM', iv: nonce }, await wc.importKey('raw', cek, 'AES-GCM', false, ['decrypt']), body));
+    return JSON.parse(Buffer.from(plain.slice(0, plain.lastIndexOf(2))).toString('utf8'));
+  };
+  const sub = { id: 'pPhone', member: 'mOp', endpoint: 'https://fcm.googleapis.com/fcm/send/test-phone', p256dh: Buffer.from(pub).toString('base64url'), auth: auth.toString('base64url'), label: '운영 폰', created: 1 };
+  return { sub, open };
+}
+// console 에 적힌 글 모으기(번호가 기록에 남지 않는지 보려고)
+function watchConsole() {
+  const seen = [], keep = {};
+  for (const k of ['log', 'error', 'warn', 'info']) { keep[k] = console[k]; console[k] = (...a) => { seen.push(a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x) ?? String(x))).join(' ')); }; }
+  return { seen, stop: () => Object.assign(console, keep) };
+}
+const bankOrder = async (s, who = 'mDj', body = { plan: 'munchkin', months: 1 }) => ok(await s.call(who, 'order', body)).order;
+
+test('현금영수증: 번호 모양이 맞으면 숫자만 저장 — 휴대폰(10·11자리) · 현금영수증 카드(13~19자리) · 사업자등록번호(10자리)', async () => {
+  const cases = [
+    [{ kind: 'personal', number: '010-1234-5678' }, 'personal', PHONE],
+    [{ kind: 'personal', number: ' 010 1234 5678 ' }, 'personal', PHONE],
+    [{ kind: 'personal', number: '011-123-4567' }, 'personal', '0111234567'],
+    [{ kind: 'personal', number: '1234-5678-9012-3' }, 'personal', '1234567890123'],
+    [{ kind: 'personal', number: '1234-5678-9012-3456' }, 'personal', '1234567890123456'],
+    [{ kind: 'personal', number: '1234567890123456789' }, 'personal', '1234567890123456789'],
+    [{ kind: 'business', number: '123-45-67890' }, 'business', BIZ]
+  ];
+  for (const [receipt, kind, number] of cases) {
+    const s = setup({ now: AFTER_DEC });
+    const o = await bankOrder(s);
+    const r = ok(await s.call('mDj', 'sent', { id: o.id, receipt }));
+    assert.equal(r.order.sent, AFTER_DEC);
+    const saved = row(s, o.id);
+    assert.equal(saved.receipt_kind, kind, JSON.stringify(receipt));
+    assert.equal(saved.receipt_no, number, JSON.stringify(receipt));
+    assert.equal(saved.sent, AFTER_DEC);
+  }
+});
+
+test('현금영수증: 번호가 틀리면 400 · 짧은 해요체 글 · 신청은 그대로(입금 알림도 안 감)', async () => {
+  const bad = [
+    [{ kind: 'personal', number: '02-123-4567' }, '현금영수증 번호를 다시 확인해 주세요.'],         // 9자리
+    [{ kind: 'personal', number: '1234567890' }, '현금영수증 번호를 다시 확인해 주세요.'],          // 10자리지만 01 로 시작 안 함
+    [{ kind: 'personal', number: '12345678901' }, '현금영수증 번호를 다시 확인해 주세요.'],         // 11자리지만 01 로 시작 안 함
+    [{ kind: 'personal', number: '010123456789' }, '현금영수증 번호를 다시 확인해 주세요.'],        // 12자리
+    [{ kind: 'personal', number: '12345678901234567890' }, '현금영수증 번호를 다시 확인해 주세요.'],// 20자리
+    [{ kind: 'personal', number: '010-1234-567a' }, '현금영수증 번호를 다시 확인해 주세요.'],
+    [{ kind: 'personal', number: '010.1234.5678' }, '현금영수증 번호를 다시 확인해 주세요.'],
+    [{ kind: 'business', number: '123-45-6789' }, '현금영수증 번호를 다시 확인해 주세요.'],          // 9자리
+    [{ kind: 'business', number: '010-1234-5678' }, '현금영수증 번호를 다시 확인해 주세요.'],        // 사업자는 10자리만
+    [{ kind: 'company', number: PHONE }, '현금영수증 종류를 골라 주세요.'],
+    [{ kind: 'toString', number: PHONE }, '현금영수증 종류를 골라 주세요.'],
+    [{ number: PHONE }, '현금영수증 종류를 골라 주세요.'],
+    [PHONE, '현금영수증 번호를 다시 확인해 주세요.'],
+    [[{ kind: 'personal', number: PHONE }], '현금영수증 번호를 다시 확인해 주세요.']
+  ];
+  const s = setup({ now: AFTER_DEC });
+  const o = await bankOrder(s);
+  for (const [receipt, message] of bad) {
+    const r = await s.call('mDj', 'sent', { id: o.id, receipt });
+    assert.equal(r.status, 400, JSON.stringify(receipt));
+    assert.deepEqual(r.body, { ok: false, error: message }, JSON.stringify(receipt));
+  }
+  const saved = row(s, o.id);
+  assert.equal(saved.sent, null);
+  assert.equal(saved.receipt_kind, null);
+  assert.equal(saved.receipt_no, null);
+  assert.equal(s.net.hooks.length, 0);
+  // 고쳐서 다시 누르면 된다
+  ok(await s.call('mDj', 'sent', { id: o.id, receipt: { kind: 'personal', number: '010-1234-5678' } }));
+  assert.equal(row(s, o.id).receipt_no, PHONE);
+});
+
+test('현금영수증: 없거나 번호가 비어 있으면 전과 똑같이(선택) — 알림에 🧾 줄 없음', async () => {
+  for (const extra of [{}, { receipt: null }, { receipt: { kind: 'personal', number: '' } }, { receipt: { kind: 'business', number: ' - ' } }, { receipt: { kind: '', number: '' } }, { receipt: {} }]) {
+    const s = setup({ now: AFTER_DEC });
+    const o = await bankOrder(s);
+    const r = ok(await s.call('mDj', 'sent', { id: o.id, ...extra }));
+    assert.equal(r.order.sent, AFTER_DEC, JSON.stringify(extra));
+    const saved = row(s, o.id);
+    assert.equal(saved.receipt_kind, null);
+    assert.equal(saved.receipt_no, null);
+    assert.equal(s.net.hooks.length, 1);
+    assert.ok(s.net.hooks[0].includes('💸 입금했어요'));
+    assert.ok(!s.net.hooks[0].includes('🧾'), JSON.stringify(extra));
+    const list = ok(await s.call('mOp', 'ops-orders'));
+    assert.equal(list.waiting[0].receipt, null);
+  }
+});
+
+test('현금영수증: 회원 답(sent·info·order)에는 번호가 없고, 운영자 목록·확인·거절 답에만 kind·number 전체', async () => {
+  const s = setup({ now: AFTER_DEC });
+  const a = await bankOrder(s);
+  const b = await bankOrder(s, 'mEtc', { plan: 'munchkin', months: 12 });
+  const sentA = ok(await s.call('mDj', 'sent', { id: a.id, receipt: { kind: 'personal', number: '010-1234-5678' } }));
+  const sentB = ok(await s.call('mEtc', 'sent', { id: b.id, receipt: { kind: 'business', number: '123-45-67890' } }));
+  const member = [sentA, sentB, ok(await s.call('mDj', 'info')), ok(await s.call('mEtc', 'info'))];
+  for (const body of member) {
+    const text = JSON.stringify(body);
+    for (const n of [PHONE, BIZ, '010-1234-5678', '123-45-67890']) assert.ok(!text.includes(n), `회원 답에 번호(${n})가 나오면 안 돼요: ${text.slice(0, 120)}`);
+    assert.ok(!('receipt' in (body.order || body.orders[0])), '회원 답에는 receipt 칸이 없어요');
+  }
+  const list = ok(await s.call('mOp', 'ops-orders'));
+  const byId = Object.fromEntries(list.waiting.map((x) => [x.id, x]));
+  assert.deepEqual(byId[a.id].receipt, { kind: 'personal', number: PHONE });
+  assert.deepEqual(byId[b.id].receipt, { kind: 'business', number: BIZ });
+  const conf = ok(await s.call('mOp', 'ops-confirm', { id: a.id }));
+  assert.deepEqual(conf.order.receipt, { kind: 'personal', number: PHONE });
+  const rej = ok(await s.call('mOp', 'ops-reject', { id: b.id, note: '입금이 안 보여요' }));
+  assert.deepEqual(rej.order.receipt, { kind: 'business', number: BIZ });
+  const after = ok(await s.call('mOp', 'ops-orders'));
+  assert.deepEqual(after.recent.find((x) => x.id === a.id).receipt, { kind: 'personal', number: PHONE });
+  assert.deepEqual(after.recent.find((x) => x.id === b.id).receipt, { kind: 'business', number: BIZ });
+  // 회원은 운영자 목록을 못 본다(전과 같음)
+  assert.equal((await s.call('mDj', 'ops-orders')).status, 403);
+});
+
+test('현금영수증: 운영자 알림(디스코드·휴대폰 푸시)에는 번호 없이 "🧾 현금영수증: 소득공제/지출증빙" 한 줄만 · console 에도 번호 없음', async () => {
+  const s = setup({ now: AFTER_DEC });
+  const phone = await fakePhone();
+  s.T.bj_push_subs.push(phone.sub);
+  const watch = watchConsole();
+  try {
+    const a = await bankOrder(s);
+    ok(await s.call('mDj', 'sent', { id: a.id, receipt: { kind: 'personal', number: '010-1234-5678' } }));
+    const b = await bankOrder(s, 'mEtc');
+    ok(await s.call('mEtc', 'sent', { id: b.id, receipt: { kind: 'business', number: '123-45-67890' } }));
+    // 틀린 번호(400)도 기록에 남지 않는다
+    const c = await bankOrder(s, 'mKg');
+    assert.equal((await s.call('mKg', 'sent', { id: c.id, receipt: { kind: 'business', number: '010-1234-5678' } })).status, 400);
+  } finally { watch.stop(); }
+  assert.equal(s.net.hooks.length, 2);
+  assert.ok(s.net.hooks[0].includes('\n🧾 현금영수증: 소득공제\n'), s.net.hooks[0]);
+  assert.ok(s.net.hooks[1].includes('\n🧾 현금영수증: 지출증빙\n'), s.net.hooks[1]);
+  assert.equal(s.net.pushes.length, 2, '운영자 폰으로 푸시 두 번');
+  const pushed = await Promise.all(s.net.pushes.map(phone.open));
+  assert.ok(pushed[0].body.includes('🧾 현금영수증: 소득공제'), pushed[0].body);
+  assert.ok(pushed[1].body.includes('🧾 현금영수증: 지출증빙'), pushed[1].body);
+  const all = [...s.net.hooks, ...pushed.map((p) => JSON.stringify(p)), ...watch.seen].join('\n');
+  for (const n of [PHONE, BIZ, '010-1234-5678', '123-45-67890', '1234-5678', '45-67890']) assert.ok(!all.includes(n), `알림·기록에 번호(${n})가 나오면 안 돼요`);
+});
+
+test('현금영수증: DB 오류가 나도 console 에는 오류 번호만(번호가 든 오류 글은 안 적음) · 503', async () => {
+  const s = setup({ now: AFTER_DEC });
+  const o = await bankOrder(s);
+  const from = s.db.from;
+  s.db.from = (name) => {
+    const b = from(name);
+    if (name !== 'bj_orders') return b;
+    const update = b.update;
+    b.update = (v) => {
+      if (!('sent' in v)) return update(v);
+      const fake = { eq: () => fake, select: () => Promise.resolve({ data: null, error: { code: '23514', message: 'new row violates check constraint', details: `Failing row contains (${o.id}, ${PHONE})` } }) };
+      return fake;
+    };
+    return b;
+  };
+  const watch = watchConsole();
+  let r;
+  try { r = await s.call('mDj', 'sent', { id: o.id, receipt: { kind: 'personal', number: '010-1234-5678' } }); }
+  finally { watch.stop(); s.db.from = from; }
+  assert.equal(r.status, 503);
+  assert.equal(r.body.error, '잠시 문제가 생겼어요. 조금 뒤에 다시 해 주세요.');
+  assert.ok(watch.seen.some((x) => x.includes('23514')), '오류 번호는 적어요');
+  assert.ok(!watch.seen.join('\n').includes(PHONE), '번호가 든 오류 글은 적지 않아요');
+  assert.equal(s.net.hooks.length, 0);
+});
+
+test('현금영수증: 카드 신청은 전처럼 sent 가 404 — receipt 를 보내도 아무것도 저장 안 됨', async () => {
+  const s = setup({ card: LIVE, now: AFTER_DEC });
+  const o = ok(await s.call('mDj', 'card-start', { plan: 'munchkin', months: 1 })).order;
+  const r = await s.call('mDj', 'sent', { id: o.id, receipt: { kind: 'personal', number: '010-1234-5678' } });
+  assert.equal(r.status, 404);
+  const saved = row(s, o.id);
+  assert.equal(saved.sent, null);
+  assert.equal(saved.receipt_kind, null);
+  assert.equal(saved.receipt_no, null);
+  assert.equal(s.net.hooks.length, 0);
+  // 남의 신청 번호도 404(전과 같음)
+  const mine = await bankOrder(s, 'mEtc');
+  assert.equal((await s.call('mDj', 'sent', { id: mine.id, receipt: { kind: 'personal', number: '010-1234-5678' } })).status, 404);
+  assert.equal(row(s, mine.id).receipt_no, null);
 });

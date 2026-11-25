@@ -32,6 +32,10 @@
 //     · 금액이 다른 결제가 들어온 신청은 취소할 수 있고 운영자 지난 신청에도 보임 · card-done 1시간 300번(album-name 과 같은 값)
 //     · returnUrl 은 bakje siteOf 와 같은 판단(먼치킨.com·www + bj_hosts) · 봇 waiting·ops-reject 는 계좌이체 신청만
 //  표: 마이그레이션 bakje_card_pay(bj_orders pay·pay_id·pay_at·pay_channel·test_only, state 'test') — 이 함수보다 먼저 적용한다.
+// v7(2026-11-25, 현금영수증): 계좌이체 "입금했어요"(sent) 때 손님이 원하면 현금영수증 받을 번호를 함께 받는다(선택 — 없으면 전과 같음).
+//  receipt {kind 'personal'(개인 소득공제) | 'business'(사업자 지출증빙), number} → bj_orders receipt_kind·receipt_no(숫자만). 운영자가 입금을 확인한 뒤 손택스로 발급.
+//  번호는 운영자 목록(opsOut)에만 — 회원 답(orderOut)·운영자 알림(디스코드·푸시)·console 기록에는 넣지 않는다. 알림에는 "🧾 현금영수증: 소득공제/지출증빙" 한 줄만.
+//  표: 마이그레이션 bakje_cash_receipt(bj_orders receipt_kind·receipt_no) — 이 함수보다 먼저 적용한다.
 // 주의: MCP 로 올릴 때 백슬래시-u 글자 표기가 풀려 버리므로 이 파일에는 그런 표기를 쓰지 않는다.
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
@@ -229,8 +233,32 @@ async function entsFull(member: string) {
 }
 // newAlbum: 새 추억앨범 신청이면 {label(주소 이름), name(앨범 이름), host(퓨니코드)} — 확인되면 album 에 새 앨범 번호가 들어간다
 // pay(v6) = 'bank'(계좌이체) | 'card'(카드) · payAt = 카드 결제가 끝난 때 · state 'test' = 테스트 결제(실제 결제 아님 — 이용권 없음)
+// 회원에게 주는 답이라 현금영수증 번호는 넣지 않는다(v7 — 운영자 답은 opsOut)
 const orderOut = (o: any) => ({ id: o.id, plan: o.plan, months: o.months, amount: o.amount, payer: o.payer, album: o.album, state: o.state, created: o.created, sent: o.sent ?? null, done: o.done ?? null, nick: o.nick, until_to: o.until_to ?? null,
   newAlbum: o.want_host ? { label: o.want_label || '', name: o.want_name || '', host: o.want_host } : null, pay: o.pay === 'card' ? 'card' : 'bank', payAt: o.pay_at ?? null });
+// 운영자 목록·운영자 동작의 답(v7): orderOut + 현금영수증 번호 전체(운영자가 손택스에 넣는다). 회원에게는 이것을 쓰지 않는다.
+const opsOut = (o: any) => ({ ...orderOut(o), receipt: receiptKindText(o.receipt_kind) && o.receipt_no ? { kind: o.receipt_kind, number: String(o.receipt_no) } : null });
+
+// ── 현금영수증(v7) ──
+// 계좌이체 "입금했어요" 때 원하면 받는다(선택). number 는 하이픈·빈칸을 빼고 숫자만 남겨 검사·저장한다.
+//  personal(개인 소득공제) = 휴대폰 번호(01 로 시작 10~11자리) 또는 현금영수증 카드 번호(13~19자리) · business(사업자 지출증빙) = 사업자등록번호 10자리.
+//  receipt 가 없거나 번호가 비어 있으면 받지 않는 것(null). 틀리면 400.
+const RECEIPT_BAD = '현금영수증 번호를 다시 확인해 주세요.';
+const receiptKindText = (k: unknown) => (k === 'personal' ? '소득공제' : k === 'business' ? '지출증빙' : '');
+function receiptOf(v: unknown): { kind: string; number: string } | null {
+  if (v == null) return null;
+  if (!isObj(v)) throw fail(400, RECEIPT_BAD);
+  const raw = typeof v.number === 'string' ? v.number : v.number == null ? '' : String(v.number);
+  const number = raw.replace(/[\s-]+/g, '');
+  if (!number) return null;
+  const kind = v.kind === 'personal' || v.kind === 'business' ? v.kind : '';
+  if (!kind) throw fail(400, '현금영수증 종류를 골라 주세요.');
+  const good = kind === 'personal' ? /^01[0-9]{8,9}$/.test(number) || /^[0-9]{13,19}$/.test(number) : /^[0-9]{10}$/.test(number);
+  if (!good) throw fail(400, RECEIPT_BAD);
+  return { kind, number };
+}
+// 운영자 알림 한 줄(번호는 넣지 않는다)
+const receiptNote = (o: any) => (receiptKindText(o.receipt_kind) && o.receipt_no ? `\n🧾 현금영수증: ${receiptKindText(o.receipt_kind)}` : '');
 const periodText = (o: any) => (o.months ? `${o.months === 12 ? '1년' : o.months + '개월'}` : `${new Date(Number(o.until_to) + 9 * 3600000).toISOString().slice(0, 10)}까지`);
 const won = (n: number) => n.toLocaleString('ko-KR') + '원';
 async function notifyOps(text: string, title: string, body: string) {
@@ -714,14 +742,19 @@ async function handle(req: Request, now: number) {
       const r = await finishCard(o, now);
       return { ok: true, state: r.state, order: orderOut(r.order), ...(r.message ? { message: r.message } : {}) };
     }
-    // "입금했어요" — 운영자에게 알림
+    // "입금했어요" — 운영자에게 알림. 현금영수증(v7): receipt {kind, number} 를 함께 보내면 저장(선택 — 없으면 전과 같음, 번호가 틀리면 400 이고 아무것도 안 바뀜)
     case 'sent': {
-      const r: any = await q(db.from('bj_orders').update({ sent: now }).eq('id', String(b.id || '')).eq('member', me.id).eq('state', 'pending').eq('pay', 'bank').select('*'));   // 카드 신청은 받지 않는다(v6)
+      const receipt = receiptOf(b.receipt);
+      const set = receipt ? { sent: now, receipt_kind: receipt.kind, receipt_no: receipt.number } : { sent: now };
+      // q() 는 DB 오류를 통째로 console 에 적는다 — 번호가 기록에 남지 않게 여기서는 오류 번호만 적는다
+      const { data: r, error } = await db.from('bj_orders').update(set).eq('id', String(b.id || '')).eq('member', me.id).eq('state', 'pending').eq('pay', 'bank').select('*');   // 카드 신청은 받지 않는다(v6)
+      if (error) { console.error('입금했어요', error.code || ''); throw fail(503, BROKEN); }
       const o = r?.[0];
       if (!o) throw fail(404, '신청을 찾을 수 없어요.');
       const fresh = o.want_host ? `\n📚 새 추억앨범 · ${o.want_label}.먼치킨.com` : '';
-      await notifyOps(`💸 입금했어요\n${o.nick || '(닉네임 없음)'} · ${PLANS[o.plan].name} ${periodText(o)}${fresh}\n금액 ${won(o.amount)} · 입금자명 ${o.payer}\n운영자 앱에서 확인해 주세요.`,
-        `💸 ${won(o.amount)} 입금했어요`, `${o.payer} · ${PLANS[o.plan].name} ${periodText(o)}${fresh}\n토스뱅크에서 들어왔는지 보고 확인해 주세요.`);
+      const slip = receiptNote(o);
+      await notifyOps(`💸 입금했어요\n${o.nick || '(닉네임 없음)'} · ${PLANS[o.plan].name} ${periodText(o)}${fresh}\n금액 ${won(o.amount)} · 입금자명 ${o.payer}${slip}\n운영자 앱에서 확인해 주세요.`,
+        `💸 ${won(o.amount)} 입금했어요`, `${o.payer} · ${PLANS[o.plan].name} ${periodText(o)}${fresh}${slip}\n토스뱅크에서 들어왔는지 보고 확인해 주세요.`);
       return { ok: true, order: orderOut(o) };
     }
     case 'cancel': {
@@ -751,7 +784,7 @@ async function handle(req: Request, now: number) {
         // 돈이 들어왔는데 이용권을 못 준 기다림 카드 신청(금액이 다름 — 고침 3): 지난 신청 맨 위에(환불 확인용)
         q(db.from('bj_orders').select('*').eq('state', 'pending').eq('pay', 'card').not('pay_at', 'is', null).order('created', { ascending: false }).limit(30)),
         cfg()]);
-      return { ok: true, waiting: waiting.map(orderOut), recent: [...odd, ...recent].map(orderOut), billing: c };
+      return { ok: true, waiting: waiting.map(opsOut), recent: [...odd, ...recent].map(opsOut), billing: c };   // 운영자 목록만 현금영수증 번호 전체(v7)
     }
     // 운영자 앱 알림 받는 기기
     case 'push-key': return { ok: true, key: (await vapid()).pub };
@@ -784,12 +817,12 @@ async function handle(req: Request, now: number) {
       if (!o) throw fail(404, '확인할 신청을 찾을 수 없어요(이미 처리했을 수 있어요).');
       // 새 추억앨범 신청: 상태를 먼저 paid 로 바꿔 두 번 확인을 막은 뒤 앨범을 만든다 — 만들다 실패하면 다시 기다림으로 되돌린다(grantOrder)
       const { until } = await grantOrder(o, now);
-      return { ok: true, order: orderOut(o), until };
+      return { ok: true, order: opsOut(o), until };
     }
     case 'ops-reject': {
       const r: any = await q(db.from('bj_orders').update({ state: 'rejected', done: now, note: line(b.note, 200) }).eq('id', String(b.id || '')).eq('state', 'pending').eq('pay', 'bank').select('*'));   // 계좌이체 신청만(v6)
       if (!r?.[0]) throw fail(404, '신청을 찾을 수 없어요.');
-      return { ok: true, order: orderOut(r[0]) };
+      return { ok: true, order: opsOut(r[0]) };
     }
     // 계좌·가격 정하기(가격 0 = 그 이용권은 "준비 중")
     case 'ops-billing': {
@@ -815,7 +848,7 @@ function makeHandler(deps: { db: any; env: (k: string) => string | undefined; fe
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
     const route = new URL(req.url).pathname.replace(/^.*?\/bakje-billing\/?/, '').replace(/\/+$/, '');
     try {
-      if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: 6, year: true, addon: true, push: true, newAlbum: true, albumGate: true, munchkinPass: true, card: true });
+      if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: 7, year: true, addon: true, push: true, newAlbum: true, albumGate: true, munchkinPass: true, card: true, receipt: true });
       if (req.method === 'POST' && (route === '' || route === 'api')) return json(200, await handle(req, clock()));
       return json(404, { ok: false, error: '찾을 수 없어요.' });
     } catch (e) {
