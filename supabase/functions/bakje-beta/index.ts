@@ -56,7 +56,7 @@ const PHOTO_MIN = 3, PHOTO_MAX = 10, PHOTO_BYTES = 5242880;
 const PHOTO_EXT = new Map([['image/webp', 'webp'], ['webp', 'webp'], ['image/jpeg', 'jpg'], ['image/jpg', 'jpg'], ['jpeg', 'jpg'], ['jpg', 'jpg'], ['image/png', 'png'], ['png', 'png']]);
 const PHOTO_MIME = /^image\/(?:webp|jpeg|png)$/;
 const PHOTO_NAME = /^[a-z0-9]{12}\.(?:webp|jpg|png)$/;
-const MEMBER_ID = /^[A-Za-z0-9_-]{1,40}$/;              // 사진 폴더 이름으로 쓰는 회원 번호(bj_members.id 는 m + 11자)
+const MEMBER_ID = /^m[a-z0-9]{11}$/;                    // 사진 폴더 이름으로 쓰는 회원 번호(bakje 가입 때 'm' + rid(11) — 표 검사는 ^m[a-z2-9]{11}$)
 const VIEW_SECONDS = 3600;                              // 운영자 앱 사진 보기 주소 1시간
 const OPS_APP = 'https://한이준.com/ops/';
 const NOT_YET = '아직 모집을 시작하지 않았어요.';
@@ -304,10 +304,14 @@ async function handle(req: Request, now: number) {
     // 사진 올리기 주소(한 장에 하나): 경로 '<회원>/<12자>.<webp|jpg|png>' · url = 서명 올리기 주소(2시간 — 화면이 PUT 으로 파일 몸통, Content-Type 그림 형식)
     case 'photo-url': {
       const bd = await board(now);
-      await gate(me, bd, now);
+      const row: any = await gate(me, bd, now);
       if (!MEMBER_ID.test(String(me.id))) { console.error('회원 번호 모양이 달라요'); throw fail(503, BROKEN); }
       const ext = typeof b.type === 'string' ? PHOTO_EXT.get(b.type.trim().toLowerCase()) : undefined;
       if (!ext) throw fail(400, '사진은 jpg·png·webp 그림만 올릴 수 있어요.');
+      // 지금 신청에 없는 사진(올리고 아직 안 보낸 것 · 뺀 것)이 이미 10장(PHOTO_MAX)이면 더 주지 않는다 — 보내거나(apply) 빼면(다음 apply 가 지움) 다시 올릴 수 있다
+      const sent = new Set<string>(row?.photos || []);
+      const loose = (await filesOf(me.id)).filter((f) => f && f.id != null && !sent.has(me.id + '/' + f.name)).length;
+      if (loose >= PHOTO_MAX) throw fail(400, '사진을 먼저 보내거나 뺀 사진을 정리해 주세요.');
       if (!await hit('bjbp:' + me.id, 3600, 60)) throw fail(429, '사진을 너무 많이 올렸어요. 조금 뒤에 다시 해 주세요.');
       const path = `${me.id}/${rid(12)}.${ext}`;
       const up: any = await q(db.storage.from(BUCKET).createSignedUploadUrl(path));
@@ -381,16 +385,21 @@ async function handle(req: Request, now: number) {
       const owns: any = await q(db.from('bj_album_owners').select('album').eq('member', app.member).limit(1));
       if (owns.length) throw fail(409, '이미 추억앨범이 있는 분이에요. 넘기기를 눌러 주세요.');
       const c = await betaCfg();
+      if (now > c.until) throw fail(400, '모집 기한이 지나 뽑을 수 없어요.');
       const got = await q(db.rpc('bj_beta_claim', { p_id: id, p_seats: c.seats, p_now: now }));
       if (got === 'full') throw fail(409, `${c.seats}명이 다 뽑혔어요.`);
       if (got !== 'ok') throw fail(409, CANT_PICK);
       // 자리를 잡은 뒤 다시 읽는다: 위에서 읽은 뒤 신청한 분이 주소·이름을 고쳤을 수 있다(picked 가 된 뒤로는 고칠 수 없음)
       //  · 그사이 다른 길(이용권 신청 확인)로 앨범이 생긴 회원이면 되돌림
+      //  · 주소를 다시 본다(hostTaken — 그새 다른 분 이용권 신청이 잡은 주소 등) · 같은 회원의 확인을 기다리는 새 앨범 이용권 신청이 있으면 되돌림(앨범이 둘 생기지 않게)
       try {
         const cur: any = await q(db.from('bj_beta_apps').select('*').eq('id', id).maybeSingle());
         if (!cur || cur.state !== 'picked') throw fail(409, CANT_PICK);
         const owned: any = await q(db.from('bj_album_owners').select('album').eq('member', cur.member).limit(1));
         if (owned.length) throw fail(409, '이미 추억앨범이 있는 분이에요. 넘기기를 눌러 주세요.');
+        if (await hostTaken(String(cur.want_host || ''), cur.member)) throw fail(409, HOST_TAKEN_OPS);
+        const order: any = await q(db.from('bj_orders').select('id').eq('member', cur.member).eq('state', 'pending').not('want_host', 'is', null).limit(1));
+        if (order.length) throw fail(409, '확인을 기다리는 새 추억앨범 이용권 신청이 있는 분이에요. 그 신청을 먼저 확인하거나 거절해 주세요.');
         await makeAlbum(cur, now);
       }
       catch (e) {
@@ -415,18 +424,21 @@ async function handle(req: Request, now: number) {
       if (!r?.[0]) throw fail(404, '되돌릴 신청을 찾을 수 없어요(이미 처리했을 수 있어요).');
       return { ok: true, app: await appWithUrls(r[0]) };
     }
-    // 모집 열기·닫기: 열면 closedAt 비움(시작 전/끝 구분은 closedAt) · 닫으면 closedAt = 지금(이미 닫혀 있으면 그대로)
+    // 모집 열기·닫기: 열면 closedAt 비움(시작 전/끝 구분은 closedAt) — 자리가 다 찼거나 기한이 지났으면 열지 않음(400, 설정 그대로)
+    //  · 닫으면 closedAt = 지금, 기한이 지난 뒤 닫으면 기한(정리 30일을 기한부터 셈) · 이미 닫혀 있으면 그대로
     case 'ops-open': {
       if (typeof b.open !== 'boolean') throw fail(400, '모집을 열지 닫을지 정해 주세요.');
       const bd = await board(now);
-      await saveBeta(bd, b.open ? { open: true, closedAt: null } : { open: false, closedAt: bd.closedAt ?? now }, now);
+      if (b.open && (bd.picked >= bd.seats || now > bd.until)) throw fail(400, '자리가 다 찼거나 모집 기한이 지나 다시 열 수 없어요.');
+      await saveBeta(bd, b.open ? { open: true, closedAt: null } : { open: false, closedAt: bd.closedAt ?? Math.min(now, bd.until) }, now);
       const after = await board(now);
       return { ok: true, open: after.isOpen, closedAt: after.closedAt };
     }
     // 모집 끝 정리 — 모집이 끝났을 때만(설정 open false + closedAt 있음. 시작 전·열려 있으면 400). 컨트롤러 판정(고침 1회차):
     //  ① 칸 안 사진을 모두 지운다(뽑힌 분 것·신청하지 않고 올리기만 한 것까지 — 앨범에 저절로 올리지 않음). 못 지우면 503, 표는 그대로.
-    //  ② 뽑힌 줄은 사진·하고 싶은 말만 비운다(스푼 닉네임·주소·앨범 이름은 앨범 정보로 남김).
+    //  ② 뽑힌 줄은 사진·하고 싶은 말·계정 닉네임을 비운다(스푼 닉네임·주소·앨범 이름만 앨범 정보로 남김 — 방침).
     //  ③ 안 뽑힌 줄(기다림·넘김·취소)은 줄째 지운다 — 그 회원은 다음 모집에 다시 신청할 수 있다(회원마다 한 줄).
+    //  ④ 운영자 DM 알림 줄(jl_watch_alerts key 'beta-apply')도 지운다(감시 함수는 90일 뒤에야 지움 — 방침 30일). 디스코드에 간 DM 은 운영자가 지운다.
     //  removed = 지운 사진 수.
     case 'ops-purge': {
       const c = await betaCfg();
@@ -437,8 +449,9 @@ async function handle(req: Request, now: number) {
         if (f.id == null) removed += await removeFiles((await filesOf(f.name)).filter((x) => x && x.id != null).map((x) => f.name + '/' + x.name));
         else removed += await removeFiles([f.name]);
       }
-      await q(db.from('bj_beta_apps').update({ photos: [], msg: null }).eq('state', 'picked'));
+      await q(db.from('bj_beta_apps').update({ photos: [], msg: null, nick: null }).eq('state', 'picked'));
       await q(db.from('bj_beta_apps').delete().in('state', ['wait', 'passed', 'canceled']));
+      await q(db.from('jl_watch_alerts').delete().eq('key', 'beta-apply'));
       return { ok: true, removed };
     }
   }

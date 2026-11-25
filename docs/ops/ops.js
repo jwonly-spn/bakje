@@ -272,7 +272,7 @@ function betaHead(b, apps) {
   let action;
   const closeBtn = () => h('button', { class: 'btn wide', type: 'button', disabled: !!acting, text: busy === 'open' ? '닫는 중…' : '모집 닫기', onclick: () => setBetaOpen(false) });
   if (b.open) action = closeBtn();
-  else if (endAt == null && late) action = [h('p', { class: 'muted small', lines: `모집 기한(${md(b.until)})이 지났어요. 모집을 닫으면 그날부터 30일 뒤 지난 신청을 정리할 수 있어요.` }), closeBtn()];
+  else if (endAt == null && late) action = [h('p', { class: 'muted small', lines: `모집 기한(${md(b.until)})이 지났어요. 모집을 닫으면 기한부터 30일 뒤 지난 신청을 정리할 수 있어요.` }), closeBtn()];
   else if (b.left <= 0) action = h('p', { class: 'muted small', text: `${b.seats}명을 다 뽑아 모집이 끝났어요.` });
   else if (late) action = h('p', { class: 'muted small', text: `모집 기한(${md(b.until)})이 지났어요.` });
   else action = h('button', { class: 'btn wide' + (endAt == null ? ' primary' : ''), type: 'button', disabled: !!acting, text: busy === 'open' ? '여는 중…' : '모집 열기', onclick: () => setBetaOpen(true) });   // 끝난 모집을 다시 열 때는 회색(정리 단추와 겹치지 않게)
@@ -301,8 +301,12 @@ function betaCard(a) {
   const mine = acting?.id === a.id ? acting.kind : '';
   const stamp = a.state === 'picked' && a.decided ? `뽑음 ${when(a.decided)}` : a.state === 'passed' && a.decided ? `넘김 ${when(a.decided)}` : `신청 ${when(a.created)}`;
   let foot = null;
-  if (a.state === 'wait') foot = h('div', { class: 'card-btns' },
-    h('button', { class: 'btn', type: 'button', disabled: !!acting, text: mine === 'pass' ? '넘기는 중…' : '넘기기', onclick: () => passBeta(a) }),
+  // 모집 기한(12/31)이 지나면 서버가 뽑기를 받지 않는다 → [뽑기]를 숨기고 [넘기기]만
+  const late = S.beta && Date.now() > S.beta.until;
+  const passBtn = h('button', { class: 'btn' + (late ? ' wide' : ''), type: 'button', disabled: !!acting, text: mine === 'pass' ? '넘기는 중…' : '넘기기', onclick: () => passBeta(a) });
+  if (a.state === 'wait' && late) foot = [h('p', { class: 'muted small', text: '모집 기한이 지나 뽑을 수 없어요.' }), passBtn];
+  else if (a.state === 'wait') foot = h('div', { class: 'card-btns' },
+    passBtn,
     h('button', { class: 'btn primary', type: 'button', disabled: !!acting, text: mine === 'pick' ? '뽑는 중…' : '뽑기', onclick: () => pickBeta(a) }));
   else if (a.state === 'passed') foot = h('button', { class: 'btn wide', type: 'button', disabled: !!acting, text: mine === 'wait' ? '되돌리는 중…' : '다시 기다림', onclick: () => unpassBeta(a) });
   else if (a.state === 'picked') foot = h('a', { class: 'plan new-album made', href: `https://${a.host || albumHost(a.label)}/`, target: '_blank', rel: 'noopener' }, `앨범 만들었어요 · ${albumHost(a.label)}`);
@@ -365,11 +369,13 @@ function viewShots(list, start, who) {
 }
 
 // 처리 하나(두 번 누르기 막기) → 끝나면 목록 다시 불러오기
+//  처리하는 사이 떠 있던 목록 요청(1분마다 새로 불러오기 등)은 처리 전 목록일 수 있어 끝나길 기다린 뒤 한 번 더 부른다(옛 목록이 다시 그려지지 않게)
 async function betaAct(id, kind, job) {
   if (acting) return;
   acting = { id, kind }; render();
   try { await job(); } catch (err) { toast(err.message, true); }
   acting = null;
+  if (betaLoading) await betaLoading;
   await loadBeta();
   render();
 }
@@ -405,7 +411,7 @@ async function setBetaOpen(open) {
 async function purgeBeta() {
   if (acting) return;
   const yes = await ask({ title: '지난 신청을 정리할까요?', danger: true, ok: '정리하기', cancel: '닫기',
-    lines: ['뽑히지 않은 신청과 모든 첨부 사진을 지워요. 되돌릴 수 없어요.'] });
+    lines: ['뽑히지 않은 신청과 모든 첨부 사진을 지워요. 되돌릴 수 없어요.', '디스코드 DM 의 베타 신청 알림도 지워 주세요.'] });
   if (!yes) return;
   await betaAct('head', 'purge', async () => {
     const j = await beta('ops-purge');
