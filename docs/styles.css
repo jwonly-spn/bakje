@@ -1083,6 +1083,12 @@ label, .label { font-size: 13px; font-weight: 600; color: var(--ink); margin-top
 .payer legend { padding: 0; margin: 0 0 2px; font-size: 14px; font-weight: 700; color: var(--ink); }
 .payer label { margin-top: 4px; }
 .plan-order .notice, .plan-add .notice, .plan-pick .notice { margin: 0; }
+/* 현금영수증 받기(선택, 2026-11-25) — 계좌이체 입금 화면의 접힌 칸(색·모양은 있던 것: 글 색 --ink-2, 펼침 표시는 사업자 정보 칸과 같은 ▾▴) */
+.receipt summary { display: flex; align-items: center; gap: 4px; min-height: 44px; cursor: pointer; list-style: none; font-size: 14px; font-weight: 600; color: var(--ink-2); }
+.receipt summary::-webkit-details-marker { display: none; }
+.receipt summary::after { content: '▾'; font-size: 10px; }
+.receipt[open] summary::after { content: '▴'; }
+.receipt .payer { padding-bottom: 4px; }
 
 /* 댓글 DJ(이용권 결제) · 리스너 배지(2026-11-23) — 색은 원래 있던 DJ 보라(.cm-role.role-dj)·회색 배지 그대로 */
 .cm-tag.cm-tag-paid { background: #8b5cf6; color: #fff; }
