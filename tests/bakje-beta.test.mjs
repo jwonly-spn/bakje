@@ -284,7 +284,7 @@ test('마이그레이션 v2·schema.sql 맨 끝: 주소 셋 not null 풀기(다�
   assert.match(mig, /set not null/, '되돌리기에 not null 다시 걸기');
   // schema.sql 맨 끝에 같은 구역(notify 줄만 빼고)
   const want = body(mig).replace(/\nnotify pgrst, 'reload schema';$/, '');
-  assert.ok(body(schema).trimEnd().endsWith(want), 'schema.sql 맨 끝에 v2 구역이 없어요');
+  assert.ok(body(schema).includes(want), 'schema.sql 에 v2 구역이 없어요(정기결제 등 뒤 구역과 합쳐도 깨지지 않게 includes)');
 });
 
 test('health: v 2', async () => {
