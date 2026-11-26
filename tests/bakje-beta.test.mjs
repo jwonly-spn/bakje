@@ -1,6 +1,7 @@
 // 함수 bakje-beta(추억앨범 베타테스터 10명 추가 모집) 시험: node --test tests/bakje-beta.test.mjs
 // index.ts 의 "시험이 따로 읽는 곳"만 잘라(타입은 node 의 stripTypeScriptTypes 로 지움) 가짜 DB·가짜 저장소로 돌린다(bakje-billing-card.test.mjs 꼴).
 // 기준: 기획/베타테스터-20261125/작업/박제관/.superpowers/sdd/만들기-계획/task-1-brief.md · common.md(서버 약속).
+//  v2(2026-11-26 쉬운 신청 안 A): 기획/베타테스터-20261125/쉽게/약속-v2.md "서버 bakje-beta v2" — 신청 때 주소·앨범 이름은 선택, 뽑힌 뒤 claim 으로 정함.
 // 이름은 모두 지어낸 것이에요(DJ 먼치 · 청취자 별사탕·구름빵·달토끼).
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -35,10 +36,11 @@ const hostOf = (label) => new URL('https://' + label + '.먼치킨.com').hostnam
 const KEYS = { bj_beta_apps: ['id'], bj_entitlements: ['member', 'product'], bj_settings: ['key'], bj_albums: ['id'], bj_hosts: ['host'], bj_album_owners: ['album', 'member'],
   bj_bots: ['id'], bj_members: ['id'], bj_sessions: ['token'], bj_member_devices: ['device'], junlive_devices: ['id'], bj_orders: ['id'], jl_watch_alerts: ['id'] };
 const UNIQUE = { bj_beta_apps: [['member']] };
-// 마이그레이션 20261125_bakje_beta 의 기본값·제약
-const DEFAULTS = { bj_beta_apps: { nick: null, msg: null, photos: [], state: 'wait', decided: null, album: null }, bj_albums: { state: 'active', note: '', paid_until: null } };
+// 마이그레이션 20261125_bakje_beta 의 기본값·제약 + 20261126_bakje_beta_v2(주소 셋은 함께 비거나 함께 참 — bj_beta_apps_want_all)
+const DEFAULTS = { bj_beta_apps: { nick: null, msg: null, photos: [], state: 'wait', decided: null, album: null, want_label: null, want_host: null, want_name: null }, bj_albums: { state: 'active', note: '', paid_until: null } };
+const wantAll = (r) => [r.want_label, r.want_host, r.want_name].every((v) => v == null) || [r.want_label, r.want_host, r.want_name].every((v) => typeof v === 'string');
 const CHECKS = {
-  bj_beta_apps: (r) => ['wait', 'picked', 'passed', 'canceled'].includes(r.state) && typeof r.spoon_nick === 'string' && typeof r.want_label === 'string' && typeof r.want_host === 'string' && typeof r.want_name === 'string' && Array.isArray(r.photos) && Number.isFinite(r.created),
+  bj_beta_apps: (r) => ['wait', 'picked', 'passed', 'canceled'].includes(r.state) && typeof r.spoon_nick === 'string' && wantAll(r) && Array.isArray(r.photos) && Number.isFinite(r.created),
   jl_watch_alerts: (r) => ['warn', 'ok', 'info'].includes(r.level) && typeof r.title === 'string' && typeof r.key === 'string'
 };
 const clone = (v) => structuredClone(v);
@@ -55,6 +57,7 @@ function fakeDb(seed) {
     const st = { op: 'select', filters: [], order: null, limit: null, ret: false, single: false, vals: null, opts: {} };
     const keep = (r) => st.filters.every((f) => f(r));
     function run() {
+      if (st.op !== 'select' && api.onWrite) api.onWrite(name, st.op);   // 시험: 쓰기 직전에 다른 요청이 끼어든 것처럼
       const rows = tbl(name);
       if (st.op !== 'select' && broken.has(name)) return { data: null, error: { code: 'XX000', message: '시험: 표 고장' } };
       if (st.op === 'insert' || st.op === 'upsert') {
@@ -85,7 +88,14 @@ function fakeDb(seed) {
         return { data: st.ret ? clone(hit) : null, error: null };
       }
       if (st.op === 'delete') {
+        const gone = rows.filter(keep);
         T[name] = rows.filter((r) => !keep(r));
+        // schema.sql 의 앨범 외래 키: 주소·주인·봇 줄은 함께 지워지고(on delete cascade) 신청·이용권 신청의 album 칸은 비워짐(on delete set null)
+        if (name === 'bj_albums') {
+          const ids = new Set(gone.map((r) => r.id));
+          for (const t of ['bj_hosts', 'bj_album_owners', 'bj_bots']) T[t] = tbl(t).filter((r) => !ids.has(r.album));
+          for (const t of ['bj_beta_apps', 'bj_orders']) for (const r of tbl(t)) if (ids.has(r.album)) r.album = null;
+        }
         return { data: null, error: null };
       }
       let out = rows.filter(keep);
@@ -155,7 +165,7 @@ function fakeDb(seed) {
     }
   };
   api = {
-    T, hits, broken, files, signs, removed, from, storage, beforeClaim: null, beforeList: null,
+    T, hits, broken, files, signs, removed, from, storage, beforeClaim: null, beforeList: null, onWrite: null,
     rpc: async (name, a) => {
       if (name === 'fp_hit') {
         const n = (hits.get(a.p_key) || 0) + 1;
@@ -261,11 +271,27 @@ test('마이그레이션·schema.sql: 표·RLS·잠금 함수·비공개 사진 
   assert.match(mig, /되돌리기/);
 });
 
-test('health: v 1', async () => {
+test('마이그레이션 v2·schema.sql 맨 끝: 주소 셋 not null 풀기(다시 돌려도 됨) · 함께 비거나 함께 참 · 순서·되돌리기', () => {
+  const mig = fs.readFileSync(path.join(ROOT, 'supabase', 'migrations', '20261126_bakje_beta_v2.sql'), 'utf8').replace(/\r\n/g, '\n');
+  const schema = fs.readFileSync(path.join(ROOT, 'supabase', 'schema.sql'), 'utf8').replace(/\r\n/g, '\n');
+  const body = (sql) => sql.split('\n').filter((l) => l.trim() && !l.trim().startsWith('--')).join('\n');
+  for (const col of ['want_label', 'want_host', 'want_name']) assert.match(mig, new RegExp(`alter table bj_beta_apps alter column ${col} drop not null;`));
+  assert.match(mig, /alter table bj_beta_apps drop constraint if exists bj_beta_apps_want_all;\nalter table bj_beta_apps add constraint bj_beta_apps_want_all check \(\(want_label is null and want_host is null and want_name is null\) or \(want_label is not null and want_host is not null and want_name is not null\)\);/);
+  assert.match(mig, /notify pgrst, 'reload schema';/);
+  assert.match(mig, /^-- 2026-11-26 bakje_beta_v2/);
+  assert.match(mig, /순서/);
+  assert.match(mig, /되돌리기/);
+  assert.match(mig, /set not null/, '되돌리기에 not null 다시 걸기');
+  // schema.sql 맨 끝에 같은 구역(notify 줄만 빼고)
+  const want = body(mig).replace(/\nnotify pgrst, 'reload schema';$/, '');
+  assert.ok(body(schema).trimEnd().endsWith(want), 'schema.sql 맨 끝에 v2 구역이 없어요');
+});
+
+test('health: v 2', async () => {
   const s = setup();
   const res = await s.handler(new Request(URL_FN + '/health'));
   assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), { ok: true, v: 1 });
+  assert.deepEqual(await res.json(), { ok: true, v: 2 });
   const pre = await s.handler(new Request(URL_FN, { method: 'OPTIONS' }));
   assert.equal(pre.status, 204);
   assert.ok(pre.headers.get('access-control-allow-headers').includes('x-bj-session'));
@@ -295,7 +321,7 @@ test('status 틀린 세션은 401 이 아니라 mine null', async () => {
     assert.equal(r.open, true);
   }
   const me = ok(await s.call(DJ, 'status')).mine;
-  assert.deepEqual(me, { state: 'none', hasAlbum: false, canApply: true });
+  assert.deepEqual(me, { state: 'none', hasAlbum: false, canApply: true, needAddress: false });
   // 세션이 필요한 요청은 401
   no(await s.call('wrong-token', 'apply', form([])), 401);
   no(await s.call(null, 'photo-url', { type: 'image/webp' }), 401);
@@ -394,7 +420,7 @@ test('apply 앨범이 있으면 거절', async () => {
   no(await s.call(DJ, 'apply', form([])), 400, '이미 추억앨범이 있어요.');
   no(await s.call(DJ, 'photo-url', { type: 'image/webp' }), 400, '이미 추억앨범이 있어요.');
   const me = ok(await s.call(DJ, 'status')).mine;
-  assert.deepEqual(me, { state: 'none', hasAlbum: true, canApply: false });
+  assert.deepEqual(me, { state: 'none', hasAlbum: true, canApply: false, needAddress: false });
 });
 
 test('apply 주소 규칙·겹침', async () => {
@@ -425,7 +451,7 @@ test('apply 성공 → 표 한 줄 wait + jl_watch_alerts 한 줄', async () => 
   const s = setup({ beta: OPEN });
   const p = await shoot(s, DJ, 3);
   const r = ok(await s.call(DJ, 'apply', form(p)));
-  assert.deepEqual(r.mine, { state: 'wait', hasAlbum: false, canApply: true,
+  assert.deepEqual(r.mine, { state: 'wait', hasAlbum: false, canApply: true, needAddress: false,
     app: { spoonNick: '먼치', label: '먼치', name: '먼치 추억앨범', msg: '매일 밤 라디오 해요', photos: 3, created: NOW } });
   assert.equal(s.T.bj_beta_apps.length, 1);
   const a = appOf(s, DJ);
@@ -503,7 +529,7 @@ test('cancel → canceled, 사진 지움, mine.state none', async () => {
   const p = await shoot(s, DJ, 3);
   ok(await s.call(DJ, 'apply', form(p)));
   const r = ok(await s.call(DJ, 'cancel'));
-  assert.deepEqual(r.mine, { state: 'none', hasAlbum: false, canApply: true });
+  assert.deepEqual(r.mine, { state: 'none', hasAlbum: false, canApply: true, needAddress: false });
   const a = appOf(s, DJ);
   assert.equal(a.state, 'canceled');
   assert.equal(a.decided, NOW);
@@ -574,7 +600,7 @@ test('ops-list: 새것부터 · 사진은 서명 보기 주소(1시간) · 모�
   assert.equal(r.closedAt, null);
   assert.deepEqual(r.apps.map((a) => a.spoonNick), ['별사탕', '먼치']);
   const m = r.apps[1];
-  assert.deepEqual(Object.keys(m).sort(), ['album', 'created', 'decided', 'host', 'id', 'label', 'msg', 'name', 'nick', 'photos', 'spoonNick', 'state'].sort());
+  assert.deepEqual(Object.keys(m).sort(), ['album', 'created', 'decided', 'host', 'id', 'label', 'msg', 'name', 'needAddress', 'nick', 'photos', 'spoonNick', 'state'].sort());
   assert.equal(m.id, appOf(s, DJ).id);
   assert.equal(m.nick, '먼치');
   assert.equal(m.label, '먼치');
@@ -618,7 +644,7 @@ test('ops-pick → 앨범·주소·주인 생김, paid_until = BETA_UNTIL, 이�
   const me = ok(await s.call(DJ, 'status'));
   assert.equal(me.picked, 1);
   assert.equal(me.left, 9);
-  assert.deepEqual(me.mine, { state: 'picked', hasAlbum: true, canApply: false,
+  assert.deepEqual(me.mine, { state: 'picked', hasAlbum: true, canApply: false, needAddress: false,
     app: { spoonNick: '먼치', label: '먼치', name: '먼치 추억앨범', msg: '매일 밤 라디오 해요', photos: 3, created: NOW }, album: { host: hostOf('먼치'), label: '먼치' } });
   // 이미 더 늦은 이용권이 있으면 그대로(max)
   const q = await shoot(s, STAR, 3);
@@ -865,4 +891,250 @@ test('요청 몸통 8KB 넘으면 413', async () => {
   const res = await s.handler(new Request(URL_FN, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{' }));
   assert.equal(res.status, 400);
   assert.equal((await res.json()).ok, false);
+});
+
+// ================= v2: 쉬운 신청(주소·앨범 이름은 뽑힌 뒤 claim 으로) =================
+// 새 화면은 label·name 칸을 보내지 않는다(없거나 null = 안 보냄). 옛 화면(label·name 을 보냄)은 v1 처럼 검사·저장.
+const formNew = (photos, over = {}) => ({ spoonNick: '먼치', msg: '매일 밤 라디오 해요', photos, ...over });
+const NOT_PICKED = '뽑힌 분만 주소를 정할 수 있어요.', HAS_ALBUM_MSG = '이미 추억앨범이 있어요.';
+const wantOf = (s, member) => { const a = appOf(s, member); return [a.want_label, a.want_host, a.want_name]; };
+
+test('v2 apply 주소·앨범 이름 없이: 주소 셋 비움 · mine.app 의 label·name null · 알림에 주소 줄 없음 · 옛 화면 신청과 함께 씀', async () => {
+  const s = setup({ beta: OPEN });
+  const p = await shoot(s, DJ, 3);
+  const r = ok(await s.call(DJ, 'apply', formNew(p)));
+  assert.deepEqual(r.mine, { state: 'wait', hasAlbum: false, canApply: true, needAddress: false,
+    app: { spoonNick: '먼치', label: null, name: null, msg: '매일 밤 라디오 해요', photos: 3, created: NOW } });
+  assert.deepEqual(wantOf(s, DJ), [null, null, null]);
+  assert.deepEqual(appOf(s, DJ).photos, p);
+  assert.equal(s.T.jl_watch_alerts.length, 1);
+  assert.equal(s.T.jl_watch_alerts[0].body, ['스푼 닉네임: 먼치', '하고 싶은 말: 매일 밤 라디오 해요', '첨부: 박제 사진 3장 (운영자 앱에서 보기)', '지금 신청 1명 · 뽑힘 0명 / 10명', '운영자 앱: https://한이준.com/ops/ → 베타'].join('\n'));
+  // label: null 도 안 보낸 것 · label 없이 name 만 보내면 name 도 쓰지 않음(앨범 이름은 주소를 정할 때)
+  ok(await s.call(STAR, 'apply', formNew(await shoot(s, STAR, 3), { spoonNick: '별사탕', label: null, name: '별사탕의 밤' })));
+  assert.deepEqual(wantOf(s, STAR), [null, null, null]);
+  // 빈 글('')은 보낸 것 — 옛 화면 규칙 그대로
+  no(await s.call(DJ, 'apply', formNew(p, { label: '' })), 400, '주소 이름을 적어 주세요.');
+  // 옛 화면으로 다시 보내면 주소가 채워지고, 새 화면으로 다시 보내면 비워짐(줄 하나 · 알림 다시 안 감)
+  ok(await s.call(DJ, 'apply', form(p)));
+  assert.deepEqual(wantOf(s, DJ), ['먼치', hostOf('먼치'), '먼치 추억앨범']);
+  ok(await s.call(DJ, 'apply', formNew(p)));
+  assert.deepEqual(wantOf(s, DJ), [null, null, null]);
+  // 주소 없는 신청은 아무 주소도 잡지 않음 → 다른 분이 옛 화면으로 '먼치' 를 고를 수 있음(알림에 주소 줄)
+  ok(await s.call(CLOUD, 'apply', form(await shoot(s, CLOUD, 3), { spoonNick: '구름빵', label: '먼치' })));
+  assert.equal(s.T.bj_beta_apps.length, 3);
+  assert.equal(s.T.jl_watch_alerts.length, 3);
+  assert.ok(s.T.jl_watch_alerts[2].body.includes('원하는 주소: 먼치.먼치킨.com'), '주소가 있으면 주소 줄');
+  // 운영자 목록: 주소 없는 신청은 label·host·name null · needAddress false(기다림)
+  const list = ok(await s.call(OPS, 'ops-list'));
+  const m = list.apps.find((x) => x.spoonNick === '먼치');
+  assert.deepEqual([m.label, m.host, m.name, m.needAddress, m.state], [null, null, null, false, 'wait']);
+});
+
+test('v2 ops-pick 주소 없는 신청: 자리 + 추억앨범 이용권(12/31)만 — 앨범은 주소를 정할 때 · needAddress', async () => {
+  const s = setup({ beta: OPEN, ents: [{ member: STAR, product: 'album', until: PAID_FROM + 30 * DAY }, { member: DJ, product: 'album', until: NOW - DAY }] });
+  ok(await s.call(DJ, 'apply', formNew(await shoot(s, DJ, 3))));
+  const id = appOf(s, DJ).id;
+  s.setNow(NOW + 5000);
+  const r = ok(await s.call(OPS, 'ops-pick', { id }));
+  const a = appOf(s, DJ);
+  assert.deepEqual([a.state, a.decided, a.album], ['picked', NOW + 5000, null]);
+  assert.deepEqual([s.T.bj_albums.length, s.T.bj_hosts.length, s.T.bj_album_owners.length], [0, 0, 0]);
+  assert.equal(s.T.bj_entitlements.find((e) => e.member === DJ && e.product === 'album').until, BETA_UNTIL);
+  assert.equal(s.T.bj_members.find((m) => m.id === DJ).role, 'listener', 'DJ 로 바꾸는 것은 앨범이 생길 때');
+  assert.deepEqual([r.left, r.closed, r.app.state, r.app.album, r.app.needAddress, r.app.label, r.app.host], [9, false, 'picked', null, true, null, null]);
+  const me = ok(await s.call(DJ, 'status'));
+  assert.equal(me.picked, 1);
+  assert.deepEqual(me.mine, { state: 'picked', hasAlbum: false, canApply: false, needAddress: true,
+    app: { spoonNick: '먼치', label: null, name: null, msg: '매일 밤 라디오 해요', photos: 3, created: NOW } });
+  assert.ok(!('album' in me.mine), '앨범이 없으면 mine.album 없음(봇 0.23.5 는 [내 앨범 열기] 없이 [닫기]만)');
+  assert.equal(ok(await s.call(OPS, 'ops-list')).apps.find((x) => x.id === id).needAddress, true);
+  // 더 늦은 이용권은 그대로(max)
+  ok(await s.call(STAR, 'apply', formNew(await shoot(s, STAR, 3), { spoonNick: '별사탕' })));
+  ok(await s.call(OPS, 'ops-pick', { id: appOf(s, STAR).id }));
+  assert.equal(s.T.bj_entitlements.find((e) => e.member === STAR && e.product === 'album').until, PAID_FROM + 30 * DAY);
+  // 두 번 뽑기
+  no(await s.call(OPS, 'ops-pick', { id }), 409);
+  assert.equal(s.T.bj_albums.length, 0);
+});
+
+test('v2 ops-pick 주소 없는 신청도: 기다리는 새 앨범 이용권 신청 409 · 이용권을 못 쓰면 되돌림 · 그새 앨범이 생긴 회원은 되돌림', async () => {
+  const s = setup({ beta: OPEN });
+  ok(await s.call(DJ, 'apply', formNew(await shoot(s, DJ, 3))));
+  const id = appOf(s, DJ).id;
+  s.T.bj_orders.push({ id: 'oorder000020', member: DJ, state: 'pending', want_host: hostOf('별빛'), want_label: '별빛' });
+  no(await s.call(OPS, 'ops-pick', { id }), 409, '확인을 기다리는 새 추억앨범 이용권 신청이 있는 분이에요.');
+  assert.deepEqual([appOf(s, DJ).state, appOf(s, DJ).decided], ['wait', null]);
+  assert.equal(s.T.bj_entitlements.length, 0);
+  s.T.bj_orders = [];
+  s.db.broken.add('bj_entitlements');
+  no(await s.call(OPS, 'ops-pick', { id }), 503);
+  assert.equal(appOf(s, DJ).state, 'wait');
+  s.db.broken.delete('bj_entitlements');
+  s.db.beforeClaim = () => { s.T.bj_album_owners.push({ album: 'aother', member: DJ, created: 9 }); };
+  no(await s.call(OPS, 'ops-pick', { id }), 409, '이미 추억앨범이 있는 분이에요.');
+  assert.equal(appOf(s, DJ).state, 'wait');
+  assert.equal(s.T.bj_entitlements.length, 0);
+});
+
+test('v2 10명째 뽑기(주소 없는 신청도 자리 하나)에 모집이 저절로 닫힘 · 주소가 있는 신청만 앨범이 바로 생김', async () => {
+  const apps = Array.from({ length: 10 }, (_, i) => seedApp(i, fanId(i), 'fan' + (i + 1), i % 2 ? { want_label: null, want_host: null, want_name: null } : {}));
+  const s = setup({ beta: OPEN, fans: 10, apps });
+  for (const a of apps) ok(await s.call(OPS, 'ops-pick', { id: a.id }));
+  assert.equal(betaCfg(s).open, false);
+  assert.equal(s.T.bj_albums.length, 5);
+  const st = ok(await s.call(null, 'status'));
+  assert.deepEqual([st.open, st.picked, st.left], [false, 10, 0]);
+});
+
+test('v2 claim: 뽑힌 분이 주소를 정하면 앨범·주소·주인이 생김(12/31 무료) · 모집이 닫혀도 됨 · 두 번째는 이미 앨범', async () => {
+  const s = setup({ beta: OPEN });
+  ok(await s.call(DJ, 'apply', formNew(await shoot(s, DJ, 3))));
+  const id = appOf(s, DJ).id;
+  ok(await s.call(OPS, 'ops-pick', { id }));
+  ok(await s.call(OPS, 'ops-open', { open: false }));   // 모집이 끝나도 뽑힌 분은 주소를 정할 수 있음
+  s.setNow(NOW + DAY);
+  const r = ok(await s.call(DJ, 'claim', { label: '먼치' }));
+  const a = appOf(s, DJ);
+  assert.match(a.album, /^a[a-z0-9]{9}$/);
+  assert.deepEqual([a.state, ...wantOf(s, DJ)], ['picked', '먼치', hostOf('먼치'), '먼치 추억앨범']);
+  const album = s.T.bj_albums.find((x) => x.id === a.album);
+  assert.deepEqual([album.name, album.note, album.paid_until, album.created], ['먼치 추억앨범', '베타테스터 ' + id, BETA_UNTIL, NOW + DAY]);
+  assert.ok(s.T.bj_hosts.some((h) => h.host === hostOf('먼치') && h.album === a.album));
+  assert.deepEqual(JSON.parse(s.db.files.get(`bakje/h/${hostOf('먼치')}.json`).text), { album: a.album, name: '먼치 추억앨범' });
+  assert.ok(s.T.bj_album_owners.some((o) => o.album === a.album && o.member === DJ));
+  assert.equal(s.T.bj_members.find((m) => m.id === DJ).role, 'dj');
+  assert.equal(s.T.bj_entitlements.find((e) => e.member === DJ && e.product === 'album').until, BETA_UNTIL);
+  assert.deepEqual(r.mine, { state: 'picked', hasAlbum: true, canApply: false, needAddress: false,
+    app: { spoonNick: '먼치', label: '먼치', name: '먼치 추억앨범', msg: '매일 밤 라디오 해요', photos: 3, created: NOW }, album: { host: hostOf('먼치'), label: '먼치' } });
+  assert.deepEqual(ok(await s.call(DJ, 'status')).mine, r.mine);
+  const m = ok(await s.call(OPS, 'ops-list')).apps.find((x) => x.id === id);
+  assert.deepEqual([m.needAddress, m.album, m.label, m.host, m.name], [false, a.album, '먼치', hostOf('먼치'), '먼치 추억앨범']);
+  no(await s.call(DJ, 'claim', { label: '먼치랑' }), 400, HAS_ALBUM_MSG);
+  assert.equal(s.T.bj_albums.length, 1);
+  // 앨범 이름을 정하면 그 이름 · 그 계정의 먼치킨(승인된 봇 기기)도 잇는다(makeAlbum 과 같은 일)
+  const t = setup({ beta: OPEN });
+  t.T.bj_member_devices.push({ device: 'dev-star-1', member: STAR, program: 'bot', seen: NOW - 1000 });
+  t.T.junlive_devices.push({ id: 'dev-star-1', nickname: '별사탕', tag: 'star', state: 'approved' });
+  ok(await t.call(STAR, 'apply', formNew(await shoot(t, STAR, 3), { spoonNick: '별사탕' })));
+  ok(await t.call(OPS, 'ops-pick', { id: appOf(t, STAR).id }));
+  ok(await t.call(STAR, 'claim', { label: '사탕', name: '별사탕의 밤 편지' }));
+  assert.equal(t.T.bj_albums[0].name, '별사탕의 밤 편지');
+  assert.deepEqual(wantOf(t, STAR), ['사탕', hostOf('사탕'), '별사탕의 밤 편지']);
+  assert.deepEqual(t.T.bj_bots.map((b) => [b.id, b.album, b.label]), [['dev-star-1', appOf(t, STAR).album, '별사탕 @star']]);
+});
+
+test('v2 claim 오류: 세션 · 뽑히지 않음 · 이미 앨범 · 주소 규칙·겹침(apply 와 같은 글) · 앨범 이름 · 한 시간 20번', async () => {
+  const s = setup({ beta: OPEN, hosts: [{ host: hostOf('달빛'), album: 'aother', created: 1 }],
+    orders: [{ id: 'oorder000031', member: RABBIT, state: 'pending', want_host: hostOf('별빛'), want_label: '별빛' }] });
+  no(await s.call(null, 'claim', { label: '먼치' }), 401);
+  no(await s.call(DJ, 'claim', { label: '먼치' }), 400, NOT_PICKED);   // 신청 없음
+  ok(await s.call(DJ, 'apply', formNew(await shoot(s, DJ, 3))));
+  no(await s.call(DJ, 'claim', { label: '먼치' }), 400, NOT_PICKED);   // 기다림
+  ok(await s.call(OPS, 'ops-pass', { id: appOf(s, DJ).id }));
+  no(await s.call(DJ, 'claim', { label: '먼치' }), 400, NOT_PICKED);   // 넘김
+  ok(await s.call(OPS, 'ops-wait', { id: appOf(s, DJ).id }));
+  ok(await s.call(OPS, 'ops-pick', { id: appOf(s, DJ).id }));
+  no(await s.call(DJ, 'claim', {}), 400, '주소 이름을 적어 주세요.');
+  no(await s.call(DJ, 'claim', { label: 'a_b' }), 400, '주소 이름은 한글·영어 소문자·숫자로 1~15자예요. - 는 가운데에만 쓸 수 있어요.');
+  no(await s.call(DJ, 'claim', { label: '운영자' }), 400, '쓸 수 없는 주소 이름이에요. 다른 이름을 골라 주세요.');
+  no(await s.call(DJ, 'claim', { label: 'xn--abc' }), 400, '이 이름으로는 주소를 만들 수 없어요. 다른 이름을 골라 주세요.');
+  no(await s.call(DJ, 'claim', { label: '달빛' }), 409, '이미 쓰이고 있는 주소예요. 다른 이름을 골라 주세요.');
+  no(await s.call(DJ, 'claim', { label: '별빛' }), 409, TAKEN_OTHER);
+  // 다른 분의 기다리는 베타 신청(옛 화면 — 주소 있음)이 잡은 주소
+  ok(await s.call(STAR, 'apply', form(await shoot(s, STAR, 3), { spoonNick: '별사탕', label: '사탕' })));
+  no(await s.call(DJ, 'claim', { label: '사탕' }), 409, TAKEN_OTHER);
+  no(await s.call(DJ, 'claim', { label: '먼치', name: '가' }), 400, '앨범 이름은 2~40자로 정해 주세요.');
+  no(await s.call(DJ, 'claim', { label: '먼치', name: '가'.repeat(41) }), 400, '앨범 이름은 2~40자로 정해 주세요.');
+  assert.deepEqual([s.T.bj_albums.length, appOf(s, DJ).album, ...wantOf(s, DJ)], [0, null, null, null, null]);
+  assert.equal(ok(await s.call(DJ, 'status')).mine.needAddress, true);
+  s.db.hits.set('bjbc:' + DJ, 20);
+  no(await s.call(DJ, 'claim', { label: '먼치' }), 429);
+  s.db.hits.set('bjbc:' + DJ, 0);
+  // 같은 분의 확인을 기다리는 새 앨범 이용권 신청이 있으면 막음(ops-pick 과 같은 지킴 — 앨범이 둘 생기지 않게) · 새 앨범이 아닌 신청은 막지 않음
+  s.T.bj_orders.push({ id: 'oorder000032', member: DJ, state: 'pending', want_host: hostOf('은하'), want_label: '은하' }, { id: 'oorder000033', member: DJ, state: 'pending', want_host: null });
+  no(await s.call(DJ, 'claim', { label: '먼치' }), 409, '확인을 기다리는 새 추억앨범 이용권 신청이 있어요.');
+  assert.equal(s.T.bj_albums.length, 0);
+  s.T.bj_orders = s.T.bj_orders.filter((o) => o.id !== 'oorder000032');
+  s.db.hits.set('bjbc:' + DJ, 0);
+  ok(await s.call(DJ, 'claim', { label: '먼치', name: '가'.repeat(40) }));
+  assert.equal(s.T.bj_albums[0].name, '가'.repeat(40));
+  // 뽑혔지만 다른 길(이용권 신청 확인 등)로 이미 앨범이 있는 분 → 이미 앨범 · needAddress false
+  const t = setup({ beta: OPEN });
+  ok(await t.call(STAR, 'apply', formNew(await shoot(t, STAR, 3), { spoonNick: '별사탕' })));
+  ok(await t.call(OPS, 'ops-pick', { id: appOf(t, STAR).id }));
+  t.T.bj_album_owners.push({ album: 'aother', member: STAR, created: 9 });
+  const st = ok(await t.call(STAR, 'status')).mine;
+  assert.deepEqual([st.state, st.hasAlbum, st.needAddress], ['picked', true, false]);
+  assert.equal(ok(await t.call(OPS, 'ops-list')).apps[0].needAddress, false);
+  no(await t.call(STAR, 'claim', { label: '사탕' }), 400, HAS_ALBUM_MSG);
+  assert.equal(t.T.bj_albums.length, 0);
+  // 옛 화면 신청(주소 있음)으로 뽑혀 앨범이 이미 생긴 분
+  ok(await t.call(DJ, 'apply', form(await shoot(t, DJ, 3))));
+  ok(await t.call(OPS, 'ops-pick', { id: appOf(t, DJ).id }));
+  no(await t.call(DJ, 'claim', { label: '먼치랑' }), 400, HAS_ALBUM_MSG);
+  assert.equal(t.T.bj_albums.length, 1);
+});
+
+test('v2 claim 중간에 실패하면 되돌림(앨범·주소 파일 지우고 신청 줄 주소 비움) · 동시에 두 번 보내도 앨범은 하나', async () => {
+  const s = setup({ beta: OPEN });
+  ok(await s.call(DJ, 'apply', formNew(await shoot(s, DJ, 3))));
+  ok(await s.call(OPS, 'ops-pick', { id: appOf(s, DJ).id }));
+  s.db.broken.add('bj_album_owners');
+  no(await s.call(DJ, 'claim', { label: '먼치' }), 503);
+  assert.deepEqual([appOf(s, DJ).state, appOf(s, DJ).album, ...wantOf(s, DJ)], ['picked', null, null, null, null]);
+  assert.deepEqual([s.T.bj_albums.length, s.T.bj_hosts.length], [0, 0]);
+  assert.ok(!s.db.files.has(`bakje/h/${hostOf('먼치')}.json`));
+  assert.equal(ok(await s.call(DJ, 'status')).mine.needAddress, true);
+  s.db.broken.delete('bj_album_owners');
+  // 같은 분이 두 번 눌러 두 요청이 함께 옴: 이 요청이 앨범을 만든 바로 뒤 · 신청 줄을 잡기 전에 다른 요청(주소 먼치랑)이 먼저 줄을 잡음
+  //  → 이 요청은 줄을 못 잡아(조건 붙은 update) 만든 앨범을 지우고 400 이미 추억앨범. 앨범은 먼저 잡은 쪽 하나만.
+  let once = true;
+  s.db.onWrite = (name, op) => {
+    if (!once || name !== 'bj_albums' || op !== 'insert') return;
+    once = false;
+    const a = appOf(s, DJ);
+    s.T.bj_albums.push({ id: 'aother00001', name: '먼치의 밤', state: 'active', note: '베타테스터 ' + a.id, paid_until: BETA_UNTIL, created: NOW });
+    s.T.bj_hosts.push({ host: hostOf('먼치랑'), album: 'aother00001', created: NOW });
+    s.T.bj_album_owners.push({ album: 'aother00001', member: DJ, created: NOW });
+    Object.assign(a, { album: 'aother00001', want_label: '먼치랑', want_host: hostOf('먼치랑'), want_name: '먼치의 밤' });
+  };
+  no(await s.call(DJ, 'claim', { label: '먼치' }), 400, HAS_ALBUM_MSG);
+  assert.equal(once, false, '끼어들기가 일어났어요');
+  assert.deepEqual(s.T.bj_albums.map((x) => x.id), ['aother00001'], '진 쪽 앨범은 지움');
+  assert.deepEqual([appOf(s, DJ).album, ...wantOf(s, DJ)], ['aother00001', '먼치랑', hostOf('먼치랑'), '먼치의 밤'], '먼저 잡은 쪽 그대로');
+  assert.deepEqual(s.T.bj_hosts.map((h) => h.host), [hostOf('먼치랑')]);
+  assert.ok(!s.db.files.has(`bakje/h/${hostOf('먼치')}.json`), '진 쪽 주소 파일은 없음');
+  // 차례로 두 번 눌러도 두 번째는 이미 앨범
+  no(await s.call(DJ, 'claim', { label: '먼치' }), 400, HAS_ALBUM_MSG);
+  assert.equal(s.T.bj_albums.length, 1);
+});
+
+test('v2 모집 끝 정리 뒤에도: 주소를 아직 안 정한 뽑힌 분은 스푼 닉네임이 남고 주소를 정할 수 있음', async () => {
+  const s = setup({ beta: OPEN });
+  ok(await s.call(DJ, 'apply', formNew(await shoot(s, DJ, 3))));
+  ok(await s.call(STAR, 'apply', formNew(await shoot(s, STAR, 3), { spoonNick: '별사탕' })));
+  ok(await s.call(OPS, 'ops-pick', { id: appOf(s, DJ).id }));
+  ok(await s.call(OPS, 'ops-open', { open: false }));
+  ok(await s.call(OPS, 'ops-purge'));
+  assert.deepEqual(s.T.bj_beta_apps.map((a) => [a.member, a.state, a.spoon_nick, a.want_host, a.photos.length, a.msg]), [[DJ, 'picked', '먼치', null, 0, null]]);
+  assert.deepEqual(ok(await s.call(OPS, 'ops-list')).apps.map((x) => [x.spoonNick, x.needAddress, x.label]), [['먼치', true, null]]);
+  ok(await s.call(DJ, 'claim', { label: '먼치' }));
+  assert.equal(appOf(s, DJ).want_host, hostOf('먼치'));
+  assert.equal(s.T.bj_albums.length, 1);
+});
+
+test('v2 운영자 앱·방침 글: 주소를 정하길 기다려요 · 뽑기 묻는 글 · 주소 줄은 있을 때만 · ops.js v=8 · ops.css v=6', () => {
+  const ops = fs.readFileSync(path.join(ROOT, 'docs', 'ops', 'ops.js'), 'utf8');
+  const html = fs.readFileSync(path.join(ROOT, 'docs', 'ops', 'index.html'), 'utf8');
+  const css = fs.readFileSync(path.join(ROOT, 'docs', 'ops', 'ops.css'), 'utf8');
+  const privacy = fs.readFileSync(path.join(ROOT, 'docs', 'privacy.html'), 'utf8');
+  assert.ok(ops.includes("'주소를 정하길 기다려요'"));
+  assert.ok(ops.includes('12월 31일까지 무료 이용권이 바로 생기고, 앨범은 ${a.spoonNick} 님이 주소를 정하면 만들어져요.'));
+  assert.ok(ops.includes("a.label ? h('p', { class: 'addr' }"), '신청 카드 주소 줄은 주소가 있을 때만');
+  assert.ok(ops.includes("a.state === 'picked' && a.album && a.label"), '앨범이 있을 때만 "앨범 만들었어요"');
+  assert.match(css, /\.plan\.need-addr \{/);
+  assert.match(html, /href="ops\.css\?v=6"/);
+  assert.match(html, /src="ops\.js\?v=8"/);
+  assert.ok(privacy.includes('<th scope="row">베타테스터를 신청할 때</th><td>스푼 닉네임, (뽑힌 뒤) 주소 이름·앨범 이름, 하고 싶은 말(선택),'));
+  assert.ok(!privacy.includes('원하는 주소 이름·앨범 이름'));
 });

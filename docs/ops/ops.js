@@ -243,8 +243,10 @@ function doneView() {
 }
 
 // ---------- 추억앨범 베타테스터(bakje-beta) ----------
-// 신청(스푼 닉네임·주소 이름·앨범 이름·하고 싶은 말·첨부한 박제 사진·편지 3~10장)을 보고 운영자가 [뽑기]·[넘기기].
-//  뽑으면 서버가 앨범·주소를 바로 만들고 12월 31일까지 무료. 0원 결제 기록은 만들지 않는다 — 뽑힌 기록은 이 탭에만 보인다(11/25).
+// 신청(스푼 닉네임·하고 싶은 말·첨부한 박제 사진·편지 3~10장 · 옛 화면 신청은 주소 이름·앨범 이름도)을 보고 운영자가 [뽑기]·[넘기기].
+//  뽑으면 12월 31일까지 무료 이용권이 바로 생긴다. 주소가 있는 신청은 서버가 앨범·주소도 바로 만들고,
+//  주소가 없는 신청(11/26 쉬운 신청 — 주소는 뽑힌 뒤에)은 뽑힌 분이 주소를 정할 때 앨범이 생긴다(카드 "주소를 정하길 기다려요" · 서버 needAddress).
+//  0원 결제 기록은 만들지 않는다 — 뽑힌 기록은 이 탭에만 보인다(11/25).
 //  사진은 비공개 칸의 1시간짜리 보기 주소라 이 앱 안에서만 크게 본다. 모집이 끝난 날부터 30일 뒤 [지난 신청 정리하기](개인정보처리방침).
 const BETA_STATE = { wait: ['기다림', 'blue'], picked: ['뽑힘', 'green'], passed: ['넘김', 'gray'], canceled: ['취소', 'gray'] };
 const PURGE_AFTER = 30 * 86400000;
@@ -328,13 +330,15 @@ function betaCard(a) {
     passBtn,
     h('button', { class: 'btn primary', type: 'button', disabled: !!acting, text: mine === 'pick' ? '뽑는 중…' : '뽑기', onclick: () => pickBeta(a) }));
   else if (a.state === 'passed') foot = h('button', { class: 'btn wide', type: 'button', disabled: !!acting, text: mine === 'wait' ? '되돌리는 중…' : '다시 기다림', onclick: () => unpassBeta(a) });
-  else if (a.state === 'picked') foot = h('a', { class: 'plan new-album made', href: `https://${a.host || albumHost(a.label)}/`, target: '_blank', rel: 'noopener' }, `앨범 만들었어요 · ${albumHost(a.label)}`);
+  else if (a.state === 'picked' && a.album && a.label) foot = h('a', { class: 'plan new-album made', href: `https://${a.host || albumHost(a.label)}/`, target: '_blank', rel: 'noopener' }, `앨범 만들었어요 · ${albumHost(a.label)}`);
+  // 주소를 아직 안 정한 뽑힌 분(앨범은 그분이 주소를 정하면 생김) · 드물게 다른 길로 이미 앨범이 생긴 분
+  else if (a.state === 'picked') foot = h('p', { class: 'plan need-addr', text: a.needAddress === false ? '이미 다른 추억앨범이 있는 분이에요' : '주소를 정하길 기다려요' });
   return h('article', { class: 'card beta-card ' + a.state },
     h('div', { class: 'card-top' }, h('span', { class: 'chip ' + tone, text: label }), h('span', { class: 'muted small', text: stamp })),
     h('div', null,
       h('p', { class: 'who', text: a.spoonNick }),
       h('p', { class: 'muted small', text: `계정 닉네임 ${a.nick || '(없음)'}` })),
-    h('p', { class: 'addr' }, h('b', { text: albumHost(a.label) }), ` · ${a.name}`),
+    a.label ? h('p', { class: 'addr' }, h('b', { text: albumHost(a.label) }), a.name ? ` · ${a.name}` : '') : null,   // 주소 줄은 주소가 있을 때만
     a.msg ? h('p', { class: 'msg', text: a.msg }) : null,
     shotsRow(a),
     foot);
@@ -354,7 +358,7 @@ function shotsRow(a) {
 // 취소한 신청은 한 줄만(사진은 취소할 때 지워졌어요)
 function betaRow(a) {
   return h('article', { class: 'row-card' },
-    h('div', null, h('b', { text: a.spoonNick }), h('p', { class: 'muted small', text: `${albumHost(a.label)} · 신청 ${when(a.created)}` })),
+    h('div', null, h('b', { text: a.spoonNick }), h('p', { class: 'muted small', text: `${a.label ? albumHost(a.label) + ' · ' : ''}신청 ${when(a.created)}` })),
     h('div', { class: 'right' }, h('span', { class: 'chip gray', text: '취소' }), h('p', { class: 'muted small', text: a.decided ? when(a.decided) : '' })));
 }
 
@@ -400,8 +404,10 @@ async function betaAct(id, kind, job) {
 }
 async function pickBeta(a) {
   if (acting) return;
+  // 주소가 없는 신청(쉬운 신청)은 이용권만 바로 · 앨범은 뽑힌 분이 주소를 정할 때
   const yes = await ask({ title: `${a.spoonNick} 님을 뽑을까요?`, ok: '뽑기', cancel: '아직',
-    lines: [`앨범 ${albumHost(a.label)} 이 바로 만들어지고 12월 31일까지 무료예요.`, `앨범 이름: ${a.name}`] });
+    lines: a.label ? [`앨범 ${albumHost(a.label)} 이 바로 만들어지고 12월 31일까지 무료예요.`, `앨범 이름: ${a.name}`]
+      : [`12월 31일까지 무료 이용권이 바로 생기고, 앨범은 ${a.spoonNick} 님이 주소를 정하면 만들어져요.`] });
   if (!yes) return;
   await betaAct(a.id, 'pick', async () => {
     const j = await beta('ops-pick', { id: a.id });

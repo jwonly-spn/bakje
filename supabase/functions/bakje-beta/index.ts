@@ -1,13 +1,15 @@
-// 추억앨범 베타테스터 10명 추가 모집 — Supabase Edge Function "bakje-beta" (verify_jwt false, v1 2026-11-25)
+// 추억앨범 베타테스터 10명 추가 모집 — Supabase Edge Function "bakje-beta" (verify_jwt false, v1 2026-11-25 · v2 2026-11-26 쉬운 신청 안 A)
 // bakje-billing 과 같은 일(needMember·labelOf·hostTaken·makeAlbum·line·hit·q·fail·CORS·json)을 이 파일 안에 복사해 두었다 — 정기결제(auto-renew) 합친 뒤 하나로.
 //  (bakje-billing 은 정기결제 v7 이 크게 바꾸는 중이라 따로 둔다. 고칠 때는 두 곳을 같이 본다.)
-// 흐름: 먼치킨.com/album 신청 화면 → photo-url 로 사진 올리기 주소를 받아 브라우저가 PUT(비공개 칸 bakje-beta, '<회원>/<12자>.<webp|jpg|png>')
-//  → apply(스푼 닉네임·주소 이름·앨범 이름·하고 싶은 말·사진 3~10장 — 서버가 칸에 실제로 있는지·크기·형식을 다시 본다)
+// 흐름: 먼치킨.com/beta(→ /album/#go=beta) 신청 화면 → photo-url 로 사진 올리기 주소를 받아 브라우저가 PUT(비공개 칸 bakje-beta, '<회원>/<12자>.<webp|jpg|png>')
+//  → apply(스푼 닉네임·하고 싶은 말·사진 3~10장 — 서버가 칸에 실제로 있는지·크기·형식을 다시 본다)
+//     v2: 주소 이름·앨범 이름(label·name)은 선택 — 보내면(옛 화면) v1 처럼 검사·저장, 안 보내면(새 화면) 신청 줄의 주소 셋을 비운다.
 //  → 표 bj_beta_apps 한 줄(wait) + 운영자 DM 알림(jl_watch_alerts — 접수 봇이 5분마다 읽어 DM, 사진은 보내지 않음)
-//  → 운영자 앱 "베타" 탭(ops-list: 사진은 1시간짜리 서명 보기 주소) → [뽑기](ops-pick: 잠금 함수 bj_beta_claim 으로 자리 → 앨범·주소·주인 · 12/31 까지 무료)
+//  → 운영자 앱 "베타" 탭(ops-list: 사진은 1시간짜리 서명 보기 주소) → [뽑기](ops-pick: 잠금 함수 bj_beta_claim 으로 자리 · 12/31 까지 무료 이용권)
+//     주소가 있는 신청은 그때 바로 앨범·주소·주인까지 · 주소가 없는 신청은 뽑힌 분이 claim(주소 정하기)을 보낼 때 앨범이 생긴다.
 //     / [넘기기](ops-pass: 신청한 분 화면엔 모집이 끝날 때까지 "기다리는 중") · 10명째를 뽑으면 모집이 저절로 닫힘 · 모집이 끝나면 ops-purge 로 사진을 모두 지우고 안 뽑힌 신청은 줄째 지움(뽑힌 줄은 사진·하고 싶은 말만 비움).
-// 모집 설정: bj_settings "beta" {open, seats, until, closedAt}. 열림 = open && 지금 <= until && 뽑힌 수 < seats. 시범 앨범 3개는 세지 않는다(뽑힌 신청만 셈).
-// 회원 세션은 bakje 와 같은 x-bj-session(bj_sessions sha256). 표: 마이그레이션 20261125_bakje_beta(이 함수보다 먼저 적용).
+// 모집 설정: bj_settings "beta" {open, seats, until, closedAt}. 열림 = open && 지금 <= until && 뽑힌 수 < seats. 시범 앨범 3개는 세지 않는다(뽑힌 신청만 셈 — 주소를 아직 안 정해도 자리 하나).
+// 회원 세션은 bakje 와 같은 x-bj-session(bj_sessions sha256). 표: 마이그레이션 20261125_bakje_beta → 20261126_bakje_beta_v2(주소 셋 not null 풀기 — 이 함수 v2 보다 먼저 적용).
 // 주의: MCP 로 올릴 때 백슬래시-u 글자 표기가 풀려 버리므로 이 파일에는 그런 표기를 쓰지 않는다.
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
@@ -70,6 +72,7 @@ const PHOTO_BAD = '사진 정보가 올바르지 않아요. 사진을 다시 올
 const PHOTO_MISSING = '아직 다 올라가지 않은 사진이 있어요. 사진을 다시 올려 주세요.';
 const PHOTO_KIND = '사진은 5MB 이하의 jpg·png·webp 그림만 올릴 수 있어요.';
 const CANT_PICK = '뽑을 수 없는 신청이에요(이미 뽑았거나 취소된 신청이에요).';
+const NOT_PICKED = '뽑힌 분만 주소를 정할 수 있어요.';
 
 // ── 새 추억앨범 주소 이름(<이름>.먼치킨.com) — bakje-billing labelOf 와 같은 규칙 ──
 // 한글·영어 소문자·숫자 1~15자, - 는 가운데에만. 주소는 퓨니코드 소문자(new URL 이 바꿔 준다).
@@ -78,6 +81,7 @@ const LABEL_RESERVED = new Set(['www', 'test', 'ops', 'api', 'admin', 'mail', 'h
 const ALBUM_SUFFIX = '.xn--s22bu18a0ub.com';   // .먼치킨.com
 const HOST_TAKEN_OPS = '주소가 이미 쓰이고 있어요 — 신청한 분이 다른 주소 이름으로 고쳐 다시 보내면 뽑을 수 있어요';
 const TAKEN_OTHER = '다른 분이 먼저 신청한 주소예요. 다른 이름을 골라 주세요.';
+const HOST_USED = '이미 쓰이고 있는 주소예요. 다른 이름을 골라 주세요.';
 function labelOf(v: unknown) {
   const label = typeof v === 'string' ? v.normalize('NFC').trim().toLowerCase() : '';
   if (!label) return { label, host: '', reason: '주소 이름을 적어 주세요.' };
@@ -93,7 +97,7 @@ function labelOf(v: unknown) {
 // 주소가 쓰이고 있으면 그 까닭(빈 글 = 쓸 수 있음): 이미 있는 앨범 주소 · 다른 회원의 확인을 기다리는 이용권 신청(bj_orders)
 //  · 다른 회원의 기다리는(wait·passed) 베타 신청 — 넘긴(passed) 신청도 다시 뽑을 수 있어 주소를 잡아 둔다
 async function hostTaken(host: string, member: string) {
-  if (await q(db.from('bj_hosts').select('host').eq('host', host).maybeSingle())) return '이미 쓰이고 있는 주소예요. 다른 이름을 골라 주세요.';
+  if (await q(db.from('bj_hosts').select('host').eq('host', host).maybeSingle())) return HOST_USED;
   const w: any = await q(db.from('bj_orders').select('member').eq('want_host', host).eq('state', 'pending').neq('member', member).limit(1));
   if (w.length) return TAKEN_OTHER;
   const b: any = await q(db.from('bj_beta_apps').select('member').eq('want_host', host).in('state', ['wait', 'passed']).neq('member', member).limit(1));
@@ -142,16 +146,26 @@ async function saveBeta(b: Board, change: Record<string, unknown>, now: number) 
 }
 
 // 내 신청(mine): 표 상태 → 화면 상태. wait·passed → 모집 중이면 'wait', 닫혔으면 'closed' · picked → 'picked' · canceled·없음 → 'none'
+//  v2: needAddress = 뽑혔고(picked) 이 신청으로 생긴 앨범이 없고 다른 앨범도 없음 → 화면이 "주소 정하기"(claim)를 보여 준다.
+//  album 은 이 신청으로 앨범이 생겼을 때만(주소 없는 신청은 claim 뒤에). app 의 label·name 은 주소를 아직 안 정했으면 null.
 async function mineOf(me: any, b: Board) {
   const [row, owns]: any = await Promise.all([
     q(db.from('bj_beta_apps').select('*').eq('member', me.id).maybeSingle()),
     q(db.from('bj_album_owners').select('album').eq('member', me.id).limit(1))]);
   const hasAlbum = owns.length > 0;
   const state = !row || row.state === 'canceled' ? 'none' : row.state === 'picked' ? 'picked' : b.isOpen ? 'wait' : 'closed';
-  const out: Record<string, unknown> = { state, hasAlbum, canApply: b.isOpen && !hasAlbum && (state === 'none' || state === 'wait') };
-  if (state !== 'none') out.app = { spoonNick: row.spoon_nick, label: row.want_label, name: row.want_name, msg: row.msg || '', photos: (row.photos || []).length, created: Number(row.created) };
-  if (state === 'picked') out.album = { host: row.want_host, label: row.want_label };
+  const out: Record<string, unknown> = { state, hasAlbum, canApply: b.isOpen && !hasAlbum && (state === 'none' || state === 'wait'),
+    needAddress: state === 'picked' && !row.album && !hasAlbum };
+  if (state !== 'none') out.app = { spoonNick: row.spoon_nick, label: row.want_label ?? null, name: row.want_name ?? null, msg: row.msg || '', photos: (row.photos || []).length, created: Number(row.created) };
+  if (state === 'picked' && row.album && row.want_host) out.album = { host: row.want_host, label: row.want_label };
   return out;
+}
+// 앨범이 있는 회원(bj_album_owners) 모음 — 운영자 목록의 needAddress 용(뽑혔고 이 신청 앨범이 없는 줄만 물어본다)
+async function ownersOf(rows: any[]) {
+  const ask = [...new Set(rows.filter((r) => r && r.state === 'picked' && !r.album).map((r) => String(r.member)))];
+  if (!ask.length) return new Set<string>();
+  const got: any[] = await q(db.from('bj_album_owners').select('member').in('member', ask));
+  return new Set<string>(got.map((x) => String(x.member)));
 }
 // 사진을 올리거나 신청할 수 있는가: 모집 열림 · 앨범 없음 · 아직 안 뽑힘 → 내 신청 줄(없으면 null)
 async function gate(me: any, b: Board, now: number) {
@@ -218,19 +232,22 @@ async function viewUrls(paths: string[]) {
   }
   return out;
 }
-const appOut = (r: any, urls: Map<string, string>) => ({ id: r.id, nick: r.nick || '', spoonNick: r.spoon_nick, label: r.want_label, host: r.want_host, name: r.want_name, msg: r.msg || '',
+// 운영자 앱 한 줄. label·host·name 은 주소를 아직 안 정했으면 null · needAddress 는 mine 과 같은 뜻(뽑힘 · 이 신청 앨범 없음 · 다른 앨범도 없음)
+const appOut = (r: any, urls: Map<string, string>, owned: Set<string>) => ({ id: r.id, nick: r.nick || '', spoonNick: r.spoon_nick, label: r.want_label ?? null, host: r.want_host ?? null, name: r.want_name ?? null, msg: r.msg || '',
   state: r.state, created: Number(r.created), decided: r.decided == null ? null : Number(r.decided), album: r.album ?? null,
+  needAddress: r.state === 'picked' && !r.album && !owned.has(String(r.member)),
   photos: ((r.photos || []) as string[]).map((p) => urls.get(p)).filter(Boolean) });
-const appWithUrls = async (r: any) => appOut(r, await viewUrls(r.photos || []));
+const appWithUrls = async (r: any) => appOut(r, await viewUrls(r.photos || []), await ownersOf([r]));
 
 // 운영자 DM 알림(접수 봇이 jl_watch_alerts 를 읽어 보낸다) — 제목 한 줄 + 한 줄에 한 가지. 사진·사진 주소는 넣지 않는다.
 //  제목에 번호는 없다(줄을 지우면 번호가 겹쳐서 — 고침 1회차). 수는 "지금 신청 A명 · 뽑힘 B명" 줄이 알려 준다.
 async function alertApply(app: any, b: Board) {
   const rows: any[] = await q(db.from('bj_beta_apps').select('state'));
   const live = rows.filter((r) => r.state !== 'canceled').length, picked = rows.filter((r) => r.state === 'picked').length;
+  //  v2: 주소 줄은 신청에 주소가 있을 때만(새 화면은 주소를 뽑힌 뒤에 정한다)
   const body = [
     `스푼 닉네임: ${app.spoon_nick}`,
-    `원하는 주소: ${app.want_label}.먼치킨.com`,
+    ...(app.want_label ? [`원하는 주소: ${app.want_label}.먼치킨.com`] : []),
     ...(app.msg ? [`하고 싶은 말: ${app.msg}`] : []),
     `첨부: 박제 사진 ${(app.photos || []).length}장 (운영자 앱에서 보기)`,
     `지금 신청 ${live}명 · 뽑힘 ${picked}명 / ${b.seats}명`,
@@ -239,14 +256,19 @@ async function alertApply(app: any, b: Board) {
   await q(db.from('jl_watch_alerts').insert({ key: 'beta-apply', level: 'info', title: `🧪 추억앨범 베타 신청 — ${app.spoon_nick}`, body: body.slice(0, 1500) }));
 }
 
-// ── 새 추억앨범 만들기(운영자가 뽑을 때) — bakje-billing makeAlbum 과 같은 일 ──
-// 앨범(bj_albums, 결제 끝나는 날 = 12/31 무료 끝) → 주소(bj_hosts) → 사이트가 읽는 주소 파일(공개 칸 bakje 의 h/<주소>.json — bakje writeHost 와 같은 모양)
-//  → 주인(신청한 계정, bj_album_owners) → 그 계정을 DJ 로 → 신청에 새 앨범 번호 → 그 계정의 먼치킨(봇 프로그램 중 사용 승인된 가장 최근 기기)을 bj_bots 에 잇기
-//  → 추억앨범 이용권 = max(있던 값, 12/31 무료 끝). 중간에 실패하면 만든 것을 지운다(앨범을 지우면 주소·주인·봇 줄은 함께 지워진다).
-async function makeAlbum(a: any, now: number) {
+// ── 새 추억앨범 만들기(운영자가 주소 있는 신청을 뽑을 때 · v2: 뽑힌 분이 claim 으로 주소를 정할 때) — bakje-billing makeAlbum 과 같은 일 ──
+// 앨범(bj_albums, 결제 끝나는 날 = 12/31 무료 끝)
+//  → 신청 줄 잡기(v2): 조건 붙은 update 하나 — 뽑힘 · album 이 비어 있을 때만 album = 새 번호(+ fill: claim 이면 주소 셋).
+//     같은 신청으로 앨범이 둘 생기지 않게(두 번 누름·동시에 온 요청은 여기서 하나만 이김 — 진 쪽은 만든 앨범을 지우고 400 이미 추억앨범)
+//  → 주소(bj_hosts) → 사이트가 읽는 주소 파일(공개 칸 bakje 의 h/<주소>.json — bakje writeHost 와 같은 모양)
+//  → 주인(신청한 계정, bj_album_owners) → 그 계정을 DJ 로 → 그 계정의 먼치킨(봇 프로그램 중 사용 승인된 가장 최근 기기)을 bj_bots 에 잇기
+//  → 추억앨범 이용권 = max(있던 값, 12/31 무료 끝).
+//  중간에 실패하면 신청 줄을 먼저 되돌리고(album·fill 칸 비움 — 앨범을 지우기 전에: 지우면 album 이 저절로 비어 조건이 안 맞음) 만든 것을 지운다(앨범을 지우면 주소·주인·봇 줄은 함께 지워진다).
+//  taken: 주소가 그새 쓰였을 때 글(운영자 뽑기 = HOST_TAKEN_OPS · 주소 정하기 = 신청한 분에게 apply 와 같은 글)
+async function makeAlbum(a: any, now: number, { fill = {}, taken = HOST_TAKEN_OPS }: { fill?: Record<string, unknown>; taken?: string } = {}) {
   const host = String(a.want_host || '');
-  if (!host.endsWith(ALBUM_SUFFIX)) throw fail(409, HOST_TAKEN_OPS);
-  if (await q(db.from('bj_hosts').select('host').eq('host', host).maybeSingle())) throw fail(409, HOST_TAKEN_OPS);
+  if (!host.endsWith(ALBUM_SUFFIX)) throw fail(409, taken);
+  if (await q(db.from('bj_hosts').select('host').eq('host', host).maybeSingle())) throw fail(409, taken);
   const name = line(a.want_name, 40) || '추억앨범';
   let id = '';
   for (let i = 0; i < 5 && !id; i++) {
@@ -256,16 +278,18 @@ async function makeAlbum(a: any, now: number) {
     else if (error.code !== '23505') { console.error(error); throw fail(503, BROKEN); }
   }
   if (!id) throw fail(503, BROKEN);
-  let wrote = false;
+  let grabbed = false, wrote = false;
   try {
+    const g: any = await q(db.from('bj_beta_apps').update({ album: id, ...fill }).eq('id', a.id).eq('state', 'picked').is('album', null).select('id'));
+    if (!g?.[0]) throw fail(400, HAS_ALBUM);
+    grabbed = true;
     const h = await db.from('bj_hosts').insert({ host, album: id, created: now });
-    if (h.error) { if (h.error.code === '23505') throw fail(409, HOST_TAKEN_OPS); console.error(h.error); throw fail(503, BROKEN); }
+    if (h.error) { if (h.error.code === '23505') throw fail(409, taken); console.error(h.error); throw fail(503, BROKEN); }
     const up = await db.storage.from('bakje').upload(`h/${host}.json`, new Blob([JSON.stringify({ album: id, name })], { type: 'application/json' }), { upsert: true, contentType: 'application/json', cacheControl: '60' });
     if (up.error) { console.error('host', up.error.message); throw fail(503, BROKEN); }
     wrote = true;
     await q(db.from('bj_album_owners').upsert({ album: id, member: a.member, created: now }));
     await q(db.from('bj_members').update({ role: 'dj' }).eq('id', a.member));
-    await q(db.from('bj_beta_apps').update({ album: id }).eq('id', a.id));
     const devs: any[] = await q(db.from('bj_member_devices').select('device,seen').eq('member', a.member).eq('program', 'bot').order('seen', { ascending: false }).limit(20));
     if (devs.length) {
       const ok: any[] = await q(db.from('junlive_devices').select('id,nickname,tag').in('id', devs.map((d) => d.device)).eq('state', 'approved'));
@@ -277,6 +301,10 @@ async function makeAlbum(a: any, now: number) {
     return id;
   } catch (e) {
     try {
+      if (grabbed) {
+        const undo = await db.from('bj_beta_apps').update({ album: null, ...Object.fromEntries(Object.keys(fill).map((k) => [k, null])) }).eq('id', a.id).eq('album', id);
+        if (undo.error) console.error('신청 줄 되돌리기', undo.error);
+      }
       if (wrote) { const rm = await db.storage.from('bakje').remove([`h/${host}.json`]); if (rm.error) console.error('주소 파일 지우기', rm.error.message); }
       const del = await db.from('bj_albums').delete().eq('id', id);
       if (del.error) console.error('앨범 지우기', del.error);
@@ -319,23 +347,25 @@ async function handle(req: Request, now: number) {
       return { ok: true, path, url: up.signedUrl };
     }
     // 신청(처음 · 다시 보내기). 기다림·넘김이면 같은 줄을 고친다(알림 다시 안 감) · 취소했던 줄이면 새 신청으로(알림 감) · 뽑혔으면 못 고침
+    //  v2: label(주소 이름)·name(앨범 이름)은 선택. label 칸이 없거나 null 이면(새 화면) 주소 셋을 비운다 — name 도 쓰지 않음(뽑힌 뒤 claim 때 정함).
+    //   label 이 글이면(옛 화면 — 빈 글도) v1 그대로 검사·저장: 규칙 · 앨범 이름 2~40자(비우면 "<스푼 닉네임> 추억앨범") · 주소 겹침 409.
     case 'apply': {
       const bd = await board(now);
       const row = await gate(me, bd, now);
       const spoonNick = line(b.spoonNick, 100);
       if (chars(spoonNick) < 1 || chars(spoonNick) > 20) throw fail(400, '스푼 닉네임을 1~20자로 적어 주세요.');
-      const n = labelOf(b.label);
-      if (n.reason) throw fail(400, n.reason);
-      const name = line(b.name, 200) || `${spoonNick} 추억앨범`;
-      if (chars(name) < 2 || chars(name) > 40) throw fail(400, '앨범 이름은 2~40자로 정해 주세요.');
+      const withAddr = b.label != null;
+      const n = withAddr ? labelOf(b.label) : null;
+      if (n?.reason) throw fail(400, n.reason);
+      const name = withAddr ? line(b.name, 200) || `${spoonNick} 추억앨범` : null;
+      if (name !== null && (chars(name) < 2 || chars(name) > 40)) throw fail(400, '앨범 이름은 2~40자로 정해 주세요.');
       const msg = line(b.msg, 1000);
       if (chars(msg) > 100) throw fail(400, '하고 싶은 말은 100자까지 적을 수 있어요.');
       const photos = photosOf(b.photos, me.id);
       if (!await hit('bjba:' + me.id, 3600, 10)) throw fail(429, '신청을 너무 자주 보냈어요. 조금 뒤에 다시 해 주세요.');
-      const taken = await hostTaken(n.host, me.id);
-      if (taken) throw fail(409, taken);
+      if (n) { const taken = await hostTaken(n.host, me.id); if (taken) throw fail(409, taken); }
       await checkStored(photos, me.id);
-      const fields = { nick: me.nickname || '', spoon_nick: spoonNick, want_label: n.label, want_host: n.host, want_name: name, msg: msg || null, photos };
+      const fields = { nick: me.nickname || '', spoon_nick: spoonNick, want_label: n ? n.label : null, want_host: n ? n.host : null, want_name: name, msg: msg || null, photos };
       let saved: any, fresh = false;
       if (row && row.state !== 'canceled') {
         const r: any = await q(db.from('bj_beta_apps').update(fields).eq('id', row.id).in('state', ['wait', 'passed']).select('*'));
@@ -367,16 +397,40 @@ async function handle(req: Request, now: number) {
       }
       return { ok: true, mine: await mineOf(me, await board(now)) };
     }
+    // v2 주소 정하기(뽑힌 분 — 신청 때 주소를 안 정한 분): {label, name?} → 앨범·주소·주인(12/31 까지 무료) → {mine}.
+    //  뽑힘(picked) · 이 신청 앨범 없음 · 다른 앨범도 없음일 때만. 모집이 닫혀도 된다(10명째를 뽑으면 저절로 닫힘).
+    //  주소 검사는 apply 와 같은 labelOf + hostTaken(다른 분의 기다리는 베타 신청 주소 포함) · 앨범 이름 비우면 "<스푼 닉네임> 추억앨범".
+    //  앨범은 makeAlbum 과 같은 일 — 신청 줄은 조건 붙은 update(뽑힘 · album 비어 있음)로 잡아서 두 번 눌러도 하나만 생긴다.
+    case 'claim': {
+      const row: any = await q(db.from('bj_beta_apps').select('*').eq('member', me.id).maybeSingle());
+      if (!row || row.state !== 'picked') throw fail(400, NOT_PICKED);
+      const owns: any = await q(db.from('bj_album_owners').select('album').eq('member', me.id).limit(1));
+      if (row.album || owns.length) throw fail(400, HAS_ALBUM);
+      const n = labelOf(b.label);
+      if (n.reason) throw fail(400, n.reason);
+      const name = line(b.name, 200) || `${row.spoon_nick} 추억앨범`;
+      if (chars(name) < 2 || chars(name) > 40) throw fail(400, '앨범 이름은 2~40자로 정해 주세요.');
+      if (!await hit('bjbc:' + me.id, 3600, 20)) throw fail(429, '주소를 너무 자주 정했어요. 조금 뒤에 다시 해 주세요.');
+      const taken = await hostTaken(n.host, me.id);
+      if (taken) throw fail(409, taken);
+      // ops-pick 과 같은 지킴: 확인을 기다리는 새 앨범 이용권 신청이 있으면 앨범이 둘 생길 수 있어 막는다
+      const order: any = await q(db.from('bj_orders').select('id').eq('member', me.id).eq('state', 'pending').not('want_host', 'is', null).limit(1));
+      if (order.length) throw fail(409, '확인을 기다리는 새 추억앨범 이용권 신청이 있어요. 그 신청을 취소한 뒤 주소를 정해 주세요.');
+      const fill = { want_label: n.label, want_host: n.host, want_name: name };
+      await makeAlbum({ ...row, ...fill }, now, { fill, taken: HOST_USED });
+      return { ok: true, mine: await mineOf(me, await board(now)) };
+    }
   }
   // ── 운영자(bj_members.is_admin) ──
   if (b.action.startsWith('ops-') && me.is_admin !== true) throw fail(403, OPS_ONLY);
   switch (b.action) {
     case 'ops-list': {
       const [bd, rows]: any = await Promise.all([board(now), q(db.from('bj_beta_apps').select('*').order('created', { ascending: false }).limit(300))]);
-      const urls = await viewUrls(rows.flatMap((r: any) => r.photos || []));
-      return { ok: true, open: bd.isOpen, seats: bd.seats, picked: bd.picked, left: bd.left, until: bd.until, closedAt: bd.closedAt, apps: rows.map((r: any) => appOut(r, urls)) };
+      const [urls, owned] = await Promise.all([viewUrls(rows.flatMap((r: any) => r.photos || [])), ownersOf(rows)]);
+      return { ok: true, open: bd.isOpen, seats: bd.seats, picked: bd.picked, left: bd.left, until: bd.until, closedAt: bd.closedAt, apps: rows.map((r: any) => appOut(r, urls, owned)) };
     }
     // 뽑기: 자리 잡기(잠금 함수 — 한 번에 하나, seats 넘으면 'full') → 앨범 만들기 → 실패하면 기다림으로 되돌림. 10명째면 모집이 저절로 닫힌다.
+    //  v2: 주소가 있는 신청(옛 화면)은 예전처럼 바로 앨범까지. 주소가 없는 신청은 자리 + 추억앨범 이용권(max(있던 값, 12/31))만 — 앨범은 뽑힌 분이 claim 할 때.
     case 'ops-pick': {
       const id = String(b.id || '');
       const app: any = await q(db.from('bj_beta_apps').select('*').eq('id', id).maybeSingle());
@@ -397,10 +451,14 @@ async function handle(req: Request, now: number) {
         if (!cur || cur.state !== 'picked') throw fail(409, CANT_PICK);
         const owned: any = await q(db.from('bj_album_owners').select('album').eq('member', cur.member).limit(1));
         if (owned.length) throw fail(409, '이미 추억앨범이 있는 분이에요. 넘기기를 눌러 주세요.');
-        if (await hostTaken(String(cur.want_host || ''), cur.member)) throw fail(409, HOST_TAKEN_OPS);
+        if (cur.want_host && await hostTaken(String(cur.want_host), cur.member)) throw fail(409, HOST_TAKEN_OPS);
         const order: any = await q(db.from('bj_orders').select('id').eq('member', cur.member).eq('state', 'pending').not('want_host', 'is', null).limit(1));
         if (order.length) throw fail(409, '확인을 기다리는 새 추억앨범 이용권 신청이 있는 분이에요. 그 신청을 먼저 확인하거나 거절해 주세요.');
-        await makeAlbum(cur, now);
+        if (cur.want_host) await makeAlbum(cur, now);
+        else {
+          const e: any = await q(db.from('bj_entitlements').select('until').eq('member', cur.member).eq('product', 'album').maybeSingle());
+          await q(db.from('bj_entitlements').upsert({ member: cur.member, product: 'album', until: Math.max(Number(e?.until) || 0, BETA_UNTIL) }));
+        }
       }
       catch (e) {
         const { error } = await db.from('bj_beta_apps').update({ state: 'wait', decided: null, album: null }).eq('id', id).eq('state', 'picked');
@@ -465,7 +523,7 @@ function makeHandler(deps: { db: any; clock?: () => number }) {
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
     const route = new URL(req.url).pathname.replace(/^.*?\/bakje-beta\/?/, '').replace(/\/+$/, '');
     try {
-      if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: 1 });
+      if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: 2 });
       if (req.method === 'POST' && (route === '' || route === 'api')) return json(200, await handle(req, clock()));
       return json(404, { ok: false, error: '찾을 수 없어요.' });
     } catch (e) {
