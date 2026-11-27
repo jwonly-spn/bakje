@@ -153,7 +153,7 @@ function fakeDb(seed) {
             if (!k.startsWith(pre)) continue;
             const rest = k.slice(pre.length);
             if (rest.includes('/')) { const name = rest.split('/')[0]; if (!seen.has(name)) seen.set(name, { name, id: null, metadata: null }); }
-            else seen.set(rest, { name: rest, id: 'id-' + rest, metadata: { size: f.size, mimetype: f.mimetype } });
+            else seen.set(rest, { name: rest, id: 'id-' + rest, created_at: f.at ? new Date(Date.UTC(2026, 10, 26) + f.at * 1000).toISOString() : null, metadata: { size: f.size, mimetype: f.mimetype } });
           }
           const all = [...seen.values()].sort((a, b) => (a.name < b.name ? -1 : 1));
           const off = opts.offset || 0, lim = opts.limit || 100;
@@ -217,10 +217,11 @@ function setup({ now = NOW, beta = CLOSED, fans = 0, albums = [], owners = [], e
     return { status: res.status, body: await res.json() };
   };
   // 브라우저가 서명 올리기 주소로 PUT 한 것처럼 파일을 둔다
+  let putAt = 0;   // 올린 차례(가짜 목록의 created_at)
   const put = (url, meta = {}) => {
     const m = String(url).match(/^https:\/\/example\.supabase\.co\/storage\/v1\/object\/upload\/sign\/([^/]+)\/(.+)\?token=tok-\d+$/);
     assert.ok(m, '서명 올리기 주소 모양이 달라요: ' + url);
-    db.files.set(`${m[1]}/${m[2]}`, { text: 'img', size: 300000, mimetype: 'image/webp', ...meta });
+    db.files.set(`${m[1]}/${m[2]}`, { text: 'img', size: 300000, mimetype: 'image/webp', at: ++putAt, ...meta });
   };
   return { db, T: db.T, call, handler, put, setNow: (t) => { clock = t; } };
 }
@@ -287,11 +288,11 @@ test('마이그레이션 v2·schema.sql 맨 끝: 주소 셋 not null 풀기(다�
   assert.ok(body(schema).includes(want), 'schema.sql 에 v2 구역이 없어요(정기결제 등 뒤 구역과 합쳐도 깨지지 않게 includes)');
 });
 
-test('health: v 2', async () => {
+test('health: v 3', async () => {
   const s = setup();
   const res = await s.handler(new Request(URL_FN + '/health'));
   assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), { ok: true, v: 2 });
+  assert.deepEqual(await res.json(), { ok: true, v: 3 });
   const pre = await s.handler(new Request(URL_FN, { method: 'OPTIONS' }));
   assert.equal(pre.status, 204);
   assert.ok(pre.headers.get('access-control-allow-headers').includes('x-bj-session'));
@@ -364,18 +365,38 @@ test('apply 사진 11장이면 거절', async () => {
   ok(await s.call(DJ, 'apply', form(p)));
 });
 
-test('photo-url: 지금 신청에 없는 사진이 폴더에 이미 10장이면 거절(먼저 보내거나 정리)', async () => {
-  const MORE = '사진을 먼저 보내거나 뺀 사진을 정리해 주세요.';
+test('photo-url: 안 보낸 사진이 폴더에 이미 10장이면 오래된 것부터 지우고 주소를 준다(풀 길 없이 막히지 않게 — 11/27) · 신청에 든 사진은 그대로', async () => {
   const s = setup({ beta: OPEN });
-  const p = await shoot(s, DJ, 10);
-  no(await s.call(DJ, 'photo-url', { type: 'image/webp' }), 400, MORE);
-  // 보내면(신청에 들어가면) 다시 올릴 수 있음
-  ok(await s.call(DJ, 'apply', form(p.slice(0, 3))));   // 나머지 7장은 신청에서 빠져 지워짐
-  const more = await shoot(s, DJ, 10);
-  no(await s.call(DJ, 'photo-url', { type: 'image/webp' }), 400, MORE);
-  ok(await s.call(DJ, 'apply', form([...p.slice(0, 3), ...more.slice(0, 7)])));
+  const has = (x) => s.db.files.has('bakje-beta/' + x);
+  const p = await shoot(s, DJ, 10);          // 새로 고침·뒤로 가기로 화면에서 사라진 10장
+  const n = await shoot(s, DJ, 3);           // 다시 고른 3장 — 막히지 않는다
+  assert.deepEqual(p.slice(0, 3).map(has), [false, false, false]);   // 가장 오래된 3장만 지워짐
+  assert.ok(p.slice(3).every(has));
+  assert.ok(n.every(has));
+  ok(await s.call(DJ, 'apply', form(n)));    // 신청에 든 3장만 남고 나머지는 apply 가 지움
+  assert.ok(n.every(has));
+  assert.ok(p.every((x) => !has(x)));
+  // 신청한 뒤 고치기: 신청에 든 사진은 셈에서 빠지고 지워지지 않는다
+  const more = await shoot(s, DJ, 12);
+  assert.ok(n.every(has));
+  assert.deepEqual(more.slice(0, 2).map(has), [false, false]);
+  assert.ok(more.slice(2).every(has));
+  ok(await s.call(DJ, 'apply', form([...n, ...more.slice(-7)])));
   assert.equal(appOf(s, DJ).photos.length, 10);
   ok(await s.call(DJ, 'photo-url', { type: 'image/webp' }));
+});
+
+test('photo-url keep: 화면에 보이는 사진은 지우지 않는다(10장 → 마지막 장 ✕ → 1장 더 → 신청 성공) · 남의 경로·이상한 이름은 무시', async () => {
+  const s = setup({ beta: OPEN });
+  const has = (x) => s.db.files.has('bakje-beta/' + x);
+  const p = await shoot(s, DJ, 10);
+  const keep = p.slice(0, 9);                 // 마지막 장을 화면에서 뺌(서버 파일은 남음)
+  const r = ok(await s.call(DJ, 'photo-url', { type: 'image/webp', keep: [...keep, 'mzzzzzzzzzzz/aaaaaaaaaaaa.webp', '../x', 3] }));
+  s.put(r.url);
+  assert.ok(keep.every(has));                 // 화면의 9장은 그대로
+  assert.equal(has(p[9]), false);             // 뺀 장이 지워짐
+  ok(await s.call(DJ, 'apply', form([...keep, r.path])));
+  assert.equal(appOf(s, DJ).photos.length, 10);
 });
 
 test('회원 번호 모양(m + 영어 소문자·숫자 11자)이 아니면 사진 칸을 쓰지 않음', async () => {

@@ -336,11 +336,19 @@ async function handle(req: Request, now: number) {
       if (!MEMBER_ID.test(String(me.id))) { console.error('회원 번호 모양이 달라요'); throw fail(503, BROKEN); }
       const ext = typeof b.type === 'string' ? PHOTO_EXT.get(b.type.trim().toLowerCase()) : undefined;
       if (!ext) throw fail(400, '사진은 jpg·png·webp 그림만 올릴 수 있어요.');
-      // 지금 신청에 없는 사진(올리고 아직 안 보낸 것 · 뺀 것)이 이미 10장(PHOTO_MAX)이면 더 주지 않는다 — 보내거나(apply) 빼면(다음 apply 가 지움) 다시 올릴 수 있다
+      // 지금 신청에 없는 사진(올리고 아직 안 보낸 것 · 화면에서 뺀 것 · 뒤로 가기·새로 고침으로 화면에서 사라진 것)이 이미 10장(PHOTO_MAX)이면
+      //  오래된 것부터 지워 한 자리를 만든다(2026-11-27 — 전에는 거절했는데 화면에 정리할 길이 없어 영영 막혔음).
+      //  화면이 지금 보이는 사진 경로(keep — 내 폴더 · 이름 모양만 받음)를 함께 보내면 그 사진도 지우지 않는다(✕로 새 사진을 빼면 오래된 것이 화면에 남은 사진일 수 있음).
+      //  keep 을 안 보내는 옛 화면은 오래된 것부터. 신청에 들어간 사진(sent)은 셈에도 안 들고 지우지도 않는다.
       const sent = new Set<string>(row?.photos || []);
-      const loose = (await filesOf(me.id)).filter((f) => f && f.id != null && !sent.has(me.id + '/' + f.name)).length;
-      if (loose >= PHOTO_MAX) throw fail(400, '사진을 먼저 보내거나 뺀 사진을 정리해 주세요.');
+      const keep = new Set<string>((Array.isArray(b.keep) ? b.keep : []).slice(0, PHOTO_MAX)
+        .filter((x: unknown) => typeof x === 'string' && x.startsWith(me.id + '/') && PHOTO_NAME.test(x.slice(me.id.length + 1))));
+      const loose = (await filesOf(me.id)).filter((f) => f && f.id != null && !sent.has(me.id + '/' + f.name));
       if (!await hit('bjbp:' + me.id, 3600, 60)) throw fail(429, '사진을 너무 많이 올렸어요. 조금 뒤에 다시 해 주세요.');
+      if (loose.length >= PHOTO_MAX) {
+        const byAge = loose.filter((f) => !keep.has(me.id + '/' + f.name)).sort((x, y) => String(x.created_at || '').localeCompare(String(y.created_at || '')) || String(x.name).localeCompare(String(y.name)));
+        await removeFiles(byAge.slice(0, loose.length - PHOTO_MAX + 1).map((f) => me.id + '/' + f.name));
+      }
       const path = `${me.id}/${rid(12)}.${ext}`;
       const up: any = await q(db.storage.from(BUCKET).createSignedUploadUrl(path));
       if (!up || typeof up.signedUrl !== 'string' || !up.signedUrl.startsWith('https://')) { console.error('서명 올리기 주소가 없어요'); throw fail(503, BROKEN); }
@@ -523,7 +531,7 @@ function makeHandler(deps: { db: any; clock?: () => number }) {
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
     const route = new URL(req.url).pathname.replace(/^.*?\/bakje-beta\/?/, '').replace(/\/+$/, '');
     try {
-      if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: 2 });
+      if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: 3 });
       if (req.method === 'POST' && (route === '' || route === 'api')) return json(200, await handle(req, clock()));
       return json(404, { ok: false, error: '찾을 수 없어요.' });
     } catch (e) {
