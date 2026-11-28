@@ -25,22 +25,24 @@ const URL_FN = 'https://example.supabase.co/functions/v1/bakje-billing';
 const ch = (n) => String.fromCharCode(n);
 
 // ---- 가짜 Supabase(이 시험이 부르는 만큼 — card 시험의 fakeDb 꼴 + 번호 자동·gte) ----
+// db.before(표, 질의) = 질의를 돌리기 전에 기다릴 것(두 요청이 동시에 읽게 — 검토 3) · db.fail(표, 질의) = 참이면 그 질의를 DB 오류로
 const KEYS = { bj_members: ['id'], bj_sessions: ['token'], bj_op_messages: ['id'], bj_push_subs: ['id'], bj_member_devices: ['device'], junlive_devices: ['id'], bj_settings: ['key'] };
 const DEFAULTS = { bj_op_messages: { by_member: null, delivered: null, seen: null } };
 // 표의 check(char_length(body) between 1 and 500) — 글자 수는 코드 포인트로 센다(Postgres char_length 와 같음)
 const CHECKS = { bj_op_messages: (r) => typeof r.body === 'string' && [...r.body].length >= 1 && [...r.body].length <= 500 && typeof r.member === 'string' && Number.isSafeInteger(r.created) };
 const clone = (v) => structuredClone(v);
 function fakeDb(seed) {
-  const T = {}, log = [];
+  const T = {}, log = [], db = { before: null, fail: null };
   let seq = 100;
   for (const [k, rows] of Object.entries(seed)) T[k] = rows.map((r) => ({ ...(DEFAULTS[k] || {}), ...clone(r) }));
   const tbl = (name) => (T[name] ||= []);
   const same = (a, b, cols) => cols.every((c) => a[c] === b[c]);
   function from(name) {
-    const st = { op: 'select', filters: [], order: null, limit: null, ret: false, single: false, vals: null, opts: {} };
+    const st = { op: 'select', cols: '', filters: [], order: null, limit: null, ret: false, single: false, vals: null, opts: {} };
     const keep = (r) => st.filters.every((f) => f(r));
     function run() {
-      log.push({ table: name, op: st.op });
+      log.push({ table: name, op: st.op, cols: st.cols });
+      if (db.fail?.(name, st)) return { data: null, error: { code: 'XX000', message: '가짜 DB 오류' } };
       const rows = tbl(name);
       if (st.op === 'insert' || st.op === 'upsert') {
         const out = [];
@@ -68,7 +70,7 @@ function fakeDb(seed) {
       return { data: clone(out), error: null };
     }
     const b = {
-      select() { if (st.op !== 'select') st.ret = true; return b; },
+      select(cols = '*') { if (st.op !== 'select') st.ret = true; else st.cols = cols; return b; },
       insert(v) { st.op = 'insert'; st.vals = v; return b; },
       upsert(v, opts = {}) { st.op = 'upsert'; st.vals = v; st.opts = opts; return b; },
       update(v) { st.op = 'update'; st.vals = v; return b; },
@@ -80,12 +82,12 @@ function fakeDb(seed) {
       gte(c, v) { st.filters.push((r) => r[c] != null && r[c] >= v); return b; },
       order(c, o = {}) { st.order = [c, o.ascending !== false]; return b; },
       limit(n) { st.limit = n; return b; },
-      maybeSingle() { st.single = true; return Promise.resolve().then(run); },
-      then(res, rej) { return Promise.resolve().then(run).then(res, rej); }
+      maybeSingle() { st.single = true; return Promise.resolve().then(() => db.before?.(name, st)).then(run); },
+      then(res, rej) { return Promise.resolve().then(() => db.before?.(name, st)).then(run).then(res, rej); }
     };
     return b;
   }
-  return { T, log, from, rpc: async () => ({ data: true, error: null }) };
+  return Object.assign(db, { T, log, from, rpc: async () => ({ data: true, error: null }) });
 }
 
 // 운영자 앱 푸시를 받는 가짜 휴대폰(웹 푸시 열쇠) — 서버가 보낸 암호문(aes128gcm)을 풀어 알림 글을 본다(card 시험의 fakePhone 꼴)
@@ -246,11 +248,17 @@ test('op-msg-seen: 내 메시지 → seen 을 적고 운영자 휴대폰에 푸�
   assert.equal(s.pushes.length, 1, '푸시는 처음 한 번만');
 });
 
-test('op-msg-seen: 동시에 두 번 와도 푸시는 한 번 · 짧은 글은 … 없이 · 닉네임이 없으면 봇의 스푼 닉네임', async () => {
+test('op-msg-seen: 동시에 두 번 와도(둘 다 "아직 확인 안 함"을 읽음) 푸시는 한 번 · 짧은 글은 … 없이 · 닉네임이 없으면 봇의 스푼 닉네임', async () => {
   const s = await setup({ msgs: [{ id: 8, member: 'mNo', body: '확인 부탁해요', created: NOW - 1000 }] });
+  // 첫 읽기(id,member,body,seen)를 두 요청이 모두 마칠 때까지 붙잡는다 → 둘 다 seen 이 빈 것을 보고 update 로 간다(진짜 동시)
+  let arrived = 0, release; const gate = new Promise((r) => { release = r; });
+  s.db.before = async (name, st) => { if (name === 'bj_op_messages' && st.op === 'select' && st.cols.includes('body')) { if (++arrived === 2) release(); await gate; } };
   const [a, b] = await Promise.all([s.call('mNo', 'op-msg-seen', { id: 8 }), s.call('mNo', 'op-msg-seen', { id: 8 })]);
+  s.db.before = null;
+  assert.equal(arrived, 2);
+  assert.equal(s.db.log.filter((x) => x.table === 'bj_op_messages' && x.op === 'update').length, 2, '두 요청 모두 update 까지 감');
   assert.deepEqual([ok(a).seen, ok(b).seen], [NOW, NOW]);
-  assert.equal(s.pushes.length, 1);
+  assert.equal(s.pushes.length, 1, '조건부 update(seen 이 빌 때만)를 채운 한 요청만 푸시');
   assert.equal((await s.pushed())[0].body, '밤톨님이 확인했어요 — 확인 부탁해요');
 });
 
@@ -263,6 +271,28 @@ test('op-msg-seen: 남의 메시지 · 없는 번호 · 이상한 번호 → 404
   }
   assert.equal(msg(s, 9).seen, null);
   assert.equal(s.pushes.length, 0);
+});
+
+test('ops-msg-send: 글을 넣은 뒤 이름 읽기가 막혀도 503 이 아님(이름은 DJ) — 다시 보내 같은 글이 두 번 가지 않게(검토 2)', async () => {
+  const s = await setup();
+  s.db.fail = (name) => name === 'bj_member_devices';   // namesOf 의 기기 읽기만 막힘
+  const r = ok(await s.call('mOp', 'ops-msg-send', { member: 'mDj', body: '한 번만 가야 하는 글' }));
+  assert.equal(r.msg.name, 'DJ');
+  assert.equal(r.msg.body, '한 번만 가야 하는 글');
+  assert.equal(s.T.bj_op_messages.length, 1);
+  s.db.fail = null;
+  assert.equal(ok(await s.call('mOp', 'ops-msgs')).msgs[0].name, '먼치', '목록에서는 제 이름');
+});
+
+test('op-msg-seen 알림 글: 40자는 글자 덩어리로 — 가족·깃발·피부색 이모지가 반으로 잘리지 않음(검토 4)', async () => {
+  const family = String.fromCodePoint(0x1F468, 0x200D, 0x1F469, 0x200D, 0x1F467), flag = String.fromCodePoint(0x1F1F0, 0x1F1F7), thumb = String.fromCodePoint(0x1F44D, 0x1F3FB);
+  const cases = [['가'.repeat(39) + family + '나나', '가'.repeat(39) + family + '…'], ['가'.repeat(39) + flag + flag, '가'.repeat(39) + flag + '…'],
+    ['가'.repeat(39) + thumb + '끝', '가'.repeat(39) + thumb + '…'], ['가'.repeat(38) + family + thumb, '가'.repeat(38) + family + thumb]];
+  for (const [i, [body, head]] of cases.entries()) {
+    const s = await setup({ msgs: [{ id: 20 + i, member: 'mDj', body, created: NOW - 1000 }] });
+    ok(await s.call('mDj', 'op-msg-seen', { id: 20 + i }));
+    assert.equal((await s.pushed())[0].body, `먼치님이 확인했어요 — ${head}`, 'case ' + i);
+  }
 });
 
 test('ops-msg-del: 지우기 → 목록에서 빠지고 확인도 404 · 없는 번호여도 ok · 번호가 아니면 400', async () => {

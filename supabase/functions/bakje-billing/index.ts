@@ -906,8 +906,10 @@ async function handle(req: Request, now: number) {
         return { ok: true, seen: again.seen == null ? now : Number(again.seen) };
       }
       const name = (await namesOf([me.id]).catch(() => new Map<string, string>())).get(me.id) || 'DJ';
-      const flat = [...String(m.body || '').replace(/\s+/g, ' ').trim()];
-      const head = flat.slice(0, 40).join('') + (flat.length > 40 ? '…' : '');
+      // 앞 40자는 글자 덩어리(grapheme)로 센다 — 가족·깃발·피부색 이모지가 반으로 잘리지 않게(검토 4)
+      const flat = String(m.body || '').replace(/\s+/g, ' ').trim();
+      const parts = typeof Intl?.Segmenter === 'function' ? [...new Intl.Segmenter('ko', { granularity: 'grapheme' }).segment(flat)].map((x) => x.segment) : [...flat];
+      const head = parts.slice(0, 40).join('') + (parts.length > 40 ? '…' : '');
       await quiet(pushTo(null, { title: '✅ 메시지 확인', body: `${name}님이 확인했어요 — ${head}`, url: '/ops/#msgs' }));
       return { ok: true, seen: now };
     }
@@ -951,7 +953,9 @@ async function handle(req: Request, now: number) {
       const body = msgBody(b.body);
       const r: any = await q(db.from('bj_op_messages').insert({ member: id, body, created: now, by_member: me.id }).select('*'));
       await dropOldMsgs(now);
-      return { ok: true, msg: msgOut(r[0], (await namesOf([id])).get(id) || 'DJ') };
+      // 글은 이미 들어갔다 — 이름 읽기가 잠깐 막혀도 503 을 내지 않는다(운영자가 안 간 줄 알고 다시 보내 같은 글이 두 번 가지 않게, 검토 2)
+      const name = (await namesOf([id]).catch(() => new Map<string, string>())).get(id) || 'DJ';
+      return { ok: true, msg: msgOut(r[0], name) };
     }
     // 보낸 메시지(v17): 최근 7일 전부, 새것부터 → {msgs:[{id, member, name, body, created, delivered, seen}]}
     case 'ops-msgs': {
