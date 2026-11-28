@@ -1144,7 +1144,7 @@ test('v2 모집 끝 정리 뒤에도: 주소를 아직 안 정한 뽑힌 분은 
   assert.equal(s.T.bj_albums.length, 1);
 });
 
-test('v2 운영자 앱·방침 글: 주소를 정하길 기다려요 · 뽑기 묻는 글 · 주소 줄은 있을 때만 · ops.js v=8 · ops.css v=6', () => {
+test('v2 운영자 앱·방침 글: 주소를 정하길 기다려요 · 뽑기 묻는 글 · 주소 줄은 있을 때만 · ops.js·ops.css 판 번호(v=8·v=6 이상 — 그 뒤 판이 올라감)', () => {
   const ops = fs.readFileSync(path.join(ROOT, 'docs', 'ops', 'ops.js'), 'utf8');
   const html = fs.readFileSync(path.join(ROOT, 'docs', 'ops', 'index.html'), 'utf8');
   const css = fs.readFileSync(path.join(ROOT, 'docs', 'ops', 'ops.css'), 'utf8');
@@ -1154,8 +1154,8 @@ test('v2 운영자 앱·방침 글: 주소를 정하길 기다려요 · 뽑기 �
   assert.ok(ops.includes("a.label ? h('p', { class: 'addr' }"), '신청 카드 주소 줄은 주소가 있을 때만');
   assert.ok(ops.includes("a.state === 'picked' && a.album && a.label"), '앨범이 있을 때만 "앨범 만들었어요"');
   assert.match(css, /\.plan\.need-addr \{/);
-  assert.match(html, /href="ops\.css\?v=6"/);
-  assert.match(html, /src="ops\.js\?v=8"/);
+  assert.ok(Number(html.match(/href="ops\.css\?v=(\d+)"/)?.[1]) >= 6, 'ops.css 판 번호');
+  assert.ok(Number(html.match(/src="ops\.js\?v=(\d+)"/)?.[1]) >= 8, 'ops.js 판 번호');
   assert.ok(privacy.includes('<th scope="row">베타테스터를 신청할 때</th><td>스푼 닉네임, (뽑힌 뒤) 주소 이름·앨범 이름, 하고 싶은 말(선택),'));
   assert.ok(!privacy.includes('원하는 주소 이름·앨범 이름'));
 });
