@@ -36,6 +36,8 @@
 //  receipt {kind 'personal'(개인 소득공제) | 'business'(사업자 지출증빙), number} → bj_orders receipt_kind·receipt_no(숫자만). 운영자가 입금을 확인한 뒤 손택스로 발급.
 //  번호는 운영자 목록(opsOut)에만 — 회원 답(orderOut)·운영자 알림(디스코드·푸시)·console 기록에는 넣지 않는다. 알림에는 "🧾 현금영수증: 소득공제/지출증빙" 한 줄만.
 //  표: 마이그레이션 bakje_cash_receipt(bj_orders receipt_kind·receipt_no) — 이 함수보다 먼저 적용한다.
+// 2026-11-28 먼치킨 엠베서더(표 bj_ambassadors — 마이그레이션 bakje_ambassadors 를 이 함수보다 먼저): munchkin-pass·info 는 엠베서더면 운영자처럼 이용권 있음 ·
+//  amb-album(엠베서더가 돈 없이 앨범 하나 만들기) · 운영자 ops-members(회원 탭 목록)·ops-amb(주기·풀기). 자세한 것은 isAmb 위 주석.
 // 주의: MCP 로 올릴 때 백슬래시-u 글자 표기가 풀려 버리므로 이 파일에는 그런 표기를 쓰지 않는다.
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
@@ -186,6 +188,34 @@ const PAID_FROM = Date.parse('2027-01-01T00:00:00+09:00');
 const ORDER_OPENED = Date.parse('2026-11-23T00:00:00+09:00');
 // 운영자 계정의 먼치킨 이용권 끝나는 때(munchkin-pass) — 새 숫자 대신 bakje 가 받는 가장 먼 날(종료 날짜 2100-12-31)과 같은 날
 const ADMIN_UNTIL = Date.parse('2100-12-31T23:59:59+09:00');
+// 먼치킨 엠베서더(2026-11-28, 사용자 "디제이 몇 명을 뽑아 엠베서더 — 먼치킨도 추억앨범도 전부 무료"): 표 bj_ambassadors 에 줄이 있는 회원.
+//  엠베서더인 동안: munchkin-pass 는 운영자처럼 늘 있음(끝나는 때 ADMIN_UNTIL · kind bundle — 송출도 같은 답을 씀) · info 의 이용권(ents)도 그날까지로 보인다(+ ambassador)
+//  · 가진 추억앨범은 결제 끝나는 날이 지나도 쓸 수 있다(bakje·bakje-pick 의 albumRow 가 본다) · 앨범이 없으면 amb-album 으로 돈 없이 하나 만든다.
+//  이용권 줄(bj_entitlements)·앨범 결제 끝나는 날(paid_until)은 건드리지 않는다 — 운영자가 풀면(줄을 지우면) 그 자리에서 보통 회원과 같아진다.
+const FREE_END = PAID_FROM - 1;   // 엠베서더가 만든 앨범의 결제 끝나는 날 = 무료 기간 끝(12/31 23:59:59 — 베타와 같음). 엠베서더인 동안은 지나도 쓴다
+const isAmb = async (member: string) => Boolean(await q(db.from('bj_ambassadors').select('member').eq('member', member).maybeSingle()));
+// 운영자 앱 "회원" 탭 한 줄(ops-members · ops-amb). 비밀번호·카카오 번호·본인인증 값은 내보내지 않는다(가입 방법은 칸이 비었는지만 본다).
+const MEMBER_COLS = 'id,login_id,kakao,nickname,role,is_admin,state,created,seen';
+function memberOut(m: any, devs: any[], owns: any[], ents: any[], ambs: any[]) {
+  const mine = (list: any[]) => list.filter((x) => x.member === m.id);
+  const e: Record<string, number> = Object.fromEntries(mine(ents).map((x) => [x.product, Number(x.until)]));
+  const progs = new Set(mine(devs).map((d) => d.program));
+  const a = ambs.find((x) => x.member === m.id);
+  return { id: m.id, nick: m.nickname || '', how: m.kakao && m.login_id ? 'both' : m.kakao ? 'kakao' : m.login_id ? 'id' : '', role: m.role === 'dj' ? 'dj' : 'listener',
+    admin: m.is_admin === true, state: m.state || 'active', created: Number(m.created) || 0, seen: Number(m.seen) || 0, bot: progs.has('bot'), studio: progs.has('studio'),
+    albums: mine(owns).length, ents: { munchkin: e.munchkin || null, album: e.album || null }, amb: a ? { since: Number(a.since) || 0, note: a.note || '' } : null };
+}
+// 그 회원 한 사람 몫만 읽기(ops-amb 의 답)
+async function memberRow(id: string) {
+  const m: any = await q(db.from('bj_members').select(MEMBER_COLS).eq('id', id).maybeSingle());
+  if (!m) return null;
+  const [devs, owns, ents, ambs]: any = await Promise.all([
+    q(db.from('bj_member_devices').select('member,program').eq('member', id)),
+    q(db.from('bj_album_owners').select('member').eq('member', id)),
+    q(db.from('bj_entitlements').select('member,product,until').eq('member', id)),
+    q(db.from('bj_ambassadors').select('member,since,note').eq('member', id))]);
+  return memberOut(m, devs, owns, ents, ambs);
+}
 // 먼치킨 이용 기간이 생기는 신청(먼치킨만·먼치킨 + 추억앨범·먼치킨 추가)
 const MUNCHKIN_PLANS = ['munchkin', 'bundle', 'add-munchkin'];
 const ALBUM_BETA = '추억앨범은 지금 베타 테스트 중이라 아직 신청할 수 없어요. 추후 공개할게요.';
@@ -341,7 +371,8 @@ async function pushTo(member: string | null, msg: Record<string, unknown>) {
 // 앨범(bj_albums) → 주소(bj_hosts) → 사이트가 읽는 주소 파일(저장소 h/<주소>.json — bakje writeHost 와 같은 모양) → 주인(신청한 계정, bj_album_owners)
 //  → 그 계정을 DJ 로 → 신청에 새 앨범 번호 → 그 계정의 먼치킨(봇 프로그램 중 사용 승인된 가장 최근 기기)을 최초 박제판 저절로 올리기에 잇는다(bj_bots).
 // 중간에 실패하면 만든 것을 지운다(앨범을 지우면 주소·주인·봇 줄은 함께 지워진다).
-async function makeAlbum(o: any, now: number) {
+// extra(2026-11-28 엠베서더 amb-album): note = 앨범 메모 · paidUntil = 결제 끝나는 날 · 신청(o.id)이 없으면 신청 줄은 고치지 않는다
+async function makeAlbum(o: any, now: number, extra: { note?: string; paidUntil?: number } = {}) {
   if (!o.member) throw fail(409, '신청한 회원이 탈퇴했어요. 이 신청은 거절해 주세요.');
   const host = String(o.want_host || '');
   if (await q(db.from('bj_hosts').select('host').eq('host', host).maybeSingle())) throw fail(409, HOST_TAKEN_OPS);
@@ -349,7 +380,7 @@ async function makeAlbum(o: any, now: number) {
   let id = '';
   for (let i = 0; i < 5 && !id; i++) {
     const cand = 'a' + rid(9);   // ALBUM_RE ^[a-z][a-z0-9-]{1,30}$ 에 맞는 번호
-    const { error } = await db.from('bj_albums').insert({ id: cand, name, note: '먼치킨.com 신청 ' + o.id, created: now });
+    const { error } = await db.from('bj_albums').insert({ id: cand, name, note: extra.note || '먼치킨.com 신청 ' + o.id, created: now, ...(extra.paidUntil ? { paid_until: extra.paidUntil } : {}) });
     if (!error) id = cand;
     else if (error.code !== '23505') { console.error(error); throw fail(503, BROKEN); }
   }
@@ -363,7 +394,7 @@ async function makeAlbum(o: any, now: number) {
     wrote = true;
     await q(db.from('bj_album_owners').upsert({ album: id, member: o.member, created: now }));
     await q(db.from('bj_members').update({ role: 'dj' }).eq('id', o.member));
-    await q(db.from('bj_orders').update({ album: id }).eq('id', o.id));
+    if (o.id) await q(db.from('bj_orders').update({ album: id }).eq('id', o.id));
     const devs: any[] = await q(db.from('bj_member_devices').select('device,seen').eq('member', o.member).eq('program', 'bot').order('seen', { ascending: false }).limit(20));
     if (devs.length) {
       const ok: any[] = await q(db.from('junlive_devices').select('id,nickname,tag').in('id', devs.map((d) => d.device)).eq('state', 'approved'));
@@ -689,11 +720,14 @@ async function handle(req: Request, now: number) {
     // 내 이용권 화면: 계좌·가격·지금 이용 기간·내 신청 · 가진 앨범(albums, v4)
     case 'info': {
       await recheckCards(me.id, now);   // 결제창을 닫아 버린 카드 신청 마무리(v6)
-      const [c, cc, full, orders]: any = await Promise.all([cfg(), cardCfg(), entsFull(me.id),
-        q(db.from('bj_orders').select('*').eq('member', me.id).order('created', { ascending: false }).limit(20))]);
-      const { ents, albums } = full, owns = albums.map((a: any) => a.id);
-      const addons = await addonsOf(c, me.id, ents, now);
+      const [c, cc, full, orders, amb]: any = await Promise.all([cfg(), cardCfg(), entsFull(me.id),
+        q(db.from('bj_orders').select('*').eq('member', me.id).order('created', { ascending: false }).limit(20)), isAmb(me.id)]);
+      const { albums } = full, owns = albums.map((a: any) => a.id);
+      // 엠베서더(2026-11-28): 추가 결제 값은 내지 않으니 주지 않고, 이용권은 운영자처럼 그날까지로 보인다(실제 이용권 줄은 그대로 — 풀면 원래대로)
+      const addons = amb ? {} : await addonsOf(c, me.id, full.ents, now);
+      const ents = amb ? { ...full.ents, munchkin: Math.max(Number(full.ents.munchkin) || 0, ADMIN_UNTIL), album: Math.max(Number(full.ents.album) || 0, ADMIN_UNTIL) } : full.ents;
       return { ok: true, open: open(c), bank: open(c) ? { bank: c.bank, number: c.number, holder: c.holder } : null, prices: c.prices, year: { munchkin: yearOf(c, 'munchkin'), album: yearOf(c, 'album'), bundle: yearOf(c, 'bundle') }, months: MONTHS, addons, ents, owns, albums, orders: orders.map(orderOut), admin: me.is_admin === true,
+        ambassador: amb === true,   // 먼치킨 엠베서더(2026-11-28) — 화면은 "엠베서더 · 무료"로 보이고, 앨범이 없으면 amb-album 칸을 연다
         // albumOpen: 새 추억앨범 신청을 받는지(아니면 베타 — 화면은 안내·미리 보기) · munchkinFrom: 먼치킨 이용권을 받기 시작하는 때(그 전엔 무료)
         // munchkinPaidFrom: 이용권이 있어야 먼치킨을 쓰는 때(그 전엔 무료 — v5)
         // card(v6): {show, canPay, mode, storeId, channelKey} — 카드 단추를 보일지 · 실제로 결제할 수 있는지 · now: 서버 시각(위 띠를 1/1 0시에 저절로 내리게)
@@ -703,14 +737,16 @@ async function handle(req: Request, now: number) {
     //  active = 지금 이용권 기간 안 · until = 끝나는 때(ms, 없으면 null) · kind = 마지막으로 확인된 먼치킨 신청이 먼치킨만이면 'munchkin', 추억앨범과 함께면 'bundle'
     //  waiting = 확인을 기다리는 먼치킨 신청 수 · sent = 그중 "입금했어요"를 누른 것이 있는가 · free = 아직 무료 기간 · now = 서버 시각(PC 시계가 틀렸을 때 앱이 맞춘다)
     case 'munchkin-pass': {
-      const [ents, paid, waiting]: any = await Promise.all([entsOf(me.id),
+      const [ents, paid, waiting, amb]: any = await Promise.all([entsOf(me.id),
         q(db.from('bj_orders').select('plan').eq('member', me.id).eq('state', 'paid').in('plan', MUNCHKIN_PLANS).order('done', { ascending: false }).limit(1)),
-        q(db.from('bj_orders').select('sent').eq('member', me.id).eq('state', 'pending').eq('pay', 'bank').in('plan', MUNCHKIN_PLANS).limit(5))]);   // 확인을 기다리는 것은 계좌이체 신청만(v6)
+        q(db.from('bj_orders').select('sent').eq('member', me.id).eq('state', 'pending').eq('pay', 'bank').in('plan', MUNCHKIN_PLANS).limit(5)),   // 확인을 기다리는 것은 계좌이체 신청만(v6)
+        me.is_admin === true ? false : isAmb(me.id)]);
       // 운영자 계정(bj_members.is_admin — needMember 가 이미 읽음)은 늘 이용권이 있다고 답한다(2026-11-23 Ruling: PC 쪽 운영자 판정을 서버로 옮김).
       //  끝나는 때는 bakje 가 받는 가장 먼 날(2100-12-31)과 같은 날 — 이용권 줄(bj_entitlements)은 만들지 않는다
-      const until = me.is_admin === true ? ADMIN_UNTIL : Number(ents.munchkin) || 0, plan = paid?.[0]?.plan;
-      return { ok: true, active: until > now, until: until || null, kind: until ? (plan && plan !== 'munchkin' ? 'bundle' : 'munchkin') : null,
-        from: PAID_FROM, now, free: now < PAID_FROM, waiting: waiting.length, sent: waiting.some((o: any) => Boolean(o.sent)) };
+      //  먼치킨 엠베서더(2026-11-28)도 같다(kind bundle — 먼치킨 + 추억앨범 · ambassador true). 풀리면 다음 물음부터 이용권 줄대로.
+      const until = me.is_admin === true || amb ? ADMIN_UNTIL : Number(ents.munchkin) || 0, plan = paid?.[0]?.plan;
+      return { ok: true, active: until > now, until: until || null, kind: until ? (amb || (plan && plan !== 'munchkin') ? 'bundle' : 'munchkin') : null,
+        from: PAID_FROM, now, free: now < PAID_FROM, waiting: waiting.length, sent: waiting.some((o: any) => Boolean(o.sent)), ...(amb ? { ambassador: true } : {}) };
     }
     // 새 추억앨범 주소 이름 확인(쓰는 대로 바로) → {label, host, free, reason?}
     case 'album-name': {
@@ -719,6 +755,20 @@ async function handle(req: Request, now: number) {
       if (n.reason) return { ok: true, label: n.label, host: n.host, free: false, reason: n.reason };
       const taken = await hostTaken(n.host, me.id);
       return { ok: true, label: n.label, host: n.host, free: !taken, ...(taken ? { reason: taken } : {}) };
+    }
+    // 엠베서더 앨범 만들기(2026-11-28): 엠베서더이고 가진 추억앨범이 없으면 주소 이름(album-name 과 같은 검사)·앨범 이름(선택)으로 돈 없이 바로 만든다 → {album}
+    //  결제 끝나는 날 = 무료 기간 끝(FREE_END) — 엠베서더인 동안은 지나도 쓰고, 풀리면 그날대로(1/1 뒤면 보기만 — 연장하면 다시 씀).
+    //  두 번 눌러 앨범이 둘 생기지 않게: 검사를 다 통과한 뒤 10초에 한 번(fp_hit) + 만들기 직전 가진 앨범 다시 확인. 기다리는 새 앨범 신청이 있으면 409(newAlbumOf).
+    case 'amb-album': {
+      if (!await isAmb(me.id)) throw fail(403, '먼치킨 엠베서더만 할 수 있어요.');
+      if ((await ownsOf(me.id)).length) throw fail(400, '이미 추억앨범이 있어요. 내 정보에서 볼 수 있어요.');
+      const want = await newAlbumOf(b, me);
+      if (!await hit('bjamb:' + me.id, 10, 1)) throw fail(429, '앨범을 만들고 있어요. 잠시 뒤 내 정보에서 확인해 주세요.');
+      if ((await ownsOf(me.id)).length) throw fail(400, '이미 추억앨범이 있어요. 내 정보에서 볼 수 있어요.');
+      let id = '';
+      try { id = await makeAlbum({ id: null, member: me.id, want_host: want.host, want_name: want.name }, now, { note: '먼치킨 엠베서더', paidUntil: FREE_END }); }
+      catch (e) { if (e instanceof Fail && e.status === 409) throw fail(409, '이미 쓰이고 있는 주소예요. 다른 이름을 골라 주세요.'); throw e; }
+      return { ok: true, album: (await albumsOf([id]))[0] || null };
     }
     case 'order': {
       const c = await cfg();
@@ -786,6 +836,25 @@ async function handle(req: Request, now: number) {
         cfg()]);
       return { ok: true, waiting: waiting.map(opsOut), recent: [...odd, ...recent].map(opsOut), billing: c };   // 운영자 목록만 현금영수증 번호 전체(v7)
     }
+    // 회원 목록(2026-11-28 운영자 앱 "회원" 탭): 닉네임·가입 방법·가입한 때·최근·쓰는 프로그램·앨범 수·이용권·엠베서더(memberOut — 비밀 값은 안 나감)
+    case 'ops-members': {
+      const [ms, devs, owns, ents, ambs]: any = await Promise.all([
+        q(db.from('bj_members').select(MEMBER_COLS).order('created', { ascending: false }).limit(2000)),
+        q(db.from('bj_member_devices').select('member,program').limit(10000)),
+        q(db.from('bj_album_owners').select('member').limit(10000)),
+        q(db.from('bj_entitlements').select('member,product,until').limit(10000)),
+        q(db.from('bj_ambassadors').select('member,since,note').limit(2000))]);
+      return { ok: true, members: ms.map((m: any) => memberOut(m, devs, owns, ents, ambs)) };
+    }
+    // 엠베서더 주기·풀기(2026-11-28): {member, on: true|false, note?} — on 이면 줄을 넣고(이미 있으면 처음 준 때 그대로), false 면 지운다 → {member: 회원 탭 한 줄}
+    case 'ops-amb': {
+      const id = typeof b.member === 'string' ? b.member : '';
+      if (typeof b.on !== 'boolean') throw fail(400, '주기·풀기를 골라 주세요.');
+      if (!id || !await q(db.from('bj_members').select('id').eq('id', id).maybeSingle())) throw fail(404, '회원을 찾을 수 없어요.');
+      if (b.on) await q(db.from('bj_ambassadors').upsert({ member: id, since: now, note: line(b.note, 100), by_member: me.id }, { onConflict: 'member', ignoreDuplicates: true }));
+      else await q(db.from('bj_ambassadors').delete().eq('member', id));
+      return { ok: true, member: await memberRow(id) };
+    }
     // 운영자 앱 알림 받는 기기
     case 'push-key': return { ok: true, key: (await vapid()).pub };
     case 'push-add': {
@@ -848,7 +917,7 @@ function makeHandler(deps: { db: any; env: (k: string) => string | undefined; fe
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
     const route = new URL(req.url).pathname.replace(/^.*?\/bakje-billing\/?/, '').replace(/\/+$/, '');
     try {
-      if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: 7, year: true, addon: true, push: true, newAlbum: true, albumGate: true, munchkinPass: true, card: true, receipt: true });
+      if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: 7, year: true, addon: true, push: true, newAlbum: true, albumGate: true, munchkinPass: true, card: true, receipt: true, amb: true });
       if (req.method === 'POST' && (route === '' || route === 'api')) return json(200, await handle(req, clock()));
       return json(404, { ok: false, error: '찾을 수 없어요.' });
     } catch (e) {

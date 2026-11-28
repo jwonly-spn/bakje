@@ -17,9 +17,9 @@ assert.ok(part.length > 1000, '시험할 곳을 찾지 못했어요');
 const { makeHandler, checkPick } = new Function(stripTypeScriptTypes(part) + '\nreturn { makeHandler, checkPick };')();
 
 // ---- 가짜 Supabase(필요한 만큼만) ----
-function fakeDb({ devices = {}, bots = {}, albums = {} } = {}) {
+function fakeDb({ devices = {}, bots = {}, albums = {}, owners = {}, ambs = {} } = {}) {
   const nonces = new Set(), files = new Map(), hits = new Map(), log = [];
-  const tables = { junlive_devices: devices, bj_bots: bots, bj_albums: albums };
+  const tables = { junlive_devices: devices, bj_bots: bots, bj_albums: albums, bj_album_owners: owners, bj_ambassadors: ambs };
   const db = {
     files, hits, log,
     from(table) {
@@ -30,8 +30,14 @@ function fakeDb({ devices = {}, bots = {}, albums = {} } = {}) {
       const b = {
         select() { return b; },
         eq(col, val) { where.push([col, val]); return b; },
-        maybeSingle: async () => ({ data: Object.values(tables[table] || {}).find((r) => where.every(([c, v]) => r[c] === v)) || null, error: null })
+        in(col, vals) { where.push([col, vals, 'in']); return b; },
+        limit() { return b; },
+        maybeSingle: async () => ({ data: rows().find(keep) || null, error: null }),
+        // 엠베서더(2026-11-28): 주인·엠베서더 표는 목록으로 읽는다(await)
+        then(res, rej) { return Promise.resolve({ data: structuredClone(rows().filter(keep)), error: null }).then(res, rej); }
       };
+      const rows = () => Object.values(tables[table] || {});
+      const keep = (r) => where.every(([c, v, op]) => (op === 'in' ? v.includes(r[c]) : r[c] === v));
       return b;
     },
     rpc: async (name, a) => {
@@ -75,12 +81,12 @@ function board(over = {}) {
     ...over
   };
 }
-function setup({ approved = true, linked = true, album = { id: 'dodam', name: '도담 추억앨범', state: 'active', paid_until: null } } = {}) {
+function setup({ approved = true, linked = true, album = { id: 'dodam', name: '도담 추억앨범', state: 'active', paid_until: null }, owners = {}, ambs = {} } = {}) {
   const dev = makeDevice();
   const db = fakeDb({
     devices: { [dev.id]: { id: dev.id, state: approved ? 'approved' : 'revoked' } },
     bots: linked ? { [dev.id]: { id: dev.id, album: album.id } } : {},
-    albums: { [album.id]: album }
+    albums: { [album.id]: album }, owners, ambs
   });
   return { dev, db, handler: makeHandler(db) };
 }
@@ -169,6 +175,21 @@ test('보기만 앨범(readonly·결제 끝남)은 403, 있던 파일도 지운�
     assert.ok(!db.files.has('bakje/snap/dodam/pick.json'));
     assert.equal((await post(handler, sign(dev, 'pick-live', { v: 1, state: 'off' }))).status, 200);
   }
+});
+
+test('먼치킨 엠베서더(2026-11-28): 주인 중 엠베서더가 있으면 결제 끝난 앨범도 올린다 · 엠베서더가 아닌 주인만 있으면 그대로 403', async () => {
+  const album = { id: 'dodam', name: '도담 추억앨범', state: 'active', paid_until: Date.now() - 1000 };
+  const owners = { o1: { album: 'dodam', member: 'mAmb' } };
+  const yes = setup({ album: { ...album }, owners, ambs: { a1: { member: 'mAmb', since: 1 } } });
+  assert.equal((await post(yes.handler, sign(yes.dev, 'pick-live', board()))).status, 200);
+  assert.ok(yes.db.files.has('bakje/snap/dodam/pick.json'));
+  const no = setup({ album: { ...album }, owners, ambs: { a1: { member: 'mOther', since: 1 } } });
+  const r = await answer(await post(no.handler, sign(no.dev, 'pick-live', board())));
+  assert.equal(r.status, 403);
+  assert.match(r.body.error, /보기만/);
+  // readonly(운영자가 막음)는 엠베서더여도 그대로 403
+  const ro = setup({ album: { ...album, state: 'readonly' }, owners, ambs: { a1: { member: 'mAmb', since: 1 } } });
+  assert.equal((await post(ro.handler, sign(ro.dev, 'pick-live', board()))).status, 403);
 });
 
 test('기기마다 1분 40번', async () => {

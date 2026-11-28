@@ -35,7 +35,7 @@ const LIVE = { ...CARD, mode: 'live' };
 
 // ---- 가짜 Supabase(이 함수가 쓰는 만큼) ----
 const KEYS = { bj_orders: ['id'], bj_entitlements: ['member', 'product'], bj_settings: ['key'], bj_albums: ['id'], bj_hosts: ['host'], bj_album_owners: ['album', 'member'],
-  bj_push_subs: ['id'], bj_bots: ['id'], bj_members: ['id'], bj_sessions: ['token'], bj_member_devices: ['device'], junlive_devices: ['id'] };
+  bj_push_subs: ['id'], bj_bots: ['id'], bj_members: ['id'], bj_sessions: ['token'], bj_member_devices: ['device'], junlive_devices: ['id'], bj_ambassadors: ['member'] };
 const UNIQUE = { bj_orders: [['pay_id']], bj_push_subs: [['endpoint']] };
 // 마이그레이션 bakje_card_pay · bakje_cash_receipt 뒤의 bj_orders 기본값·제약
 const DEFAULTS = { bj_orders: { state: 'pending', sent: null, done: null, note: '', until_to: null, want_host: null, want_label: null, want_name: null, pay: 'bank', pay_id: null, pay_at: null, pay_channel: null, test_only: false, receipt_kind: null, receipt_no: null } };
@@ -173,14 +173,15 @@ const MEMBERS = [
 ];
 const URL_FN = 'https://example.supabase.co/functions/v1/bakje-billing';
 
-function setup({ now = BEFORE_DEC, card = CARD, billing = BILLING, env = {}, owners = [], albums = [], ents = [], hosts = [] } = {}) {
+function setup({ now = BEFORE_DEC, card = CARD, billing = BILLING, env = {}, owners = [], albums = [], ents = [], hosts = [], ambs = [] } = {}) {
   let clock = now;
   const tokens = {}, sessions = [];
   for (const m of MEMBERS) { const t = crypto.randomBytes(32).toString('base64url'); tokens[m.id] = t; sessions.push({ token: sha(t), member: m.id, expires: now + 365 * DAY }); }
   const db = fakeDb({
     bj_members: MEMBERS, bj_sessions: sessions, bj_orders: [], bj_entitlements: ents, bj_push_subs: [],
     bj_settings: [{ key: 'billing', value: billing, updated: 0 }, ...(card ? [{ key: 'card', value: card, updated: 0 }] : [])],
-    bj_albums: albums, bj_hosts: [...albums.map((a) => ({ host: `${a.id}.xn--s22bu18a0ub.com`, album: a.id, created: 1 })), ...hosts.map((host) => ({ host, album: albums[0]?.id || 'aany', created: 1 }))], bj_album_owners: owners
+    bj_albums: albums, bj_hosts: [...albums.map((a) => ({ host: `${a.id}.xn--s22bu18a0ub.com`, album: a.id, created: 1 })), ...hosts.map((host) => ({ host, album: albums[0]?.id || 'aany', created: 1 }))], bj_album_owners: owners,
+    bj_ambassadors: ambs
   });
   const net = fakeNet();
   const E = { PORTONE_API_SECRET: SECRET, PORTONE_STORE_ID: STORE, BILLING_WEBHOOK: HOOK, ...env };
@@ -1176,4 +1177,154 @@ test('현금영수증: 카드 신청은 전처럼 sent 가 404 — receipt 를 �
   const mine = await bankOrder(s, 'mEtc');
   assert.equal((await s.call('mDj', 'sent', { id: mine.id, receipt: { kind: 'personal', number: '010-1234-5678' } })).status, 404);
   assert.equal(row(s, mine.id).receipt_no, null);
+});
+
+// ================= 먼치킨 엠베서더(2026-11-28) =================
+// 사용자 "디제이 몇 명을 뽑아 엠베서더 권한 — 먼치킨도 추억앨범도 전부 무료". 표 bj_ambassadors 에 줄이 있으면 엠베서더.
+const FAR = Date.parse('2100-12-31T23:59:59+09:00');
+const FREE_END = PAID_FROM - 1;
+const AMB = { member: 'mDj', since: 1, note: '', by_member: 'mOp' };
+
+test('health: amb true', async () => {
+  const s = setup();
+  const j = await (await s.handler(new Request(URL_FN + '/health'))).json();
+  assert.equal(j.amb, true);
+  assert.equal(j.v, 7);
+});
+
+test('엠베서더: munchkin-pass 가 운영자처럼 늘 있음(2100-12-31 · bundle · ambassador) — 이용권 줄은 만들지 않음 · 풀면 다음 물음부터 원래대로', async () => {
+  for (const now of [BEFORE_DEC, AFTER_JAN]) {
+    const s = setup({ now, ambs: [AMB] });
+    const p = ok(await s.call('mDj', 'munchkin-pass'));
+    assert.deepEqual({ active: p.active, until: p.until, kind: p.kind, ambassador: p.ambassador, free: p.free }, { active: true, until: FAR, kind: 'bundle', ambassador: true, free: now < PAID_FROM });
+    assert.equal(s.T.bj_entitlements.length, 0);
+    // 다른 회원은 그대로 · 운영자 답에는 ambassador 가 없음
+    const etc = ok(await s.call('mEtc', 'munchkin-pass'));
+    assert.deepEqual({ active: etc.active, until: etc.until, kind: etc.kind }, { active: false, until: null, kind: null });
+    assert.equal('ambassador' in etc, false);
+    assert.equal('ambassador' in ok(await s.call('mOp', 'munchkin-pass')), false);
+    // 운영자가 풀면
+    ok(await s.call('mOp', 'ops-amb', { member: 'mDj', on: false }));
+    const back = ok(await s.call('mDj', 'munchkin-pass'));
+    assert.deepEqual({ active: back.active, until: back.until, kind: back.kind }, { active: false, until: null, kind: null });
+    assert.equal('ambassador' in back, false);
+  }
+  // 산 이용권이 있던 엠베서더를 풀면 그 이용권 그대로
+  const s = setup({ now: AFTER_JAN, ambs: [AMB], ents: [{ member: 'mDj', product: 'munchkin', until: AFTER_JAN + 5 * DAY }] });
+  assert.equal(ok(await s.call('mDj', 'munchkin-pass')).until, FAR);
+  ok(await s.call('mOp', 'ops-amb', { member: 'mDj', on: false }));
+  const p = ok(await s.call('mDj', 'munchkin-pass'));
+  assert.deepEqual({ active: p.active, until: p.until }, { active: true, until: AFTER_JAN + 5 * DAY });
+});
+
+test('엠베서더: info 는 ambassador true · 이용권 둘 다 2100-12-31 로 보임 · 추가 결제 값 없음 · 실제 이용권 줄은 그대로', async () => {
+  const albums = [{ id: 'aamb', name: '먼치 앨범', state: 'active', paid_until: FREE_END, created: 1 }];
+  const ents = [{ member: 'mDj', product: 'munchkin', until: AFTER_JAN + 40 * DAY }];
+  const s = setup({ now: AFTER_JAN, ambs: [AMB], albums, owners: [{ album: 'aamb', member: 'mDj', created: 1 }], ents });
+  const i = ok(await s.call('mDj', 'info'));
+  assert.equal(i.ambassador, true);
+  assert.equal(i.ents.munchkin, FAR);
+  assert.equal(i.ents.album, FAR);
+  assert.deepEqual(i.addons, {});
+  assert.equal(i.albums[0].paidUntil, FREE_END, '앨범의 결제 끝나는 날은 그대로 보낸다(화면이 엠베서더로 보임)');
+  assert.equal(entOf(s, 'mDj', 'munchkin'), AFTER_JAN + 40 * DAY);
+  assert.equal(entOf(s, 'mDj', 'album'), undefined);
+  // 엠베서더 아닌 회원
+  const etc = ok(await s.call('mEtc', 'info'));
+  assert.equal(etc.ambassador, false);
+  assert.deepEqual(etc.ents, {});
+});
+
+test('엠베서더 앨범(amb-album): 엠베서더만 · 돈·신청 없이 앨범·주소·주인 · 결제 끝나는 날 = 12/31 무료 끝 · 하나만', async () => {
+  const s = setup({ now: BEFORE_DEC, ambs: [AMB] });
+  // 엠베서더가 아니면 403(아무것도 안 생김)
+  const no = await s.call('mEtc', 'amb-album', { label: '달무리', name: '달무리 앨범' });
+  assert.equal(no.status, 403);
+  assert.equal(s.T.bj_albums.length, 0);
+  // 주소 이름 검사는 album-name 과 같다
+  assert.equal((await s.call('mDj', 'amb-album', { label: '' })).status, 400);
+  assert.equal((await s.call('mDj', 'amb-album', { label: 'Bad Name!' })).status, 400);
+  assert.equal((await s.call('mDj', 'amb-album', { label: 'admin' })).status, 400);
+  assert.equal(s.T.bj_albums.length, 0);
+  const r = ok(await s.call('mDj', 'amb-album', { label: '먼치', name: '먼치의 추억앨범' }));
+  assert.equal(s.T.bj_albums.length, 1);
+  const a = s.T.bj_albums[0];
+  assert.equal(a.name, '먼치의 추억앨범');
+  assert.equal(a.paid_until, FREE_END);
+  assert.equal(a.note, '먼치킨 엠베서더');
+  assert.equal(r.album.id, a.id);
+  assert.equal(r.album.paidUntil, FREE_END);
+  assert.ok(r.album.site.startsWith('https://xn--'), r.album.site);
+  assert.deepEqual(s.T.bj_album_owners.map((o) => [o.album, o.member]), [[a.id, 'mDj']]);
+  assert.equal(s.T.bj_hosts.filter((h) => h.album === a.id).length, 1);
+  assert.ok([...s.db.files.keys()].some((k) => k.startsWith('bakje/h/') && k.endsWith('.json')));
+  assert.equal(s.T.bj_orders.length, 0, '신청 줄은 생기지 않아요');
+  assert.equal(s.T.bj_entitlements.length, 0, '이용권 줄도 생기지 않아요');
+  // 두 번째는 400(이미 앨범) — 10초 안에 다시 눌러도 앨범은 하나
+  const again = await s.call('mDj', 'amb-album', { label: '먼치둘' });
+  assert.equal(again.status, 400);
+  assert.equal(s.T.bj_albums.length, 1);
+});
+
+test('엠베서더 앨범: 이름을 비우면 "<닉네임> 추억앨범" · 이미 쓰는 주소 409 · 기다리는 새 앨범 신청이 있으면 409', async () => {
+  const s = setup({ now: BEFORE_DEC, ambs: [AMB, { ...AMB, member: 'mEtc' }], albums: [{ id: 'aold', name: '있던 앨범', state: 'active', paid_until: null, created: 1 }] });
+  // 이미 있는 주소(먼치 → 퓨니코드)
+  const host = new URL('https://먼치.먼치킨.com').hostname;
+  s.T.bj_hosts.push({ host, album: 'aold', created: 1 });
+  const taken = await s.call('mDj', 'amb-album', { label: '먼치' });
+  assert.equal(taken.status, 409);
+  assert.equal(taken.body.error, '이미 쓰이고 있는 주소예요. 다른 이름을 골라 주세요.');
+  const r = ok(await s.call('mDj', 'amb-album', { label: 'bamtol' }));
+  assert.equal(r.album.name, '밤톨 추억앨범');
+  // 다른 엠베서더(mEtc)가 확인을 기다리는 새 앨범 계좌이체 신청을 가지고 있으면 409(그 신청을 마치거나 취소한 뒤)
+  s.T.bj_orders.push({ id: 'owait1234567', member: 'mEtc', nick: '달무리', plan: 'album', months: 1, amount: 3000, payer: '달무리1234', album: null, state: 'pending', created: 1, sent: null, done: null, note: '',
+    until_to: null, want_host: new URL('https://달무리.먼치킨.com').hostname, want_label: '달무리', want_name: '달무리 앨범', pay: 'bank', pay_id: null, pay_at: null, pay_channel: null, test_only: false, receipt_kind: null, receipt_no: null });
+  const w = await s.call('mEtc', 'amb-album', { label: 'dalmuri' });
+  assert.equal(w.status, 409);
+  assert.equal(s.T.bj_album_owners.filter((o) => o.member === 'mEtc').length, 0);
+});
+
+test('운영자 회원 목록(ops-members): 운영자만 · 비밀 값 없음 · 가입 방법·앨범 수·이용권·엠베서더', async () => {
+  const s = setup({ now: AFTER_DEC, ambs: [{ ...AMB, since: 123, note: '첫 엠베서더' }], albums: [{ id: 'aone', name: '하나', state: 'active', paid_until: null, created: 1 }],
+    owners: [{ album: 'aone', member: 'mDj', created: 1 }], ents: [{ member: 'mEtc', product: 'munchkin', until: AFTER_DEC + DAY }] });
+  s.T.bj_members.find((m) => m.id === 'mEtc').kakao = 'kakao-secret-id-123';
+  s.T.bj_members.find((m) => m.id === 'mEtc').pw = 'hash-secret';
+  s.T.bj_member_devices = [{ device: 'd1', member: 'mDj', program: 'bot', created: 1, seen: 1 }, { device: 'd2', member: 'mDj', program: 'studio', created: 1, seen: 1 }];
+  assert.equal((await s.call('mDj', 'ops-members')).status, 403);
+  const j = ok(await s.call('mOp', 'ops-members'));
+  const txt = JSON.stringify(j);
+  for (const bad of ['kakao-secret-id-123', 'hash-secret', 'bamtol', 'inicistest', '"pw"', '"kakao"', 'login_id', 'person']) assert.ok(!txt.includes(bad), bad);
+  const by = Object.fromEntries(j.members.map((m) => [m.id, m]));
+  assert.equal(j.members.length, 4);
+  assert.deepEqual(by.mDj.amb, { since: 123, note: '첫 엠베서더' });
+  assert.equal(by.mDj.albums, 1);
+  assert.equal(by.mDj.bot, true);
+  assert.equal(by.mDj.studio, true);
+  assert.equal(by.mDj.how, 'id');
+  assert.equal(by.mEtc.how, 'both');
+  assert.equal(by.mEtc.amb, null);
+  assert.equal(by.mEtc.ents.munchkin, AFTER_DEC + DAY);
+  assert.equal(by.mEtc.role, 'listener');
+  assert.equal(by.mOp.admin, true);
+});
+
+test('운영자 엠베서더 주기·풀기(ops-amb): 운영자만 · 다시 주면 처음 준 때 그대로 · 없는 회원 404 · on 은 참/거짓만', async () => {
+  const s = setup({ now: AFTER_DEC });
+  assert.equal((await s.call('mDj', 'ops-amb', { member: 'mDj', on: true })).status, 403);
+  assert.equal(s.T.bj_ambassadors.length, 0);
+  assert.equal((await s.call('mOp', 'ops-amb', { member: 'mNone', on: true })).status, 404);
+  assert.equal((await s.call('mOp', 'ops-amb', { member: 'mDj', on: 'yes' })).status, 400);
+  assert.equal((await s.call('mOp', 'ops-amb', { member: { a: 1 }, on: true })).status, 404);
+  const g = ok(await s.call('mOp', 'ops-amb', { member: 'mDj', on: true, note: '  첫\n엠베서더  ' }));
+  assert.deepEqual(g.member.amb, { since: AFTER_DEC, note: '첫 엠베서더' });
+  assert.equal(s.T.bj_ambassadors[0].by_member, 'mOp');
+  s.setNow(AFTER_DEC + DAY);
+  assert.equal(ok(await s.call('mOp', 'ops-amb', { member: 'mDj', on: true })).member.amb.since, AFTER_DEC);
+  assert.equal(s.T.bj_ambassadors.length, 1);
+  assert.equal(ok(await s.call('mDj', 'munchkin-pass')).ambassador, true);
+  const off = ok(await s.call('mOp', 'ops-amb', { member: 'mDj', on: false }));
+  assert.equal(off.member.amb, null);
+  assert.equal(s.T.bj_ambassadors.length, 0);
+  // 없는 엠베서더를 풀어도 오류 없음
+  ok(await s.call('mOp', 'ops-amb', { member: 'mDj', on: false }));
 });

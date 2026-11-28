@@ -87,7 +87,14 @@ function paidMembers(dbx: any, ids: unknown[]) {
   return list.length ? dbx.from('bj_orders').select('member').in('member', list).eq('state', 'paid') : null;
 }
 // ==== 시험이 따로 읽는 곳 끝 ====
-const paidSet = async (ids: unknown[]) => { const p = paidMembers(db, ids); return new Set(p ? ((await q(p)) as any[]).map((r) => r.member) : []); };
+// 먼치킨 엠베서더(2026-11-28 — 표 bj_ambassadors)도 dj: 돈 대신 운영자가 고른 DJ(먼치킨·추억앨범 무료)
+const paidSet = async (ids: unknown[]) => {
+  const p = paidMembers(db, ids);
+  if (!p) return new Set<string>();
+  const list = [...new Set(ids.filter((x) => typeof x === 'string' && x !== ''))] as string[];
+  const [paid, amb]: any = await Promise.all([q(p), q(db.from('bj_ambassadors').select('member').in('member', list))]);
+  return new Set([...paid, ...amb].map((r: any) => r.member));
+};
 async function addNote(row: Record<string, unknown>) {
   const { error } = await db.from('bj_notes').insert(row);
   if (error) console.error('note', error.message);   // 알림이 안 남아도 댓글·하트는 그대로
