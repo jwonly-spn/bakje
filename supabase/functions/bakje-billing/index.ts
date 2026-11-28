@@ -763,7 +763,7 @@ async function handle(req: Request, now: number) {
       if (!await isAmb(me.id)) throw fail(403, '먼치킨 엠베서더만 할 수 있어요.');
       if ((await ownsOf(me.id)).length) throw fail(400, '이미 추억앨범이 있어요. 내 정보에서 볼 수 있어요.');
       const want = await newAlbumOf(b, me);
-      if (!await hit('bjamb:' + me.id, 10, 1)) throw fail(429, '앨범을 만들고 있어요. 잠시 뒤 내 정보에서 확인해 주세요.');
+      if (!await hit('bjamb:' + me.id, 10, 1)) throw fail(429, '방금 앨범 만들기를 눌렀어요. 10초 뒤에 다시 해 주세요.');
       if ((await ownsOf(me.id)).length) throw fail(400, '이미 추억앨범이 있어요. 내 정보에서 볼 수 있어요.');
       let id = '';
       try { id = await makeAlbum({ id: null, member: me.id, want_host: want.host, want_name: want.name }, now, { note: '먼치킨 엠베서더', paidUntil: FREE_END }); }
