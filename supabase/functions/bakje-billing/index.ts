@@ -40,6 +40,8 @@
 //  amb-album(엠베서더가 돈 없이 앨범 하나 만들기) · 운영자 ops-members(회원 탭 목록)·ops-amb(주기·풀기). 자세한 것은 isAmb 위 주석.
 // v17(2026-11-28 밤, 운영자 메시지 — 표 bj_op_messages, 마이그레이션 bakje_op_messages 를 이 함수보다 먼저): 운영자 ops-msg-send(회원 한 명에게 글 1~500자)·ops-msgs(최근 7일)·ops-msg-del ·
 //  회원 op-msg-seen(봇의 [확인했어요] — 처음 한 번만 운영자 휴대폰에 푸시). 봇은 spoon-link report 답으로 메시지를 받는다. 답장은 없다. 자세한 것은 MSG_KEEP 위 주석.
+// v18(2026-11-28 밤, 전체 메시지 — 사용자 "운영자 페이지에서 전체 메세지도", 마이그레이션 bakje_op_messages_all 을 이 함수보다 먼저): ops-msg-send-all {body} →
+//  봇을 쓰는 회원마다 한 줄씩(같은 batch) · 묶음 메시지는 확인해도 운영자 푸시 없음 · ops-msgs 줄에 batch · ops-msg-del {batch} 로 묶음째 지우기. 봇·spoon-link 는 그대로.
 // 주의: MCP 로 올릴 때 백슬래시-u 글자 표기가 풀려 버리므로 이 파일에는 그런 표기를 쓰지 않는다.
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
@@ -245,6 +247,19 @@ async function memberRow(id: string) {
 //  봇에 보내는 것은 spoon-link(본 줄 저장소) report 의 답 — 그쪽이 delivered 를 채운다. 30일 지난 줄은 여기서 가끔(2%) 지운다.
 const MSG_KEEP = 7 * DAY, MSG_DROP = 30 * DAY, MSG_MAX = 500;
 const MSG_NONE = '메시지를 찾을 수 없어요.';
+// 전체 메시지(v18): 받는 사람마다 한 줄씩 넣고(fan-out) 같은 묶음 번호 batch('b' + 11자)를 적는다 — 봇·spoon-link 는 한 사람 메시지와 똑같이 받는다. batch null = 한 사람에게 보낸 것.
+const BATCH_RE = /^b[a-z2-9]{11}$/;
+// 받는 사람: 봇 기기 줄(bj_member_devices program 'bot')이 있는 회원 — 운영자(is_admin)·막힌 회원(state 가 active 아님)은 빼고, 한 사람에 한 번. 주소가 너무 길어지지 않게 100명씩 묻는다.
+async function allRecipients() {
+  const devs: any[] = await q(db.from('bj_member_devices').select('member').eq('program', 'bot').limit(10000));
+  const ids = [...new Set(devs.map((d) => d.member).filter((x) => typeof x === 'string' && x))] as string[];
+  const out: string[] = [];
+  for (let i = 0; i < ids.length; i += 100) {
+    const rows: any[] = await q(db.from('bj_members').select('id,state,is_admin').in('id', ids.slice(i, i + 100)));
+    for (const m of rows) if (m.is_admin !== true && m.state === 'active') out.push(m.id);
+  }
+  return out;
+}
 // 글 다듬기: 줄바꿈은 두고(\r\n·\r → \n) 탭은 빈칸으로, 그 밖의 제어 문자(C0·DEL·C1)는 뺀다 → 앞뒤 공백을 자르고 1~500자(글자 수 — 표의 char_length 와 같은 셈)
 function msgBody(v: unknown) {
   if (typeof v !== 'string') throw fail(400, '보낼 글을 적어 주세요.');
@@ -276,7 +291,7 @@ async function namesOf(ids: string[]) {
   return out;
 }
 const msgOut = (r: any, name: string) => ({ id: Number(r.id), member: r.member, name: name || 'DJ', body: r.body, created: Number(r.created),
-  delivered: r.delivered == null ? null : Number(r.delivered), seen: r.seen == null ? null : Number(r.seen) });
+  delivered: r.delivered == null ? null : Number(r.delivered), seen: r.seen == null ? null : Number(r.seen), batch: typeof r.batch === 'string' ? r.batch : null });
 // 30일 지난 메시지는 가끔(2%) 지운다(다른 표와 같은 꼴) — 못 지워도 하던 일은 그대로
 async function dropOldMsgs(now: number) {
   if (Math.random() >= 0.02) return;
@@ -893,10 +908,11 @@ async function handle(req: Request, now: number) {
     }
     // 운영자 메시지 [확인했어요](v17 — 봇이 계정 세션으로): {id} → {seen}. 남의 메시지·없는 번호·지운 메시지는 404.
     //  seen 은 비어 있을 때만 채운다(조건부 update 한 번) — 그것을 채운 요청만 운영자에게 푸시(두 번 눌러도·동시에 와도 알림은 한 번).
+    //  전체 메시지(batch 있음, v18)는 seen 만 적고 푸시는 보내지 않는다(수십 명이 확인할 때마다 알림이 오면 시끄러움 — 운영자 앱 목록에서 본다).
     case 'op-msg-seen': {
       const id = msgId(b.id);
       if (!Number.isSafeInteger(id) || id <= 0) throw fail(404, MSG_NONE);
-      const m: any = await q(db.from('bj_op_messages').select('id,member,body,seen').eq('id', id).eq('member', me.id).maybeSingle());
+      const m: any = await q(db.from('bj_op_messages').select('*').eq('id', id).eq('member', me.id).maybeSingle());
       if (!m) throw fail(404, MSG_NONE);
       if (m.seen != null) return { ok: true, seen: Number(m.seen) };
       const r: any = await q(db.from('bj_op_messages').update({ seen: now }).eq('id', id).eq('member', me.id).is('seen', null).select('seen'));
@@ -905,6 +921,7 @@ async function handle(req: Request, now: number) {
         if (!again) throw fail(404, MSG_NONE);
         return { ok: true, seen: again.seen == null ? now : Number(again.seen) };
       }
+      if (typeof m.batch === 'string' && m.batch) return { ok: true, seen: now };
       const name = (await namesOf([me.id]).catch(() => new Map<string, string>())).get(me.id) || 'DJ';
       // 앞 40자는 글자 덩어리(grapheme)로 센다 — 가족·깃발·피부색 이모지가 반으로 잘리지 않게(검토 4)
       const flat = String(m.body || '').replace(/\s+/g, ' ').trim();
@@ -957,15 +974,32 @@ async function handle(req: Request, now: number) {
       const name = (await namesOf([id]).catch(() => new Map<string, string>())).get(id) || 'DJ';
       return { ok: true, msg: msgOut(r[0], name) };
     }
-    // 보낸 메시지(v17): 최근 7일 전부, 새것부터 → {msgs:[{id, member, name, body, created, delivered, seen}]}
+    // 전체 메시지 보내기(v18): {body} → {batch, count}. 받는 사람(allRecipients)마다 한 줄씩, 같은 batch·같은 때. 받는 사람이 없으면 400.
+    //  500명씩 넣는다(그보다 적으면 한 번에 — 다 들어가거나 하나도 안 들어감).
+    case 'ops-msg-send-all': {
+      const body = msgBody(b.body);
+      const to = await allRecipients();
+      if (!to.length) throw fail(400, '받을 회원이 없어요. 먼치킨 봇에 로그인한 회원이 있어야 보낼 수 있어요.');
+      const batch = 'b' + rid(11);
+      for (let i = 0; i < to.length; i += 500) await q(db.from('bj_op_messages').insert(to.slice(i, i + 500).map((member) => ({ member, body, created: now, by_member: me.id, batch }))));
+      await dropOldMsgs(now);
+      return { ok: true, batch, count: to.length };
+    }
+    // 보낸 메시지(v17): 최근 7일 전부, 새것부터 → {msgs:[{id, member, name, body, created, delivered, seen, batch}]} (batch — v18 전체 메시지 묶음, 아니면 null)
     case 'ops-msgs': {
-      const rows: any[] = await q(db.from('bj_op_messages').select('*').gte('created', now - MSG_KEEP).order('created', { ascending: false }).limit(1000));
+      const rows: any[] = await q(db.from('bj_op_messages').select('*').gte('created', now - MSG_KEEP).order('created', { ascending: false }).limit(5000));   // 전체 메시지는 받는 사람마다 한 줄이라 넉넉히
       const names = await namesOf(rows.map((r) => r.member));
       await dropOldMsgs(now);
       return { ok: true, msgs: rows.map((r) => msgOut(r, names.get(r.member) || 'DJ')) };
     }
     // 메시지 지우기(v17): {id} → 봇 알림칸에서도 다음 report 부터 사라진다. 없는 번호여도 {ok:true}(이미 지웠을 수 있음)
+    //  v18: {batch} 면 그 전체 메시지 묶음의 줄을 모두 지운다(없는 묶음이어도 {ok:true}).
     case 'ops-msg-del': {
+      if (b.batch !== undefined && b.batch !== null) {
+        if (typeof b.batch !== 'string' || !BATCH_RE.test(b.batch)) throw fail(400, '지울 메시지를 골라 주세요.');
+        await q(db.from('bj_op_messages').delete().eq('batch', b.batch));
+        return { ok: true };
+      }
       const id = msgId(b.id);
       if (!Number.isSafeInteger(id) || id <= 0) throw fail(400, '지울 메시지를 골라 주세요.');
       await q(db.from('bj_op_messages').delete().eq('id', id));
@@ -1033,7 +1067,7 @@ function makeHandler(deps: { db: any; env: (k: string) => string | undefined; fe
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
     const route = new URL(req.url).pathname.replace(/^.*?\/bakje-billing\/?/, '').replace(/\/+$/, '');
     try {
-      if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: 7, year: true, addon: true, push: true, newAlbum: true, albumGate: true, munchkinPass: true, card: true, receipt: true, amb: true, opMsg: true });
+      if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: 7, year: true, addon: true, push: true, newAlbum: true, albumGate: true, munchkinPass: true, card: true, receipt: true, amb: true, opMsg: true, opMsgAll: true });
       if (req.method === 'POST' && (route === '' || route === 'api')) return json(200, await handle(req, clock()));
       return json(404, { ok: false, error: '찾을 수 없어요.' });
     } catch (e) {

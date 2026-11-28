@@ -27,7 +27,7 @@ const ch = (n) => String.fromCharCode(n);
 // ---- 가짜 Supabase(이 시험이 부르는 만큼 — card 시험의 fakeDb 꼴 + 번호 자동·gte) ----
 // db.before(표, 질의) = 질의를 돌리기 전에 기다릴 것(두 요청이 동시에 읽게 — 검토 3) · db.fail(표, 질의) = 참이면 그 질의를 DB 오류로
 const KEYS = { bj_members: ['id'], bj_sessions: ['token'], bj_op_messages: ['id'], bj_push_subs: ['id'], bj_member_devices: ['device'], junlive_devices: ['id'], bj_settings: ['key'] };
-const DEFAULTS = { bj_op_messages: { by_member: null, delivered: null, seen: null } };
+const DEFAULTS = { bj_op_messages: { by_member: null, delivered: null, seen: null, batch: null } };
 // 표의 check(char_length(body) between 1 and 500) — 글자 수는 코드 포인트로 센다(Postgres char_length 와 같음)
 const CHECKS = { bj_op_messages: (r) => typeof r.body === 'string' && [...r.body].length >= 1 && [...r.body].length <= 500 && typeof r.member === 'string' && Number.isSafeInteger(r.created) };
 const clone = (v) => structuredClone(v);
@@ -116,9 +116,11 @@ const MEMBERS = [
   { id: 'mDj', login_id: 'munchi', nickname: '먼치', verified: false, state: 'active', is_admin: false, role: 'dj' },
   { id: 'mNo', login_id: null, kakao: 'k-test', nickname: '', verified: false, state: 'active', is_admin: false, role: 'dj' },   // 먼치킨 닉네임을 안 정한 카카오 가입자
   { id: 'mBare', login_id: null, kakao: 'k-test-2', nickname: null, verified: false, state: 'active', is_admin: false, role: 'listener' },   // 닉네임도 기기도 없음
-  { id: 'mOp', login_id: 'opsmunchi', nickname: '운영', verified: false, state: 'active', is_admin: true, role: 'dj' }
+  { id: 'mOp', login_id: 'opsmunchi', nickname: '운영', verified: false, state: 'active', is_admin: true, role: 'dj' },
+  { id: 'mBan', login_id: 'banned1', nickname: '막힘', verified: false, state: 'banned', is_admin: false, role: 'dj' },   // 막힌 회원(봇 기기 있음 — 전체 메시지에서 빠짐)
+  { id: 'mStu', login_id: 'studio1', nickname: '송출만', verified: false, state: 'active', is_admin: false, role: 'dj' }   // 송출 기기만 있음(전체 메시지에서 빠짐)
 ];
-async function setup({ now = NOW, msgs = [] } = {}) {
+async function setup({ now = NOW, msgs = [], devices = [] } = {}) {
   let clock = now;
   const tokens = {}, sessions = [];
   for (const m of MEMBERS) { const t = crypto.randomBytes(32).toString('base64url'); tokens[m.id] = t; sessions.push({ token: sha(t), member: m.id, expires: now + 365 * DAY }); }
@@ -127,7 +129,7 @@ async function setup({ now = NOW, msgs = [] } = {}) {
     bj_members: MEMBERS, bj_sessions: sessions, bj_op_messages: msgs, bj_push_subs: [phone.sub], bj_settings: [],
     // 스푼 닉네임(지어낸 이름): mNo 는 봇 기기(밤톨)와 송출 기기(옛 이름) — 봇 기기 이름을 쓴다
     bj_member_devices: [{ device: 'd1', member: 'mNo', program: 'studio', created: 1, seen: 90 }, { device: 'd2', member: 'mNo', program: 'bot', created: 1, seen: 50 },
-      { device: 'd3', member: 'mDj', program: 'bot', created: 1, seen: 10 }],
+      { device: 'd3', member: 'mDj', program: 'bot', created: 1, seen: 10 }, ...devices],
     junlive_devices: [{ id: 'd1', nickname: '밤톨 옛', tag: 'bam_old', seen: 90 }, { id: 'd2', nickname: '밤톨', tag: 'bamtol', seen: 50 }, { id: 'd3', nickname: '먼치 스푼', tag: 'munchi', seen: 10 }]
   });
   const pushes = [];
@@ -173,8 +175,8 @@ test('ops-msg-*: 운영자만(보통 회원 403 · 로그인 안 함 401) — �
 test('ops-msg-send: 넣고 {msg} · 보낸 운영자·보낸 때 · 없는 회원 404 · 회원 번호가 글이 아니면 404', async () => {
   const s = await setup();
   const r = ok(await s.call('mOp', 'ops-msg-send', { member: 'mDj', body: '먼치님, 다음 판 시험을\n도와주실 수 있을까요?' }));
-  assert.deepEqual(r.msg, { id: 101, member: 'mDj', name: '먼치', body: '먼치님, 다음 판 시험을\n도와주실 수 있을까요?', created: NOW, delivered: null, seen: null });
-  assert.deepEqual(s.T.bj_op_messages[0], { id: 101, member: 'mDj', body: '먼치님, 다음 판 시험을\n도와주실 수 있을까요?', created: NOW, by_member: 'mOp', delivered: null, seen: null });
+  assert.deepEqual(r.msg, { id: 101, member: 'mDj', name: '먼치', body: '먼치님, 다음 판 시험을\n도와주실 수 있을까요?', created: NOW, delivered: null, seen: null, batch: null });
+  assert.deepEqual(s.T.bj_op_messages[0], { id: 101, member: 'mDj', body: '먼치님, 다음 판 시험을\n도와주실 수 있을까요?', created: NOW, by_member: 'mOp', delivered: null, seen: null, batch: null });
   assert.equal((await s.call('mOp', 'ops-msg-send', { member: 'mNone', body: '안녕' })).status, 404);
   assert.equal((await s.call('mOp', 'ops-msg-send', { member: { id: 'mDj' }, body: '안녕' })).status, 404);
   assert.equal((await s.call('mOp', 'ops-msg-send', { body: '안녕' })).status, 404);
@@ -218,7 +220,7 @@ test('ops-msgs: 최근 7일 전부 새것부터 · {id, member, name, body, crea
   const s = await setup({ msgs });
   const j = ok(await s.call('mOp', 'ops-msgs'));
   assert.deepEqual(j.msgs.map((m) => m.id), [4, 3, 2, 5], '새것부터 · 7일 넘은 것(1)은 빠짐');
-  assert.deepEqual(j.msgs.find((m) => m.id === 2), { id: 2, member: 'mDj', name: '먼치', body: '닿고 확인함', created: NOW - 3 * DAY, delivered: NOW - 3 * DAY + 5, seen: NOW - 2 * DAY });
+  assert.deepEqual(j.msgs.find((m) => m.id === 2), { id: 2, member: 'mDj', name: '먼치', body: '닿고 확인함', created: NOW - 3 * DAY, delivered: NOW - 3 * DAY + 5, seen: NOW - 2 * DAY, batch: null });
   assert.equal(j.msgs.find((m) => m.id === 3).name, '밤톨', '닉네임이 없으면 봇 기기의 스푼 닉네임(송출 기기가 더 최근이어도 봇 먼저)');
   assert.equal(j.msgs.find((m) => m.id === 4).name, 'DJ', '닉네임도 기기도 없으면 DJ');
   assert.deepEqual([j.msgs[0].delivered, j.msgs[0].seen], [null, null]);
@@ -252,7 +254,7 @@ test('op-msg-seen: 동시에 두 번 와도(둘 다 "아직 확인 안 함"을 �
   const s = await setup({ msgs: [{ id: 8, member: 'mNo', body: '확인 부탁해요', created: NOW - 1000 }] });
   // 첫 읽기(id,member,body,seen)를 두 요청이 모두 마칠 때까지 붙잡는다 → 둘 다 seen 이 빈 것을 보고 update 로 간다(진짜 동시)
   let arrived = 0, release; const gate = new Promise((r) => { release = r; });
-  s.db.before = async (name, st) => { if (name === 'bj_op_messages' && st.op === 'select' && st.cols.includes('body')) { if (++arrived === 2) release(); await gate; } };
+  s.db.before = async (name, st) => { if (name === 'bj_op_messages' && st.op === 'select' && st.cols !== 'seen') { if (++arrived === 2) release(); await gate; } };
   const [a, b] = await Promise.all([s.call('mNo', 'op-msg-seen', { id: 8 }), s.call('mNo', 'op-msg-seen', { id: 8 })]);
   s.db.before = null;
   assert.equal(arrived, 2);
@@ -316,6 +318,108 @@ test('30일 지난 줄은 가끔(2%) 지운다 — ops-msg-send·ops-msgs 때 ·
   const t = await setup({ msgs });
   await withRandom(0, async () => { ok(await t.call('mOp', 'ops-msg-send', { member: 'mDj', body: '새 글' })); });
   assert.deepEqual(t.T.bj_op_messages.map((m) => m.id).sort((a, b) => a - b), [2, 101]);
+});
+
+// ================= 전체 메시지(v18) =================
+// 봇 기기를 가진 회원: mDj(봇 2개 — 한 번만) · mNo(봇+송출) · mOp(운영자 — 빠짐) · mBan(막힘 — 빠짐) · mStu(송출만 — 빠짐) · mBare(기기 없음 — 빠짐)
+const MORE_DEVS = [{ device: 'd4', member: 'mDj', program: 'bot', created: 1, seen: 5 }, { device: 'd5', member: 'mOp', program: 'bot', created: 1, seen: 5 },
+  { device: 'd6', member: 'mBan', program: 'bot', created: 1, seen: 5 }, { device: 'd7', member: 'mStu', program: 'studio', created: 1, seen: 5 }];
+
+test('health: opMsgAll true', async () => {
+  const s = await setup();
+  assert.equal((await (await s.handler(new Request(URL_FN + '/health'))).json()).opMsgAll, true);
+});
+
+test('ops-msg-send-all: 운영자만(보통 회원·막힌 회원 403 · 로그인 안 함 401) — 아무것도 안 들어감', async () => {
+  const s = await setup({ devices: MORE_DEVS });
+  for (const who of ['mDj', 'mNo', 'mStu', 'mBan']) assert.equal((await s.call(who, 'ops-msg-send-all', { body: '모두에게' })).status, 403, who);
+  assert.equal((await s.call(null, 'ops-msg-send-all', { body: '모두에게' })).status, 401);
+  assert.equal(s.T.bj_op_messages.length, 0);
+});
+
+test('ops-msg-send-all: 받는 사람 = 봇 기기가 있는 회원(한 사람에 한 줄) — 운영자·막힌 회원·송출만·기기 없음은 빠짐 · 같은 batch · {batch, count} · 푸시 없음', async () => {
+  const s = await setup({ devices: MORE_DEVS });
+  const r = ok(await s.call('mOp', 'ops-msg-send-all', { body: '  다음 주에 새 판이 나와요.\r\n업데이트해 주세요!  ' }));
+  assert.match(r.batch, /^b[a-z2-9]{11}$/);
+  assert.equal(r.count, 2);
+  const rows = s.T.bj_op_messages;
+  assert.deepEqual(rows.map((m) => m.member).sort(), ['mDj', 'mNo']);
+  for (const m of rows) assert.deepEqual({ ...m, id: 0 }, { id: 0, member: m.member, body: '다음 주에 새 판이 나와요.\n업데이트해 주세요!', created: NOW, by_member: 'mOp', delivered: null, seen: null, batch: r.batch }, '글 다듬기도 같음');
+  assert.equal(new Set(rows.map((m) => m.id)).size, 2, '줄마다 번호가 다름');
+  assert.equal(s.pushes.length, 0);
+  // 다시 보내면 새 묶음
+  const r2 = ok(await s.call('mOp', 'ops-msg-send-all', { body: '두 번째 공지' }));
+  assert.notEqual(r2.batch, r.batch);
+  assert.equal(s.T.bj_op_messages.length, 4);
+});
+
+test('ops-msg-send-all: 받는 사람이 0명이면 400(쉬운 글) · 글이 비거나 500자 넘으면 400 · 아무것도 안 들어감', async () => {
+  const s = await setup({ devices: MORE_DEVS });
+  const empty = await s.call('mOp', 'ops-msg-send-all', { body: '   ' });
+  assert.equal(empty.status, 400);
+  assert.equal(empty.body.error, '보낼 글을 적어 주세요.');
+  assert.equal((await s.call('mOp', 'ops-msg-send-all', { body: '가'.repeat(501) })).status, 400);
+  // 봇 기기 줄이 운영자·막힌 회원 것과 송출뿐
+  s.T.bj_member_devices = s.T.bj_member_devices.filter((d) => !['mDj', 'mNo'].includes(d.member));
+  const none = await s.call('mOp', 'ops-msg-send-all', { body: '모두에게' });
+  assert.equal(none.status, 400);
+  assert.match(none.body.error, /받을 회원이 없어요/);
+  assert.equal(s.T.bj_op_messages.length, 0);
+});
+
+test('ops-msgs: 줄마다 batch(전체 메시지 묶음, 한 사람 것은 null) · 이름은 그대로', async () => {
+  const s = await setup({ devices: MORE_DEVS });
+  ok(await s.call('mOp', 'ops-msg-send', { member: 'mDj', body: '먼치님께' }));
+  const { batch } = ok(await s.call('mOp', 'ops-msg-send-all', { body: '모두에게' }));
+  const j = ok(await s.call('mOp', 'ops-msgs'));
+  assert.equal(j.msgs.length, 3);
+  assert.deepEqual(j.msgs.filter((m) => m.batch === batch).map((m) => [m.member, m.name]).sort(), [['mDj', '먼치'], ['mNo', '밤톨']]);
+  assert.deepEqual(j.msgs.filter((m) => m.batch === null).map((m) => m.body), ['먼치님께']);
+});
+
+test('op-msg-seen: 전체 메시지(batch)는 seen 만 적고 운영자 푸시는 안 보냄 · 한 사람 메시지는 그대로 푸시 · 같은 묶음이어도 남의 줄은 404', async () => {
+  const s = await setup({ devices: MORE_DEVS });
+  ok(await s.call('mOp', 'ops-msg-send-all', { body: '모두에게 알려요' }));
+  const row = (member) => s.T.bj_op_messages.find((m) => m.member === member);
+  assert.deepEqual(ok(await s.call('mDj', 'op-msg-seen', { id: row('mDj').id })), { ok: true, seen: NOW });
+  assert.equal(row('mDj').seen, NOW);
+  assert.equal(s.pushes.length, 0, '전체 메시지 확인은 푸시 없음');
+  assert.equal(row('mNo').seen, null, '다른 회원 줄은 그대로');
+  assert.equal((await s.call('mDj', 'op-msg-seen', { id: row('mNo').id })).status, 404);
+  ok(await s.call('mNo', 'op-msg-seen', { id: row('mNo').id }));
+  assert.equal(row('mNo').seen, NOW);
+  assert.equal(s.pushes.length, 0);
+  // 한 사람 메시지는 전처럼 푸시
+  const one = ok(await s.call('mOp', 'ops-msg-send', { member: 'mDj', body: '먼치님께만' })).msg;
+  ok(await s.call('mDj', 'op-msg-seen', { id: one.id }));
+  assert.equal(s.pushes.length, 1);
+});
+
+test('ops-msg-del {batch}: 그 묶음 줄을 모두 지움 · 다른 묶음·한 사람 것은 남음 · 없는 묶음 ok · 이상한 batch 400 · {id} 는 그대로', async () => {
+  const s = await setup({ devices: MORE_DEVS });
+  const a = ok(await s.call('mOp', 'ops-msg-send-all', { body: '첫 공지' })).batch;
+  const b = ok(await s.call('mOp', 'ops-msg-send-all', { body: '둘째 공지' })).batch;
+  const one = ok(await s.call('mOp', 'ops-msg-send', { member: 'mDj', body: '먼치님께' })).msg;
+  assert.equal((await s.call('mDj', 'ops-msg-del', { batch: a })).status, 403, '운영자만');
+  assert.equal(s.T.bj_op_messages.length, 5);
+  assert.deepEqual(ok(await s.call('mOp', 'ops-msg-del', { batch: a })), { ok: true });
+  assert.deepEqual(s.T.bj_op_messages.map((m) => String(m.batch)).sort(), [b, b, 'null'].sort());
+  assert.deepEqual(ok(await s.call('mOp', 'ops-msg-del', { batch: a })), { ok: true }, '이미 지운 묶음도 ok');
+  assert.deepEqual(ok(await s.call('mOp', 'ops-msg-del', { batch: 'bzzzzzzzzzzz' })), { ok: true }, '없는 묶음');
+  for (const bad of ['', 'x', 'B' + b.slice(1), b + 'x', 123, { batch: b }, ['b']]) assert.equal((await s.call('mOp', 'ops-msg-del', { batch: bad })).status, 400, JSON.stringify(bad));
+  assert.equal(s.T.bj_op_messages.length, 3, '이상한 batch 로는 아무것도 안 지움');
+  ok(await s.call('mOp', 'ops-msg-del', { id: one.id }));
+  assert.deepEqual(s.T.bj_op_messages.map((m) => m.batch), [b, b]);
+});
+
+test('표(마이그레이션 bakje_op_messages_all · schema.sql): batch 칸·색인·되돌리기 글 · 두 곳이 같은 내용', () => {
+  const sql = fs.readFileSync(path.join(ROOT, 'supabase', 'migrations', '20261128_bakje_op_messages_all.sql'), 'utf8').replace(/\r\n/g, '\n');
+  const schema = fs.readFileSync(path.join(ROOT, 'supabase', 'schema.sql'), 'utf8').replace(/\r\n/g, '\n');
+  for (const re of [/alter table bj_op_messages add column if not exists batch text;/, /create index if not exists bj_op_messages_batch on bj_op_messages\(batch\) where batch is not null;/,
+    /alter table bj_op_messages drop column if exists batch;/, /drop index if exists bj_op_messages_batch;/]) { assert.match(sql, re); assert.match(schema, re); }
+  const tail = (s) => s.slice(s.indexOf('alter table bj_op_messages add column if not exists batch text;'));
+  assert.ok(tail(sql).length > 100);
+  assert.equal(tail(schema), tail(sql), 'schema.sql 맨 끝 구역 = 마이그레이션');
 });
 
 test('표(마이그레이션·schema.sql): 칸·제약·색인·RLS·권한 · 되돌리기 글 · 두 곳이 같은 내용', () => {
