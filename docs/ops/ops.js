@@ -654,57 +654,53 @@ function loadMembers() {
   return membersLoading;
 }
 
-// ---------- 운영자 메시지(2026-11-28, bakje-billing ops-msg-send · ops-msgs · ops-msg-del) ----------
+// ---------- 운영자 메시지(2026-11-28, bakje-billing ops-msg-send · ops-msg-send-all · ops-msgs · ops-msg-del) ----------
 // 사용자 "먼치킨 쓰는 사람들한테 개인적으로 봇에 메세지 … 그 사람이 확인하기 누르면 나한테 확인했음 하고 뜨게". 답장은 없다.
 //  회원 카드 [메시지] → 아래에서 올라오는 쓰기 칸(1~500자, 줄바꿈 됨) → 보내기. DJ 봇(0.24.2+)은 5분마다 보내는 상태 한 줄의 답으로 받는다.
 //  "메시지" 탭 = 최근 7일 보낸 것(새것부터): 아직 안 닿음(delivered 없음) · 봇에 닿음 · ✅ 확인(seen). DJ 가 확인하면 운영자 폰에 알림(누르면 /ops/#msgs).
+//  전체 메시지(사용자 "운영자 페이지에서 전체 메세지도 가능하게"): [모두에게 보내기] → ops-msg-send-all — 봇을 쓰는 회원마다 한 줄(같은 batch).
+//   목록에서 같은 batch 는 카드 하나("📢 전체 (N명)") · 눌러서 받은 사람마다 상태 · [지우기]는 묶음 전체. 전체 메시지는 확인해도 휴대폰 알림이 안 온다(서버).
 const MSG_MAX = 500;
 function msgState(x) {
   if (x.seen) return [`✅ 확인 ${mdhm(x.seen)}`, 'green'];
   if (x.delivered) return ['봇에 닿음', 'blue'];
   return ['아직 안 닿음', 'gray'];
 }
-// 쓰기 칸(아래에서 올라옴). 쓰던 글은 닫아도 회원마다 남겨 둔다(보내면 지움).
-function composeMsg(m) {
-  const nick = mNick(m);
-  const area = h('textarea', { class: 'field msg-area', rows: '6', maxlength: String(MSG_MAX), placeholder: '보낼 글을 써 주세요.\n줄바꿈도 돼요.', 'aria-label': `${nick}님에게 보낼 글` });
-  area.value = S.drafts[m.id] || '';
+// 전체 메시지를 받는 회원 수(서버와 같은 기준: 봇을 쓰는 회원 · 운영자와 막힌 계정 빼고). 회원 목록이 없으면 null.
+const allTargets = () => (S.members ? S.members.filter((m) => m.bot && !m.admin && m.state !== 'banned').length : null);
+
+// 쓰기 칸(아래에서 올라옴) — 한 사람에게 · 모두에게 같이 씀. 쓰던 글은 닫아도 남겨 둔다(key 마다, 보내면 지움).
+//  head = 제목 아래에 넣을 것들(안내·경고) · before() = 보내기 전에 한 번 더 묻기(아니면 false) · send(body) = 보내기(실패하면 throw — 글은 그대로)
+function composeSheet({ key, title, aria, head, before, send }) {
+  const area = h('textarea', { class: 'field msg-area', rows: '6', maxlength: String(MSG_MAX), placeholder: '보낼 글을 써 주세요.\n줄바꿈도 돼요.', 'aria-label': aria + ' 글' });
+  area.value = S.drafts[key] || '';
   const left = h('p', { class: 'msg-count muted small', 'aria-live': 'polite' });
-  const send = h('button', { class: 'btn primary', type: 'submit', text: '보내기' });
+  const sendBtn = h('button', { class: 'btn primary', type: 'submit', text: '보내기' });
   const cancel = h('button', { class: 'btn', type: 'button', text: '닫기', onclick: () => dlg.close() });
   let sending = false;
   const sync = () => {
     const n = area.value.length;
     left.textContent = `남은 글자 ${MSG_MAX - n}`;
     left.classList.toggle('warn', MSG_MAX - n <= 20);
-    send.disabled = sending || !area.value.trim();
-    S.drafts[m.id] = area.value;
+    sendBtn.disabled = sending || !area.value.trim();
+    S.drafts[key] = area.value;
   };
   area.addEventListener('input', sync);
   const form = h('form', { class: 'sheet-form', onsubmit: async (e) => {
     e.preventDefault();
-    const body = area.value.trim();
-    if (!body || sending) return;
-    sending = true; send.textContent = '보내는 중…'; sync(); area.readOnly = true;
+    if (!area.value.trim() || sending) return;
+    if (before && !(await before())) return;
+    sending = true; sendBtn.textContent = '보내는 중…'; sync(); area.readOnly = true;
     try {
-      const j = await bill('ops-msg-send', { member: m.id, body: area.value });
-      delete S.drafts[m.id];
-      // 메시지 탭 목록에 바로 더함(이름이 안 왔으면 카드의 이름) — 메시지 탭을 열면 서버에서 새로 받는다
-      if (S.msgs && j.msg) S.msgs = [{ name: nick, member: m.id, created: Date.now(), delivered: null, seen: null, ...j.msg }, ...S.msgs.filter((x) => x.id !== j.msg.id)];
+      await send(area.value);
+      delete S.drafts[key];
       dlg.close();
-      toast(`${nick}님에게 보냈어요 · 메시지 탭에서 확인했는지 볼 수 있어요`);
-      if (S.tab === 'msgs') render();
     } catch (err) {
       toast(err.message, true);   // 쓴 글은 그대로 남는다
-      sending = false; send.textContent = '보내기'; area.readOnly = false; sync();
+      sending = false; sendBtn.textContent = '보내기'; area.readOnly = false; sync();
     }
-  } },
-    h('h2', { text: `${nick}님에게 메시지` }),
-    h('p', { class: 'muted small', lines: '먼치킨 봇 화면에 창으로 떠요. DJ가 [확인했어요]를 누르면 알려 드려요.' }),
-    m.bot ? null : h('p', { class: 'msg-warn small', lines: '이 회원은 아직 먼치킨 봇에 로그인하지 않았어요. 봇에 로그인하면 보여요.' }),
-    area, left,
-    h('div', { class: 'sheet-btns' }, cancel, send));
-  const dlg = h('dialog', { class: 'sheet up', 'aria-label': `${nick}님에게 메시지 보내기` }, form);
+  } }, h('h2', { text: title }), head, area, left, h('div', { class: 'sheet-btns' }, cancel, sendBtn));
+  const dlg = h('dialog', { class: 'sheet up', 'aria-label': aria }, form);
   // 휴대폰 글자판이 올라오면 쓰기 칸도 그 위로(아이폰 홈 화면 앱은 화면 아래 칸을 글자판이 가린다)
   const vv = window.visualViewport;
   const fit = () => {
@@ -721,24 +717,73 @@ function composeMsg(m) {
   sync(); fit();
   dlg.showModal();
   area.focus({ preventScroll: true });
+  return dlg;
+}
+function composeMsg(m) {
+  const nick = mNick(m);
+  composeSheet({ key: m.id, title: `${nick}님에게 메시지`, aria: `${nick}님에게 메시지 보내기`,
+    head: [h('p', { class: 'muted small', lines: '먼치킨 봇 화면에 창으로 떠요. DJ가 [확인했어요]를 누르면 알려 드려요.' }),
+      m.bot ? null : h('p', { class: 'msg-warn small', lines: '이 회원은 아직 먼치킨 봇에 로그인하지 않았어요. 봇에 로그인하면 보여요.' })],
+    send: async (body) => {
+      const j = await bill('ops-msg-send', { member: m.id, body });
+      // 메시지 탭 목록에 바로 더함(이름이 안 왔으면 카드의 이름) — 메시지 탭을 열면 서버에서 새로 받는다
+      if (S.msgs && j.msg) S.msgs = [{ name: nick, member: m.id, created: Date.now(), delivered: null, seen: null, batch: null, ...j.msg }, ...S.msgs.filter((x) => x.id !== j.msg.id)];
+      toast(`${nick}님에게 보냈어요 · 메시지 탭에서 확인했는지 볼 수 있어요`);
+      if (S.tab === 'msgs') render();
+    } });
+}
+// 모두에게 보내기: 받는 수 줄(회원 목록이 없으면 불러와서 채움 — 못 불러오면 그 줄은 빠짐) → [보내기] → "N명에게 보낼까요?" → ops-msg-send-all
+function composeAll() {
+  const who = h('p', { class: 'msg-warn small', hidden: true });
+  const paint = () => { const n = allTargets(); who.hidden = n == null; who.textContent = n == null ? '' : `먼치킨 봇을 쓰는 회원 ${n}명에게 보내요.`; };
+  paint();
+  if (!S.members) loadMembers().then(paint);
+  composeSheet({ key: '*all', title: '모두에게 메시지', aria: '모두에게 메시지 보내기',
+    head: [who, h('p', { class: 'muted small', lines: '먼치킨 봇 화면에 창으로 떠요. 전체 메시지는 DJ가 확인해도 휴대폰 알림은 오지 않아요. 이 탭에서 누가 확인했는지 볼 수 있어요.' })],
+    before: async () => {
+      const n = allTargets();
+      return !!(await ask({ title: n == null ? '봇을 쓰는 회원 모두에게 보낼까요?' : `${n}명에게 보낼까요?`, ok: '보내기', cancel: '아직',
+        lines: ['먼치킨 봇을 쓰는 회원 모두의 봇 화면에 떠요.', '운영자 계정과 이용이 막힌 계정은 빠져요.'] }));
+    },
+    send: async (body) => {
+      const j = await bill('ops-msg-send-all', { body });
+      if (!j.count) toast('받을 회원이 없어요 · 먼치킨 봇을 쓰는 회원이 아직 없어요', true);
+      else toast(`${j.count}명에게 보냈어요 · 누가 확인했는지 이 탭에서 볼 수 있어요`);
+      if (S.tab === 'msgs') { await loadMsgs(); render(); }
+    } });
 }
 
+// 목록 묶기: batch 가 같은 줄은 한 묶음(전체 메시지), 나머지는 한 장씩 — 새것부터
+function msgItems(list) {
+  const out = [], groups = new Map();
+  for (const x of list) {
+    if (x.batch == null) { out.push({ one: x, created: Number(x.created) }); continue; }
+    let g = groups.get(x.batch);
+    if (!g) { g = { batch: x.batch, rows: [], body: x.body, created: Number(x.created) }; groups.set(x.batch, g); out.push(g); }
+    g.rows.push(x); g.created = Math.max(g.created, Number(x.created));
+  }
+  return out.sort((a, b) => b.created - a.created);
+}
+// 위 숫자 칸: 보낸 메시지 = 건(전체 메시지 한 번 = 1건) · 확인 · 아직 안 닿음 = 받은 사람 수(전체 메시지는 사람마다 셈)
 function msgsView() {
   const list = S.msgs;
   if (!list) return S.msgsErr
     ? h('div', { class: 'empty' }, h('p', { text: S.msgsErr }), h('button', { class: 'link', type: 'button', text: '다시 불러오기', onclick: () => loadMsgs().then(render) }))
     : h('p', { class: 'empty', text: '불러오는 중이에요…' });
+  const items = msgItems(list);
   const seen = list.filter((x) => x.seen).length, notYet = list.filter((x) => !x.delivered).length;
   return h('section', { class: 'msgs' },
     h('div', { class: 'beta-head' },
       h('b', { class: 'beta-title', text: '최근 7일 보낸 메시지' }),
       h('div', { class: 'stats three' },
-        h('div', { class: 'stat' }, h('span', { text: '보냄' }), h('b', { text: String(list.length) })),
-        h('div', { class: 'stat' }, h('span', { text: '확인함' }), h('b', { text: String(seen) })),
-        h('div', { class: 'stat' }, h('span', { text: '아직 안 닿음' }), h('b', { text: String(notYet) }))),
-      h('p', { class: 'muted small', lines: '회원 탭에서 회원 카드의 [메시지]를 눌러 보내요. DJ가 확인하면 알림이 와요.' }),
-      h('button', { class: 'btn wide', type: 'button', text: '회원 고르러 가기', onclick: () => go('mem') })),
-    list.length ? h('div', { class: 'list' }, list.map(msgCard))
+        h('div', { class: 'stat' }, h('span', { text: '보낸 메시지' }), h('b', { text: `${items.length}건` })),
+        h('div', { class: 'stat' }, h('span', { text: '확인' }), h('b', { text: `${seen}명` })),
+        h('div', { class: 'stat' }, h('span', { text: '아직 안 닿음' }), h('b', { text: `${notYet}명` }))),
+      h('p', { class: 'muted small', lines: '한 사람에게는 회원 탭에서 회원 카드의 [메시지]를 눌러 보내요. DJ가 확인하면 알림이 와요.' }),
+      h('div', { class: 'card-btns one' },
+        h('button', { class: 'btn tonal', type: 'button', onclick: composeAll }, '📢 모두에게 보내기'),
+        h('button', { class: 'btn', type: 'button', text: '회원 고르러 가기', onclick: () => go('mem') }))),
+    items.length ? h('div', { class: 'list' }, items.map((it) => (it.one ? msgCard(it.one) : batchCard(it))))
       : h('div', { class: 'empty' }, h('p', { lines: '최근 7일 동안 보낸 메시지가 없어요.' })));
 }
 function msgCard(x) {
@@ -751,6 +796,28 @@ function msgCard(x) {
       meta('muted small', [`보냄 ${when(x.created)}`, !x.delivered ? '먼치킨을 켜면 떠요' : !x.seen ? '아직 확인 전' : '']),
       h('button', { class: 'btn small', type: 'button', disabled: !!acting, text: busy ? '지우는 중…' : '지우기', 'aria-label': `${x.name || 'DJ'}님에게 보낸 메시지 지우기`, onclick: () => delMsg(x) })));
 }
+// 전체 메시지 한 묶음: "📢 전체 (N명)" · 글 · 보낸 때 · [봇에 닿음 a명 · ✅ 확인 b명 — 받은 사람 보기](누르면 사람마다 상태) · [지우기] = 묶음 전체
+const openBatches = new Set();   // 펼친 묶음(1분마다 다시 그려도 펼친 그대로)
+const rankOf = (x) => (x.seen ? 0 : x.delivered ? 1 : 2);
+function batchCard(g) {
+  const n = g.rows.length;
+  const got = g.rows.filter((x) => x.delivered || x.seen).length, seen = g.rows.filter((x) => x.seen).length;
+  const busy = acting?.id === 'batch' + g.batch;
+  // 받은 사람: 확인한 분(최근 먼저) → 봇에 닿음 → 아직 안 닿음, 같으면 이름 순
+  const rows = [...g.rows].sort((a, b) => rankOf(a) - rankOf(b) || (Number(b.seen) || 0) - (Number(a.seen) || 0) || String(a.name || '').localeCompare(String(b.name || ''), 'ko'));
+  const box = h('details', { class: 'recips-box', open: openBatches.has(g.batch), ontoggle: (e) => { if (e.target.open) openBatches.add(g.batch); else openBatches.delete(g.batch); } },
+    h('summary', { class: 'recips-sum' },
+      h('span', { class: 'meta small' }, h('span', { text: `봇에 닿음 ${got}명` }), h('span', { text: `✅ 확인 ${seen}명` })),
+      h('span', { class: 'recips-more small' }, h('span', { class: 'when-closed', text: `받은 사람 ${n}명 보기` }), h('span', { class: 'when-open', text: '접기' }), h('span', { class: 'chev', 'aria-hidden': 'true', text: '›' }))),
+    h('ul', { class: 'recips' }, rows.map((x) => { const [label, tone] = msgState(x); return h('li', null, h('span', { class: 'recip-name', text: x.name || 'DJ' }), h('span', { class: 'chip ' + tone, text: label })); })));
+  return h('article', { class: 'card msg-card batch' + (seen === n && n ? ' sent' : '') },
+    h('div', { class: 'card-top' }, h('b', { class: 'who-s', text: `📢 전체 (${n}명)` }), h('span', { class: 'chip blue', text: '모두에게' })),
+    h('p', { class: 'msg', text: g.body }),
+    h('div', { class: 'slim-row' },
+      meta('muted small', [`보냄 ${when(g.created)}`, got < n ? `${n - got}명은 먼치킨을 켜면 떠요` : '']),
+      h('button', { class: 'btn small', type: 'button', disabled: !!acting, text: busy ? '지우는 중…' : '지우기', 'aria-label': `${n}명에게 보낸 전체 메시지 지우기`, onclick: () => delBatch(g) })),
+    box);
+}
 async function delMsg(x) {
   if (acting) return;
   const yes = await ask({ title: '이 메시지를 지울까요?', ok: '지우기', danger: true, cancel: '닫기',
@@ -762,6 +829,21 @@ async function delMsg(x) {
     await bill('ops-msg-del', { id: x.id });
     if (S.msgs) S.msgs = S.msgs.filter((y) => y.id !== x.id);
     toast('메시지를 지웠어요');
+  } catch (err) { toast(err.message, true); }
+  finally { acting = null; render(); }
+}
+async function delBatch(g) {
+  if (acting) return;
+  const yes = await ask({ title: '전체 메시지를 지울까요?', ok: '모두 지우기', danger: true, cancel: '닫기',
+    lines: [`${g.rows.length}명에게 ${when(g.created)} 보낸 전체 메시지예요.`, '받은 분들 봇의 알림칸에서 모두 사라져요. 되돌릴 수 없어요.'] });
+  if (!yes) return;
+  acting = { id: 'batch' + g.batch, kind: 'del' };
+  render();
+  try {
+    await bill('ops-msg-del', { batch: g.batch });
+    if (S.msgs) S.msgs = S.msgs.filter((y) => y.batch !== g.batch);
+    openBatches.delete(g.batch);
+    toast('전체 메시지를 지웠어요');
   } catch (err) { toast(err.message, true); }
   finally { acting = null; render(); }
 }
