@@ -38,6 +38,8 @@
 //  표: 마이그레이션 bakje_cash_receipt(bj_orders receipt_kind·receipt_no) — 이 함수보다 먼저 적용한다.
 // 2026-11-28 먼치킨 엠베서더(표 bj_ambassadors — 마이그레이션 bakje_ambassadors 를 이 함수보다 먼저): munchkin-pass·info 는 엠베서더면 운영자처럼 이용권 있음 ·
 //  amb-album(엠베서더가 돈 없이 앨범 하나 만들기) · 운영자 ops-members(회원 탭 목록)·ops-amb(주기·풀기). 자세한 것은 isAmb 위 주석.
+// v17(2026-11-28 밤, 운영자 메시지 — 표 bj_op_messages, 마이그레이션 bakje_op_messages 를 이 함수보다 먼저): 운영자 ops-msg-send(회원 한 명에게 글 1~500자)·ops-msgs(최근 7일)·ops-msg-del ·
+//  회원 op-msg-seen(봇의 [확인했어요] — 처음 한 번만 운영자 휴대폰에 푸시). 봇은 spoon-link report 답으로 메시지를 받는다. 답장은 없다. 자세한 것은 MSG_KEEP 위 주석.
 // 주의: MCP 로 올릴 때 백슬래시-u 글자 표기가 풀려 버리므로 이 파일에는 그런 표기를 쓰지 않는다.
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
@@ -236,6 +238,52 @@ async function memberRow(id: string) {
     q(db.from('bj_ambassadors').select('member,since,note').eq('member', id))]);
   return memberOut(m, devs, owns, ents, ambs, await spoonMap(devs));
 }
+// ── 운영자 메시지(v17, 2026-11-28 밤 — 사용자 "답장 기능 없이 내가 메세지 보내고, 그 사람이 확인하기 누르면 나한테 확인했음") ──
+// 표 bj_op_messages(id 번호 · member 받는 회원 · body 글 · created 보낸 때 · by_member 보낸 운영자 · delivered 봇에 처음 닿은 때 · seen [확인했어요] 누른 때).
+//  운영자: ops-msg-send {member, body} → 넣기 · ops-msgs → 최근 7일 전부(새것부터) · ops-msg-del {id} → 지우기(봇 알림칸에서도 다음 report 부터 사라짐).
+//  회원(봇이 계정 세션으로): op-msg-seen {id} → 내 메시지면 seen 을 적고, 처음 적을 때만 운영자 휴대폰에 푸시(pushTo null — 입금 알림과 같은 길). 이미 확인했으면 그대로.
+//  봇에 보내는 것은 spoon-link(본 줄 저장소) report 의 답 — 그쪽이 delivered 를 채운다. 30일 지난 줄은 여기서 가끔(2%) 지운다.
+const MSG_KEEP = 7 * DAY, MSG_DROP = 30 * DAY, MSG_MAX = 500;
+const MSG_NONE = '메시지를 찾을 수 없어요.';
+// 글 다듬기: 줄바꿈은 두고(\r\n·\r → \n) 탭은 빈칸으로, 그 밖의 제어 문자(C0·DEL·C1)는 뺀다 → 앞뒤 공백을 자르고 1~500자(글자 수 — 표의 char_length 와 같은 셈)
+function msgBody(v: unknown) {
+  if (typeof v !== 'string') throw fail(400, '보낼 글을 적어 주세요.');
+  const text = [...v.normalize('NFC').replace(/\r\n?/g, '\n').replace(/\t/g, ' ')].filter((ch) => {
+    const c = ch.charCodeAt(0);
+    return ch === '\n' || (c >= 32 && c !== 127 && !(c >= 128 && c <= 159));
+  }).join('').trim();
+  const n = [...text].length;
+  if (!n) throw fail(400, '보낼 글을 적어 주세요.');
+  if (n > MSG_MAX) throw fail(400, `글은 ${MSG_MAX}자까지 보낼 수 있어요. 지금 ${n}자예요.`);
+  return text;
+}
+const msgId = (v: unknown) => (typeof v === 'number' ? v : typeof v === 'string' && /^[0-9]{1,15}$/.test(v) ? Number(v) : NaN);
+// 회원 이름(운영자 메시지 목록·확인 알림): 먼치킨 닉네임 → 이어진 먼치킨 기기의 스푼 닉네임(봇 먼저, 그다음 최근 기기 — spoonMap) → 'DJ'
+async function namesOf(ids: string[]) {
+  const uniq = [...new Set(ids.filter((x) => typeof x === 'string' && x))];
+  const out = new Map<string, string>();
+  if (!uniq.length) return out;
+  const [ms, devs]: any = await Promise.all([
+    q(db.from('bj_members').select('id,nickname').in('id', uniq)),
+    q(db.from('bj_member_devices').select('member,program,device,seen').in('member', uniq))]);
+  const spoonOf = await spoonMap(devs);
+  for (const id of uniq) {
+    const nick = line(ms.find((m: any) => m.id === id)?.nickname, 40);
+    const dev = devs.filter((d: any) => d.member === id).sort((a: any, b: any) => Number(b.program === 'bot') - Number(a.program === 'bot') || (Number(b.seen) || 0) - (Number(a.seen) || 0))
+      .map((d: any) => spoonOf.get(d.device)?.nick).find(Boolean);
+    out.set(id, nick || dev || 'DJ');
+  }
+  return out;
+}
+const msgOut = (r: any, name: string) => ({ id: Number(r.id), member: r.member, name: name || 'DJ', body: r.body, created: Number(r.created),
+  delivered: r.delivered == null ? null : Number(r.delivered), seen: r.seen == null ? null : Number(r.seen) });
+// 30일 지난 메시지는 가끔(2%) 지운다(다른 표와 같은 꼴) — 못 지워도 하던 일은 그대로
+async function dropOldMsgs(now: number) {
+  if (Math.random() >= 0.02) return;
+  const { error } = await db.from('bj_op_messages').delete().lt('created', now - MSG_DROP);
+  if (error) console.error('지난 메시지 지우기', error.code || '');
+}
+
 // 먼치킨 이용 기간이 생기는 신청(먼치킨만·먼치킨 + 추억앨범·먼치킨 추가)
 const MUNCHKIN_PLANS = ['munchkin', 'bundle', 'add-munchkin'];
 const ALBUM_BETA = '추억앨범은 지금 베타 테스트 중이라 아직 신청할 수 없어요. 추후 공개할게요.';
@@ -843,6 +891,26 @@ async function handle(req: Request, now: number) {
       if (!r?.[0]) throw fail(404, '취소할 신청을 찾을 수 없어요.');
       return { ok: true, order: orderOut(r[0]) };
     }
+    // 운영자 메시지 [확인했어요](v17 — 봇이 계정 세션으로): {id} → {seen}. 남의 메시지·없는 번호·지운 메시지는 404.
+    //  seen 은 비어 있을 때만 채운다(조건부 update 한 번) — 그것을 채운 요청만 운영자에게 푸시(두 번 눌러도·동시에 와도 알림은 한 번).
+    case 'op-msg-seen': {
+      const id = msgId(b.id);
+      if (!Number.isSafeInteger(id) || id <= 0) throw fail(404, MSG_NONE);
+      const m: any = await q(db.from('bj_op_messages').select('id,member,body,seen').eq('id', id).eq('member', me.id).maybeSingle());
+      if (!m) throw fail(404, MSG_NONE);
+      if (m.seen != null) return { ok: true, seen: Number(m.seen) };
+      const r: any = await q(db.from('bj_op_messages').update({ seen: now }).eq('id', id).eq('member', me.id).is('seen', null).select('seen'));
+      if (!r?.[0]) {   // 그 사이 다른 요청이 먼저 적었거나 운영자가 지움
+        const again: any = await q(db.from('bj_op_messages').select('seen').eq('id', id).eq('member', me.id).maybeSingle());
+        if (!again) throw fail(404, MSG_NONE);
+        return { ok: true, seen: again.seen == null ? now : Number(again.seen) };
+      }
+      const name = (await namesOf([me.id]).catch(() => new Map<string, string>())).get(me.id) || 'DJ';
+      const flat = [...String(m.body || '').replace(/\s+/g, ' ').trim()];
+      const head = flat.slice(0, 40).join('') + (flat.length > 40 ? '…' : '');
+      await quiet(pushTo(null, { title: '✅ 메시지 확인', body: `${name}님이 확인했어요 — ${head}`, url: '/ops/#msgs' }));
+      return { ok: true, seen: now };
+    }
   }
   // ── 운영자 ──
   if (me.is_admin !== true) throw fail(403, '운영자만 할 수 있어요.');
@@ -875,6 +943,29 @@ async function handle(req: Request, now: number) {
       if (b.on) await q(db.from('bj_ambassadors').upsert({ member: id, since: now, note: line(b.note, 100), by_member: me.id }, { onConflict: 'member', ignoreDuplicates: true }));
       else await q(db.from('bj_ambassadors').delete().eq('member', id));
       return { ok: true, member: await memberRow(id) };
+    }
+    // 운영자 메시지 보내기(v17): {member, body} → {msg}. 글은 msgBody 로 다듬는다(줄바꿈은 둠 · 1~500자). 봇은 다음 report(5분 안) 때 받는다.
+    case 'ops-msg-send': {
+      const id = typeof b.member === 'string' ? b.member : '';
+      if (!id || !await q(db.from('bj_members').select('id').eq('id', id).maybeSingle())) throw fail(404, '회원을 찾을 수 없어요.');
+      const body = msgBody(b.body);
+      const r: any = await q(db.from('bj_op_messages').insert({ member: id, body, created: now, by_member: me.id }).select('*'));
+      await dropOldMsgs(now);
+      return { ok: true, msg: msgOut(r[0], (await namesOf([id])).get(id) || 'DJ') };
+    }
+    // 보낸 메시지(v17): 최근 7일 전부, 새것부터 → {msgs:[{id, member, name, body, created, delivered, seen}]}
+    case 'ops-msgs': {
+      const rows: any[] = await q(db.from('bj_op_messages').select('*').gte('created', now - MSG_KEEP).order('created', { ascending: false }).limit(1000));
+      const names = await namesOf(rows.map((r) => r.member));
+      await dropOldMsgs(now);
+      return { ok: true, msgs: rows.map((r) => msgOut(r, names.get(r.member) || 'DJ')) };
+    }
+    // 메시지 지우기(v17): {id} → 봇 알림칸에서도 다음 report 부터 사라진다. 없는 번호여도 {ok:true}(이미 지웠을 수 있음)
+    case 'ops-msg-del': {
+      const id = msgId(b.id);
+      if (!Number.isSafeInteger(id) || id <= 0) throw fail(400, '지울 메시지를 골라 주세요.');
+      await q(db.from('bj_op_messages').delete().eq('id', id));
+      return { ok: true };
     }
     // 운영자 앱 알림 받는 기기
     case 'push-key': return { ok: true, key: (await vapid()).pub };
@@ -938,7 +1029,7 @@ function makeHandler(deps: { db: any; env: (k: string) => string | undefined; fe
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
     const route = new URL(req.url).pathname.replace(/^.*?\/bakje-billing\/?/, '').replace(/\/+$/, '');
     try {
-      if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: 7, year: true, addon: true, push: true, newAlbum: true, albumGate: true, munchkinPass: true, card: true, receipt: true, amb: true });
+      if (req.method === 'GET' && route === 'health') return json(200, { ok: true, v: 7, year: true, addon: true, push: true, newAlbum: true, albumGate: true, munchkinPass: true, card: true, receipt: true, amb: true, opMsg: true });
       if (req.method === 'POST' && (route === '' || route === 'api')) return json(200, await handle(req, clock()));
       return json(404, { ok: false, error: '찾을 수 없어요.' });
     } catch (e) {
