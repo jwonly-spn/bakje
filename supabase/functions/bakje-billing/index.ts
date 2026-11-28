@@ -204,22 +204,24 @@ function memberOut(m: any, devs: any[], owns: any[], ents: any[], ambs: any[], s
   for (const d of [...mine(devs)].sort((a, b) => (Number(b.seen) || 0) - (Number(a.seen) || 0))) {
     const s = spoonOf.get(d.device);
     if (!s || !(s.nick || s.tag) || seenSpoon.has(s.nick + '@' + s.tag) || spoon.length >= 3) continue;
-    seenSpoon.add(s.nick + '@' + s.tag); spoon.push(s);
+    seenSpoon.add(s.nick + '@' + s.tag); spoon.push({ nick: s.nick, tag: s.tag });
   }
   const e: Record<string, number> = Object.fromEntries(mine(ents).map((x) => [x.product, Number(x.until)]));
   const progs = new Set(mine(devs).map((d) => d.program));
   const a = ambs.find((x) => x.member === m.id);
   return { id: m.id, nick: m.nickname || '', how: m.kakao && m.login_id ? 'both' : m.kakao ? 'kakao' : m.login_id ? 'id' : '', role: m.role === 'dj' ? 'dj' : 'listener',
     admin: m.is_admin === true, state: m.state || 'active', created: Number(m.created) || 0, seen: Number(m.seen) || 0, bot: progs.has('bot'), studio: progs.has('studio'),
-    albums: mine(owns).length, ents: { munchkin: e.munchkin || null, album: e.album || null }, amb: a ? { since: Number(a.since) || 0, note: a.note || '' } : null, spoon };
+    albums: mine(owns).length, ents: { munchkin: e.munchkin || null, album: e.album || null }, amb: a ? { since: Number(a.since) || 0, note: a.note || '' } : null, spoon,
+    // botSeen(11/28 밤 사용자 "최근 봇 사용순서대로"): 이어진 봇 기기가 마지막으로 서버에 닿은 때(사용 승인 표 seen · 계정 잇기 표 seen 중 늦은 것) · 없으면 null
+    botSeen: mine(devs).filter((d) => d.program === 'bot').reduce((t, d) => Math.max(t, Number(d.seen) || 0, Number(spoonOf.get(d.device)?.seen) || 0), 0) || null };
 }
 // 기기 번호 → 스푼 닉네임·태그(junlive_devices). 주소가 너무 길어지지 않게 100개씩 묻는다.
 async function spoonMap(devs: any[]) {
   const ids = [...new Set(devs.map((d) => d.device).filter((x) => typeof x === 'string' && x))] as string[];
   const out = new Map<string, any>();
   for (let i = 0; i < ids.length; i += 100) {
-    const rows: any = await q(db.from('junlive_devices').select('id,nickname,tag').in('id', ids.slice(i, i + 100)));
-    for (const r of rows || []) out.set(r.id, { nick: line(r.nickname, 40), tag: line(r.tag, 40) });
+    const rows: any = await q(db.from('junlive_devices').select('id,nickname,tag,seen').in('id', ids.slice(i, i + 100)));
+    for (const r of rows || []) out.set(r.id, { nick: line(r.nickname, 40), tag: line(r.tag, 40), seen: Number(r.seen) || 0 });
   }
   return out;
 }

@@ -1313,6 +1313,12 @@ test('운영자 회원 목록(ops-members): 운영자만 · 비밀 값 없음 ·
   assert.deepEqual(by.mDj.spoon, [{ nick: '밤 톨⸝⸝ ☾', tag: 'chestnut_dj' }]);
   assert.deepEqual(by.mEtc.spoon, [{ nick: '달무리', tag: 'dalmuri' }, { nick: '달무리 옛', tag: 'dal_old' }]);
   assert.deepEqual(by.mOp.spoon, []);
+  // 최근 봇 사용(botSeen): 봇 기기만 · 계정 잇기 seen 과 사용 승인 seen 중 늦은 것 · 봇이 없으면 null
+  assert.equal(by.mEtc.botSeen, 9);
+  assert.equal(by.mDj.botSeen, 1);
+  assert.equal(by.mOp.botSeen, null);
+  s.T.junlive_devices.find((d) => d.id === 'd3').seen = 50;
+  assert.equal(ok(await s.call('mOp', 'ops-members')).members.find((m) => m.id === 'mEtc').botSeen, 50);
   // 주기·풀기 답(한 사람 줄)에도 같은 스푼 닉네임
   assert.deepEqual(ok(await s.call('mOp', 'ops-amb', { member: 'mEtc', on: true })).member.spoon, by.mEtc.spoon);
 });

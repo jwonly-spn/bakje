@@ -511,7 +511,8 @@ const plain = (v) => String(v || '').toLowerCase().replace(/[^0-9a-z가-힣ㄱ-�
 const mHit = (m, q) => !q || [m.nick, ...spoonOf(m).flatMap((s) => [s.nick, s.tag])].some((v) => plain(v).includes(q));
 const recent = (ms) => Number(ms) > Date.now() - 7 * 86400000;
 function membersView() {
-  const list = S.members;
+  // 순서(11/28 밤 사용자 "최근 봇 사용순서대로"): 봇을 마지막으로 쓴 때(서버 botSeen — 없으면 0) → 같으면 최근 접속 → 가입
+  const list = S.members && [...S.members].sort((a, b) => (Number(b.botSeen) || 0) - (Number(a.botSeen) || 0) || (Number(b.seen) || 0) - (Number(a.seen) || 0) || (Number(b.created) || 0) - (Number(a.created) || 0));
   if (!list) return S.membersErr
     ? h('div', { class: 'empty' }, h('p', { text: S.membersErr }), h('button', { class: 'link', type: 'button', text: '다시 불러오기', onclick: () => loadMembers().then(render) }))
     : h('p', { class: 'empty', text: '불러오는 중이에요…' });
@@ -551,7 +552,7 @@ function memberCard(m) {
       h('b', { class: 'who-s', text: mNick(m) }),
       m.admin ? h('span', { class: 'chip blue', text: '운영자' }) : m.amb ? h('span', { class: 'chip green', text: '🎖️ 엠베서더' }) : h('span', { class: 'chip gray', text: m.role === 'dj' ? 'DJ' : '리스너' })),
     spoonOf(m).length ? h('p', { class: 'small', text: `스푼 ${spoonOf(m).map(spoonText).join(' · ')}` + (m.nick ? '' : ' (먼치킨 닉네임 안 정함)') }) : null,
-    h('p', { class: 'muted small', text: `${HOW[m.how] || '—'} · ${md(m.created)} 가입 · 최근 ${m.seen ? when(m.seen) : '—'}` }),
+    h('p', { class: 'muted small', text: `${HOW[m.how] || '—'} · ${md(m.created)} 가입 · ${m.botSeen ? '봇 ' + when(m.botSeen) : '최근 ' + (m.seen ? when(m.seen) : '—')}` }),
     h('p', { class: 'small', text: [uses.length ? `${uses.join('·')} 씀` : '프로그램 안 씀', m.albums ? `추억앨범 ${m.albums}개` : '추억앨범 없음'].join(' · ') }),
     ents.length ? h('p', { class: 'muted small', text: '이용권 · ' + ents.join(' · ') }) : null,
     m.amb ? h('p', { class: 'plan new-album', text: `🎖️ ${md(m.amb.since)}부터 엠베서더${m.amb.note ? ' · ' + m.amb.note : ''}` }) : null,
