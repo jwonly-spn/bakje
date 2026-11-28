@@ -128,6 +128,12 @@ function makeHandler(db: any, clock: () => number = Date.now) {
     const c = albumCache.get(id);
     if (c && now - c.at < 60000) return c.row;
     const row: any = await q(db.from('bj_albums').select('id,name,state,paid_until').eq('id', id).maybeSingle());
+    // 먼치킨 엠베서더(2026-11-28 — bakje albumRow 와 같음): 주인 중 엠베서더가 있으면 결제 끝나는 날이 지나도 검사하지 않는다(DB 값은 그대로)
+    if (row?.paid_until && Number(row.paid_until) < now) {
+      const own: any[] = await q(db.from('bj_album_owners').select('member').eq('album', id));
+      const amb: any[] = own.length ? await q(db.from('bj_ambassadors').select('member').in('member', own.map((o) => o.member)).limit(1)) : [];
+      if (amb.length) row.paid_until = null;
+    }
     if (row) albumCache.set(id, { at: now, row });
     return row;
   }

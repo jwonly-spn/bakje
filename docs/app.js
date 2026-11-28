@@ -1579,6 +1579,9 @@ const CARD_WAIT = '카드 결제를 아직 마치지 않았어요.';
 const CARD_FAIL = '결제를 마치지 못했어요. 다시 결제하거나 신청을 취소해 주세요.';
 const CARD_CHECK = '결제를 확인하고 있어요. 잠시 뒤 [결제 다시 확인]을 눌러 주세요.';   // 먼치킨홈 album.js(7175d0a)와 같은 글
 const PAYER = { name: '', phone: '', email: '' };
+// 먼치킨 엠베서더(2026-11-28, 서버 info.ambassador): 운영자가 고른 DJ — 엠베서더인 동안 먼치킨·추억앨범·송출 무료(새로 살 것이 없어 신청 칸 대신 안내)
+const AMB_LINE = '🎖️ 먼치킨 엠베서더 · 모두 무료';
+const AMB_NOTE = '먼치킨 엠베서더라서 먼치킨·추억앨범·송출을 모두 무료로 써요. 이용권을 따로 사지 않아도 돼요. 추억앨범이 없으면 먼치킨.com/album 내 정보에서 바로 만들 수 있어요.';
 let PLAN_NOTE = null;   // 카드 결제 결과·멈춘 까닭 {text, bad} — 이용권 창을 다음에 그릴 때 한 번 보인다
 async function billCall(action, body = {}) {
   try { return await call('../bakje-billing', { method: 'POST', body: { action, ...body }, session: true }); }
@@ -1750,7 +1753,9 @@ async function paintPlan(box, pick = { plan: 'munchkin', months: 1 }) {
       parts.push(st0, h('button', { class: 'btn block', type: 'button', text: '결제 다시 확인', onclick: (e) => busy(e.currentTarget, st0, async () => { await finishCard(n.check); again(); }) }));
     }
   }
-  parts.push(h('dl', { class: 'kv' }, kv('먼치킨', until('munchkin')), kv('추억앨범', until('album'))));
+  // 먼치킨 엠베서더(2026-11-28 — 운영자가 고른 DJ): 이용권 대신 "엠베서더 · 모두 무료" 한 줄
+  parts.push(h('dl', { class: 'kv' }, info.ambassador ? kv('이용권', h('b', { text: AMB_LINE }))
+    : [kv('먼치킨', until('munchkin')), kv('추억앨범', until('album'))]));
   const bank = info.bank;
 
   // 진행 중인 신청(계좌이체: 입금 안내 · 카드: 결제를 아직 마치지 않음)
@@ -1800,7 +1805,8 @@ async function paintPlan(box, pick = { plan: 'munchkin', months: 1 }) {
         }) }) : null)));
   }
 
-  if (!info.open) parts.push(h('p', { class: 'notice', lines: '이용권 신청을 준비하고 있어요. 조금 뒤에 다시 와 주세요.' }));
+  if (info.ambassador) parts.push(h('p', { class: 'notice', lines: AMB_NOTE }));
+  else if (!info.open) parts.push(h('p', { class: 'notice', lines: '이용권 신청을 준비하고 있어요. 조금 뒤에 다시 와 주세요.' }));
   else {
     // 쓰는 중에 다른 것 더하기(끝나는 날을 맞춰서, 남은 날만큼)
     for (const [key, q] of Object.entries(info.addons || {})) {

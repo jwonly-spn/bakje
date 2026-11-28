@@ -134,3 +134,10 @@ dialog.viewer::backdrop { background: rgb(0 0 0 / .5); }
 /* 읽기 좋은 줄바꿈(2026-11-23) */
 p, li, .small, .muted, .lines { text-wrap: pretty; }
 h1, h2 { text-wrap: balance; }
+
+/* 회원 · 먼치킨 엠베서더(2026-11-28) */
+.stats.three { grid-template-columns: repeat(3, 1fr); }
+.seg.small-seg { position: static; }
+.seg.small-seg button { font-size: 14px; padding: 8px 4px; }
+.members .card-top .who-s { font-size: 19px; line-height: 1.3; min-width: 0; overflow-wrap: anywhere; }
+.members .card .btn.wide { margin-top: 2px; }

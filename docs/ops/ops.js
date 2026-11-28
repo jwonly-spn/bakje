@@ -1,5 +1,5 @@
 // 추억앨범 · 입금 확인(운영자 앱) — 아이폰 홈 화면에 추가해서 쓴다. 푸시 알림은 홈 화면 앱에서만 된다(iOS 16.4+).
-// 서버: bakje(회원 로그인) · bakje-billing(입금 목록·확인·알림 기기) · bakje-beta(추억앨범 베타테스터 신청 — "베타" 탭). 세션은 이 앱 저장소(localStorage)에만.
+// 서버: bakje(회원 로그인) · bakje-billing(입금 목록·확인·알림 기기 · "회원" 탭 — 회원 목록·먼치킨 엠베서더 주기·풀기, 2026-11-28) · bakje-beta(추억앨범 베타테스터 신청 — "베타" 탭). 세션은 이 앱 저장소(localStorage)에만.
 'use strict';
 const SB = 'https://aksegkhhugqvvaidgvro.supabase.co/functions/v1/';
 const PLAN = { munchkin: '먼치킨', album: '추억앨범', bundle: '먼치킨 + 추억앨범', 'add-album': '추억앨범 추가', 'add-munchkin': '먼치킨 추가' };
@@ -16,7 +16,7 @@ const ls = {
   get: (k) => { try { return localStorage.getItem(k); } catch { return null; } },
   set: (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} }
 };
-const S = { session: ls.get('ops_session'), me: null, tab: 'wait', data: null, busy: false, devices: null, beta: null, betaErr: '' };
+const S = { session: ls.get('ops_session'), me: null, tab: 'wait', data: null, busy: false, devices: null, beta: null, betaErr: '', members: null, membersErr: '', mFilter: 'all', mQuery: '' };
 
 // ---------- 작은 도구 ----------
 // 안내 글 줄바꿈(2026-11-23 사용자 "글들이 줄바꿈 없이 난해해 보여"): 글은 그대로 두고 한글 문장 끝(. ? !) 뒤 빈칸에서 줄을 나눈다.
@@ -116,7 +116,7 @@ function render() {
   app.replaceChildren();
   if (!standalone() && isIOS() && !ls.get('ops_skip_install')) return app.append(installView());
   if (!S.session) return app.append(loginView());
-  app.append(header(), tabs(), S.tab === 'wait' ? waitView() : S.tab === 'done' ? doneView() : S.tab === 'beta' ? betaView() : settingsView());
+  app.append(header(), tabs(), S.tab === 'wait' ? waitView() : S.tab === 'done' ? doneView() : S.tab === 'beta' ? betaView() : S.tab === 'mem' ? membersView() : settingsView());
   restore();
 }
 // 1분마다 다시 그려도 옆으로 넘겨 보던 사진 줄 자리는 그대로(베타 탭)
@@ -178,8 +178,8 @@ function tabs() {
   const n = (S.data?.waiting || []).length;
   const nb = (S.beta?.apps || []).filter((a) => a.state === 'wait').length;
   const tab = (key, label) => h('button', { type: 'button', class: S.tab === key ? 'on' : '', 'aria-pressed': String(S.tab === key),
-    onclick: () => { S.tab = key; render(); if (key === 'beta') loadBeta().then(render); } }, label);
-  return h('nav', { class: 'seg' }, tab('wait', `확인할 것${n ? ' ' + n : ''}`), tab('done', '처리한 것'), tab('beta', '베타' + (nb ? ' ' + nb : '')), tab('set', '설정'));
+    onclick: () => { S.tab = key; render(); if (key === 'beta') loadBeta().then(render); if (key === 'mem') loadMembers().then(render); } }, label);
+  return h('nav', { class: 'seg' }, tab('wait', `확인할 것${n ? ' ' + n : ''}`), tab('done', '처리한 것'), tab('beta', '베타' + (nb ? ' ' + nb : '')), tab('mem', '회원'), tab('set', '설정'));
 }
 
 function waitView() {
@@ -496,6 +496,91 @@ function settingsView() {
   return wrap;
 }
 
+// ---------- 회원 · 먼치킨 엠베서더(2026-11-28, bakje-billing ops-members · ops-amb) ----------
+// 사용자 "디제이 몇 명을 뽑아 먼치킨 엠베서더 — 먼치킨도 추억앨범도 전부 무료". 운영자가 이 탭에서 [엠베서더 주기]·[풀기].
+//  엠베서더인 동안: 먼치킨·송출 이용권이 늘 있고, 가진 추억앨범은 결제 끝나는 날이 지나도 쓴다. 앨범이 없으면 먼치킨.com/album 내 정보에서 바로 만든다.
+//  풀면 그 자리에서 보통 회원과 같아진다(산 이용권·앨범·글은 그대로). 비밀번호·카카오 번호·본인인증 값은 서버가 보내지 않는다.
+const HOW = { kakao: '카카오', id: '아이디', both: '카카오 + 아이디' };
+const M_FILTER = [['all', '전체'], ['amb', '엠베서더'], ['dj', 'DJ'], ['listener', '리스너']];
+const mNick = (m) => m.nick || '(닉네임 없음)';
+const recent = (ms) => Number(ms) > Date.now() - 7 * 86400000;
+function membersView() {
+  const list = S.members;
+  if (!list) return S.membersErr
+    ? h('div', { class: 'empty' }, h('p', { text: S.membersErr }), h('button', { class: 'link', type: 'button', text: '다시 불러오기', onclick: () => loadMembers().then(render) }))
+    : h('p', { class: 'empty', text: '불러오는 중이에요…' });
+  const amb = list.filter((m) => m.amb).length;
+  const search = h('input', { class: 'field', type: 'search', placeholder: '닉네임으로 찾기', value: S.mQuery, 'aria-label': '닉네임으로 찾기', autocomplete: 'off' });
+  // 쓰는 동안 목록만 바꾼다(입력 칸을 다시 그리지 않아 글자가 끊기지 않게)
+  search.addEventListener('input', () => { S.mQuery = search.value; const box = app.querySelector('.members .list'); if (box) box.replaceWith(memberList()); });
+  const seg = h('nav', { class: 'seg small-seg', 'aria-label': '회원 고르기' }, M_FILTER.map(([k, label]) => h('button', { type: 'button', class: S.mFilter === k ? 'on' : '', 'aria-pressed': String(S.mFilter === k),
+    onclick: () => { S.mFilter = k; render(); } }, label)));
+  function memberList() {
+    const qq = S.mQuery.trim().toLowerCase();
+    const rows = list.filter((m) => (S.mFilter === 'all' || (S.mFilter === 'amb' ? m.amb : m.role === S.mFilter)) && (!qq || mNick(m).toLowerCase().includes(qq)));
+    return rows.length ? h('div', { class: 'list' }, rows.map(memberCard)) : h('div', { class: 'list' }, h('p', { class: 'empty', text: S.mFilter === 'amb' && !qq ? '아직 엠베서더가 없어요.' : '맞는 회원이 없어요.' }));
+  }
+  return h('section', { class: 'members' },
+    h('div', { class: 'beta-head' },
+      h('b', { class: 'beta-title', text: '먼치킨 계정' }),
+      h('div', { class: 'stats three' },
+        h('div', { class: 'stat' }, h('span', { text: '모든 회원' }), h('b', { text: String(list.length) })),
+        h('div', { class: 'stat' }, h('span', { text: '최근 7일' }), h('b', { text: String(list.filter((m) => recent(m.seen)).length) })),
+        h('div', { class: 'stat' }, h('span', { text: '엠베서더' }), h('b', { text: String(amb) }))),
+      h('p', { class: 'muted small', lines: '엠베서더는 먼치킨·추억앨범·송출을 모두 무료로 써요. 언제든 풀 수 있어요.' }),
+      seg, search),
+    memberList());
+}
+function memberCard(m) {
+  const busy = acting?.id === m.id;
+  const uses = [m.bot ? '봇' : '', m.studio ? '송출' : ''].filter(Boolean);
+  const ent = (k, name) => (m.ents?.[k] > Date.now() ? `${name} ${day(m.ents[k])}까지` : '');
+  const ents = [ent('munchkin', '먼치킨'), ent('album', '추억앨범')].filter(Boolean);
+  let action = null;
+  if (m.admin) action = h('p', { class: 'muted small', text: '운영자 계정은 늘 무료예요.' });
+  else if (m.amb) action = h('button', { class: 'btn wide', type: 'button', disabled: !!acting, text: busy ? '푸는 중…' : '엠베서더 풀기', onclick: () => setAmb(m, false) });
+  else action = h('button', { class: 'btn wide primary', type: 'button', disabled: !!acting, text: busy ? '주는 중…' : '엠베서더 주기', onclick: () => setAmb(m, true) });
+  return h('article', { class: 'card member' + (m.amb ? ' sent' : '') },
+    h('div', { class: 'card-top' },
+      h('b', { class: 'who-s', text: mNick(m) }),
+      m.admin ? h('span', { class: 'chip blue', text: '운영자' }) : m.amb ? h('span', { class: 'chip green', text: '🎖️ 엠베서더' }) : h('span', { class: 'chip gray', text: m.role === 'dj' ? 'DJ' : '리스너' })),
+    h('p', { class: 'muted small', text: `${HOW[m.how] || '—'} · ${md(m.created)} 가입 · 최근 ${m.seen ? when(m.seen) : '—'}` }),
+    h('p', { class: 'small', text: [uses.length ? `${uses.join('·')} 씀` : '프로그램 안 씀', m.albums ? `추억앨범 ${m.albums}개` : '추억앨범 없음'].join(' · ') }),
+    ents.length ? h('p', { class: 'muted small', text: '이용권 · ' + ents.join(' · ') }) : null,
+    m.amb ? h('p', { class: 'plan new-album', text: `🎖️ ${md(m.amb.since)}부터 엠베서더${m.amb.note ? ' · ' + m.amb.note : ''}` }) : null,
+    m.state === 'banned' ? h('p', { class: 'error', text: '이용이 막힌 계정이에요.' }) : null,
+    action);
+}
+async function setAmb(m, on) {
+  const nick = mNick(m);
+  const note = on
+    ? await ask({ title: `${nick}님을 먼치킨 엠베서더로 할까요?`, ok: '엠베서더 주기', input: '메모(운영자만 봐요, 비워도 돼요)',
+      lines: ['엠베서더인 동안 먼치킨·추억앨범·송출을 모두 무료로 써요.', '추억앨범이 없으면 먼치킨.com/album 내 정보에서 바로 만들 수 있어요.', '언제든 풀 수 있어요.'] })
+    : await ask({ title: `${nick}님의 엠베서더를 풀까요?`, ok: '풀기', danger: true,
+      lines: ['풀면 바로 보통 회원과 같아져요. 1월 1일부터는 이용권이 있어야 먼치킨·송출을 쓰고, 추억앨범은 결제 끝나는 날이 지나면 보기만 돼요.', '산 이용권·만든 앨범·글은 그대로 남아요.'] });
+  if (note == null) return;
+  acting = { id: m.id, kind: on ? 'give' : 'take' };
+  render();
+  try {
+    const j = await bill('ops-amb', { member: m.id, on, ...(on && note ? { note } : {}) });
+    const i = S.members.findIndex((x) => x.id === m.id);
+    if (i >= 0 && j.member) S.members[i] = j.member;
+    toast(on ? `${nick}님을 엠베서더로 했어요` : `${nick}님의 엠베서더를 풀었어요`);
+  } catch (err) { toast(err.message, true); }
+  finally { acting = null; render(); }
+}
+let membersLoading = null;
+function loadMembers() {
+  if (!S.session) return Promise.resolve(false);
+  if (membersLoading) return membersLoading;
+  membersLoading = (async () => {
+    try { S.members = (await bill('ops-members')).members || []; S.membersErr = ''; return true; }
+    catch (err) { S.membersErr = err.message; if (S.tab === 'mem' && err.status !== 401) toast(err.message, true); return false; }
+    finally { membersLoading = null; }
+  })();
+  return membersLoading;
+}
+
 // ---------- 데이터 ----------
 let loading = null;
 async function load(manual = false) {
@@ -509,7 +594,8 @@ async function load(manual = false) {
         try { S.data = await bill('ops-orders'); setBadge(); return true; }
         catch (err) { if (err.status !== 401) toast(err.message, true); return false; }
       })(),
-      withBeta ? loadBeta() : true]);
+      withBeta ? loadBeta() : true,
+      S.tab === 'mem' ? loadMembers() : true]);
     if (manual && ok && betaOk) toast('새로 불러왔어요');
     loading = null;
     render();
@@ -546,7 +632,7 @@ async function loadDevices() {
   if (S.tab === 'set') render();
 }
 function signOut() {
-  S.session = null; S.me = null; S.data = null; S.devices = null; S.beta = null; S.betaErr = '';
+  S.session = null; S.me = null; S.data = null; S.devices = null; S.beta = null; S.betaErr = ''; S.members = null; S.membersErr = '';
   ls.set('ops_session', null);
   render();
 }

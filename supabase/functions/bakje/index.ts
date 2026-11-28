@@ -121,8 +121,17 @@ async function albumRow(id: unknown, now: number, fresh = false) {
   if (!fresh && c && now - c.at < 60000) return c.row;
   const row: any = await q(db.from('bj_albums').select('id,name,state,paid_until').eq('id', id).maybeSingle());
   if (!row) throw fail(404, '없는 앨범이에요.');
+  // 먼치킨 엠베서더(2026-11-28): 주인 중 엠베서더(bj_ambassadors)가 있으면 결제 끝나는 날이 지나도 시범처럼 검사하지 않는다(paid_until 을 비운 것처럼).
+  //  DB 의 paid_until 은 그대로 — 엠베서더를 풀면(줄을 지우면) 1분(이 캐시) 안에 원래대로.
+  if (row.paid_until && Number(row.paid_until) < now && await ambOwned(id)) row.paid_until = null;
   albumCache.set(id, { at: now, row });
   return row;
+}
+async function ambOwned(album: string) {
+  const own: any = await q(db.from('bj_album_owners').select('member').eq('album', album));
+  if (!own?.length) return false;
+  const amb: any = await q(db.from('bj_ambassadors').select('member').in('member', own.map((o: any) => o.member)).limit(1));
+  return Boolean(amb?.length);
 }
 // 보기만: readonly 앨범 · 결제 끝나는 날(paid_until)이 지난 앨범(비우면 시범 — 검사 안 함)
 const writable = (a: any) => { if (a.state !== 'active' || (a.paid_until && Number(a.paid_until) < Date.now())) throw fail(403, READONLY); };
