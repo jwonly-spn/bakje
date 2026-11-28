@@ -196,25 +196,43 @@ const FREE_END = PAID_FROM - 1;   // 엠베서더가 만든 앨범의 결제 끝
 const isAmb = async (member: string) => Boolean(await q(db.from('bj_ambassadors').select('member').eq('member', member).maybeSingle()));
 // 운영자 앱 "회원" 탭 한 줄(ops-members · ops-amb). 비밀번호·카카오 번호·본인인증 값은 내보내지 않는다(가입 방법은 칸이 비었는지만 본다).
 const MEMBER_COLS = 'id,login_id,kakao,nickname,role,is_admin,state,created,seen';
-function memberOut(m: any, devs: any[], owns: any[], ents: any[], ambs: any[]) {
+// spoon(11/28 밤 사용자 "왜 회원 중에 긴새벽이 없지"): 그 회원의 먼치킨(봇·송출 기기)에 남은 스푼 닉네임·태그 — 카카오로 가입하며 먼치킨 닉네임을 안 정한 회원도 알아보게.
+//  최근에 쓴 기기 먼저, 같은 닉네임·태그는 한 번, 3개까지. 기기 표(junlive_devices — 사용 승인)에 이미 있는 값이라 새로 모으는 것은 없다.
+function memberOut(m: any, devs: any[], owns: any[], ents: any[], ambs: any[], spoonOf: Map<string, any> = new Map()) {
   const mine = (list: any[]) => list.filter((x) => x.member === m.id);
+  const seenSpoon = new Set<string>(), spoon: any[] = [];
+  for (const d of [...mine(devs)].sort((a, b) => (Number(b.seen) || 0) - (Number(a.seen) || 0))) {
+    const s = spoonOf.get(d.device);
+    if (!s || !(s.nick || s.tag) || seenSpoon.has(s.nick + '@' + s.tag) || spoon.length >= 3) continue;
+    seenSpoon.add(s.nick + '@' + s.tag); spoon.push(s);
+  }
   const e: Record<string, number> = Object.fromEntries(mine(ents).map((x) => [x.product, Number(x.until)]));
   const progs = new Set(mine(devs).map((d) => d.program));
   const a = ambs.find((x) => x.member === m.id);
   return { id: m.id, nick: m.nickname || '', how: m.kakao && m.login_id ? 'both' : m.kakao ? 'kakao' : m.login_id ? 'id' : '', role: m.role === 'dj' ? 'dj' : 'listener',
     admin: m.is_admin === true, state: m.state || 'active', created: Number(m.created) || 0, seen: Number(m.seen) || 0, bot: progs.has('bot'), studio: progs.has('studio'),
-    albums: mine(owns).length, ents: { munchkin: e.munchkin || null, album: e.album || null }, amb: a ? { since: Number(a.since) || 0, note: a.note || '' } : null };
+    albums: mine(owns).length, ents: { munchkin: e.munchkin || null, album: e.album || null }, amb: a ? { since: Number(a.since) || 0, note: a.note || '' } : null, spoon };
+}
+// 기기 번호 → 스푼 닉네임·태그(junlive_devices). 주소가 너무 길어지지 않게 100개씩 묻는다.
+async function spoonMap(devs: any[]) {
+  const ids = [...new Set(devs.map((d) => d.device).filter((x) => typeof x === 'string' && x))] as string[];
+  const out = new Map<string, any>();
+  for (let i = 0; i < ids.length; i += 100) {
+    const rows: any = await q(db.from('junlive_devices').select('id,nickname,tag').in('id', ids.slice(i, i + 100)));
+    for (const r of rows || []) out.set(r.id, { nick: line(r.nickname, 40), tag: line(r.tag, 40) });
+  }
+  return out;
 }
 // 그 회원 한 사람 몫만 읽기(ops-amb 의 답)
 async function memberRow(id: string) {
   const m: any = await q(db.from('bj_members').select(MEMBER_COLS).eq('id', id).maybeSingle());
   if (!m) return null;
   const [devs, owns, ents, ambs]: any = await Promise.all([
-    q(db.from('bj_member_devices').select('member,program').eq('member', id)),
+    q(db.from('bj_member_devices').select('member,program,device,seen').eq('member', id)),
     q(db.from('bj_album_owners').select('member').eq('member', id)),
     q(db.from('bj_entitlements').select('member,product,until').eq('member', id)),
     q(db.from('bj_ambassadors').select('member,since,note').eq('member', id))]);
-  return memberOut(m, devs, owns, ents, ambs);
+  return memberOut(m, devs, owns, ents, ambs, await spoonMap(devs));
 }
 // 먼치킨 이용 기간이 생기는 신청(먼치킨만·먼치킨 + 추억앨범·먼치킨 추가)
 const MUNCHKIN_PLANS = ['munchkin', 'bundle', 'add-munchkin'];
@@ -840,11 +858,12 @@ async function handle(req: Request, now: number) {
     case 'ops-members': {
       const [ms, devs, owns, ents, ambs]: any = await Promise.all([
         q(db.from('bj_members').select(MEMBER_COLS).order('created', { ascending: false }).limit(2000)),
-        q(db.from('bj_member_devices').select('member,program').limit(10000)),
+        q(db.from('bj_member_devices').select('member,program,device,seen').limit(10000)),
         q(db.from('bj_album_owners').select('member').limit(10000)),
         q(db.from('bj_entitlements').select('member,product,until').limit(10000)),
         q(db.from('bj_ambassadors').select('member,since,note').limit(2000))]);
-      return { ok: true, members: ms.map((m: any) => memberOut(m, devs, owns, ents, ambs)) };
+      const spoonOf = await spoonMap(devs);
+      return { ok: true, members: ms.map((m: any) => memberOut(m, devs, owns, ents, ambs, spoonOf)) };
     }
     // 엠베서더 주기·풀기(2026-11-28): {member, on: true|false, note?} — on 이면 줄을 넣고(이미 있으면 처음 준 때 그대로), false 면 지운다 → {member: 회원 탭 한 줄}
     case 'ops-amb': {

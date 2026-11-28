@@ -1289,7 +1289,11 @@ test('운영자 회원 목록(ops-members): 운영자만 · 비밀 값 없음 ·
     owners: [{ album: 'aone', member: 'mDj', created: 1 }], ents: [{ member: 'mEtc', product: 'munchkin', until: AFTER_DEC + DAY }] });
   s.T.bj_members.find((m) => m.id === 'mEtc').kakao = 'kakao-secret-id-123';
   s.T.bj_members.find((m) => m.id === 'mEtc').pw = 'hash-secret';
-  s.T.bj_member_devices = [{ device: 'd1', member: 'mDj', program: 'bot', created: 1, seen: 1 }, { device: 'd2', member: 'mDj', program: 'studio', created: 1, seen: 1 }];
+  s.T.bj_member_devices = [{ device: 'd1', member: 'mDj', program: 'bot', created: 1, seen: 1 }, { device: 'd2', member: 'mDj', program: 'studio', created: 1, seen: 1 },
+    { device: 'd3', member: 'mEtc', program: 'bot', created: 1, seen: 5 }, { device: 'd4', member: 'mEtc', program: 'bot', created: 1, seen: 9 }, { device: 'd5', member: 'mEtc', program: 'studio', created: 1, seen: 7 }];
+  // 스푼 닉네임(11/28 밤 — 먼치킨 닉네임이 빈 회원도 알아보게): 최근 기기 먼저 · 같은 것은 한 번 · 지어낸 이름
+  s.T.junlive_devices = [{ id: 'd1', nickname: '밤 톨⸝⸝ ☾', tag: 'chestnut_dj', state: 'approved' }, { id: 'd3', nickname: '달무리 옛', tag: 'dal_old', state: 'approved' },
+    { id: 'd4', nickname: '달무리', tag: 'dalmuri', state: 'approved' }, { id: 'd5', nickname: '달무리', tag: 'dalmuri', state: 'approved' }];
   assert.equal((await s.call('mDj', 'ops-members')).status, 403);
   const j = ok(await s.call('mOp', 'ops-members'));
   const txt = JSON.stringify(j);
@@ -1306,6 +1310,11 @@ test('운영자 회원 목록(ops-members): 운영자만 · 비밀 값 없음 ·
   assert.equal(by.mEtc.ents.munchkin, AFTER_DEC + DAY);
   assert.equal(by.mEtc.role, 'listener');
   assert.equal(by.mOp.admin, true);
+  assert.deepEqual(by.mDj.spoon, [{ nick: '밤 톨⸝⸝ ☾', tag: 'chestnut_dj' }]);
+  assert.deepEqual(by.mEtc.spoon, [{ nick: '달무리', tag: 'dalmuri' }, { nick: '달무리 옛', tag: 'dal_old' }]);
+  assert.deepEqual(by.mOp.spoon, []);
+  // 주기·풀기 답(한 사람 줄)에도 같은 스푼 닉네임
+  assert.deepEqual(ok(await s.call('mOp', 'ops-amb', { member: 'mEtc', on: true })).member.spoon, by.mEtc.spoon);
 });
 
 test('운영자 엠베서더 주기·풀기(ops-amb): 운영자만 · 다시 주면 처음 준 때 그대로 · 없는 회원 404 · on 은 참/거짓만', async () => {

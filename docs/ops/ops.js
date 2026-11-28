@@ -502,7 +502,13 @@ function settingsView() {
 //  풀면 그 자리에서 보통 회원과 같아진다(산 이용권·앨범·글은 그대로). 비밀번호·카카오 번호·본인인증 값은 서버가 보내지 않는다.
 const HOW = { kakao: '카카오', id: '아이디', both: '카카오 + 아이디' };
 const M_FILTER = [['all', '전체'], ['amb', '엠베서더'], ['dj', 'DJ'], ['listener', '리스너']];
-const mNick = (m) => m.nick || '(닉네임 없음)';
+// 보이는 이름: 먼치킨 닉네임 → 없으면(카카오로 가입하며 안 정함) 이어진 먼치킨의 스푼 닉네임 → 그래도 없으면 (닉네임 없음) — 11/28 밤 사용자 "왜 긴새벽이 없지"
+const spoonOf = (m) => (Array.isArray(m.spoon) ? m.spoon.filter((s) => s && (s.nick || s.tag)) : []);
+const mNick = (m) => m.nick || spoonOf(m)[0]?.nick || '(닉네임 없음)';
+const spoonText = (s) => [s.nick, s.tag ? '@' + s.tag : ''].filter(Boolean).join(' ');
+// 찾기: 먼치킨 닉네임·스푼 닉네임·스푼 태그에서, 빈칸·꾸밈 글자는 빼고("긴새벽" 으로 "긴 새벽⸝⸝ ☾" 도 찾게)
+const plain = (v) => String(v || '').toLowerCase().replace(/[^0-9a-z가-힣ㄱ-ㅎㅏ-ㅣ]+/g, '');
+const mHit = (m, q) => !q || [m.nick, ...spoonOf(m).flatMap((s) => [s.nick, s.tag])].some((v) => plain(v).includes(q));
 const recent = (ms) => Number(ms) > Date.now() - 7 * 86400000;
 function membersView() {
   const list = S.members;
@@ -510,14 +516,14 @@ function membersView() {
     ? h('div', { class: 'empty' }, h('p', { text: S.membersErr }), h('button', { class: 'link', type: 'button', text: '다시 불러오기', onclick: () => loadMembers().then(render) }))
     : h('p', { class: 'empty', text: '불러오는 중이에요…' });
   const amb = list.filter((m) => m.amb).length;
-  const search = h('input', { class: 'field', type: 'search', placeholder: '닉네임으로 찾기', value: S.mQuery, 'aria-label': '닉네임으로 찾기', autocomplete: 'off' });
+  const search = h('input', { class: 'field', type: 'search', placeholder: '닉네임·스푼 닉네임으로 찾기', value: S.mQuery, 'aria-label': '닉네임·스푼 닉네임으로 찾기', autocomplete: 'off' });
   // 쓰는 동안 목록만 바꾼다(입력 칸을 다시 그리지 않아 글자가 끊기지 않게)
   search.addEventListener('input', () => { S.mQuery = search.value; const box = app.querySelector('.members .list'); if (box) box.replaceWith(memberList()); });
   const seg = h('nav', { class: 'seg small-seg', 'aria-label': '회원 고르기' }, M_FILTER.map(([k, label]) => h('button', { type: 'button', class: S.mFilter === k ? 'on' : '', 'aria-pressed': String(S.mFilter === k),
     onclick: () => { S.mFilter = k; render(); } }, label)));
   function memberList() {
-    const qq = S.mQuery.trim().toLowerCase();
-    const rows = list.filter((m) => (S.mFilter === 'all' || (S.mFilter === 'amb' ? m.amb : m.role === S.mFilter)) && (!qq || mNick(m).toLowerCase().includes(qq)));
+    const qq = plain(S.mQuery);
+    const rows = list.filter((m) => (S.mFilter === 'all' || (S.mFilter === 'amb' ? m.amb : m.role === S.mFilter)) && mHit(m, qq));
     return rows.length ? h('div', { class: 'list' }, rows.map(memberCard)) : h('div', { class: 'list' }, h('p', { class: 'empty', text: S.mFilter === 'amb' && !qq ? '아직 엠베서더가 없어요.' : '맞는 회원이 없어요.' }));
   }
   return h('section', { class: 'members' },
@@ -544,6 +550,7 @@ function memberCard(m) {
     h('div', { class: 'card-top' },
       h('b', { class: 'who-s', text: mNick(m) }),
       m.admin ? h('span', { class: 'chip blue', text: '운영자' }) : m.amb ? h('span', { class: 'chip green', text: '🎖️ 엠베서더' }) : h('span', { class: 'chip gray', text: m.role === 'dj' ? 'DJ' : '리스너' })),
+    spoonOf(m).length ? h('p', { class: 'small', text: `스푼 ${spoonOf(m).map(spoonText).join(' · ')}` + (m.nick ? '' : ' (먼치킨 닉네임 안 정함)') }) : null,
     h('p', { class: 'muted small', text: `${HOW[m.how] || '—'} · ${md(m.created)} 가입 · 최근 ${m.seen ? when(m.seen) : '—'}` }),
     h('p', { class: 'small', text: [uses.length ? `${uses.join('·')} 씀` : '프로그램 안 씀', m.albums ? `추억앨범 ${m.albums}개` : '추억앨범 없음'].join(' · ') }),
     ents.length ? h('p', { class: 'muted small', text: '이용권 · ' + ents.join(' · ') }) : null,
